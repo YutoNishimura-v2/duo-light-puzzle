@@ -42,7 +42,6 @@ targets:
         CFBundleShortVersionString: $(MARKETING_VERSION)
         CFBundleVersion: $(CURRENT_PROJECT_VERSION)
         UILaunchScreen: {}
-        UIRequiresFullScreen: true
         # Duo をノート PC のように置いた向き（折り目が横）で遊ぶ
         UISupportedInterfaceOrientations:
           - UIInterfaceOrientationPortrait
