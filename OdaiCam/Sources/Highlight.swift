@@ -54,7 +54,9 @@ enum Highlight {
         let rect = CGRect(origin: .zero, size: naturalSize).applying(transform)
         let renderSize = CGSize(width: abs(rect.width), height: abs(rect.height))
         let layerInstruction = AVMutableVideoCompositionLayerInstruction(assetTrack: compVideo)
-        layerInstruction.setTransform(transform, at: .zero)
+        // 回転で原点がずれるので、描く範囲の左上に戻す
+        let placedTransform = transform.concatenating(CGAffineTransform(translationX: -rect.minX, y: -rect.minY))
+        layerInstruction.setTransform(placedTransform, at: .zero)
         let instruction = AVMutableVideoCompositionInstruction()
         instruction.timeRange = CMTimeRange(start: .zero, duration: composition.duration)
         instruction.layerInstructions = [layerInstruction]

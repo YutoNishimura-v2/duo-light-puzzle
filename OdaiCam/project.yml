@@ -47,5 +47,6 @@ targets:
           - UIInterfaceOrientationLandscapeRight
         NSCameraUsageDescription: 背面カメラで、お題を演じる人を撮るために使います。
         NSMicrophoneUsageDescription: ハイライト動画に、遊んでいるときの声や笑い声を残すために使います。
+        NSSpeechRecognitionUsageDescription: 当てる人が声に出した答えを端末の中で聞き取り、お題と合っているかを判定します。
         NSPhotoLibraryAddUsageDescription: ハイライト動画を写真ライブラリに保存します。
         ITSAppUsesNonExemptEncryption: false

@@ -40,12 +40,18 @@ final class Game {
     private(set) var highlightURL: URL?
     private(set) var highlightError: String?
     private(set) var building = false
+    /// 声で自動判定する（当てる人の声を聞き取る）
+    var voiceJudge = true
+    /// 聞き取った言葉（当てる人に小さく見せる）
+    private(set) var heard = ""
 
     var current: Turn? { phase == .playing ? turns.last : nil }
     var score: Int { turns.filter { $0.outcome == .correct }.count }
 
     @ObservationIgnored var startRecording: (() -> Void)?
     @ObservationIgnored var stopRecording: (() -> Void)?
+    /// 新しいお題になった（聞き取りをやり直す）。nil でラウンド終わり
+    @ObservationIgnored var onPrompt: ((String?) -> Void)?
     @ObservationIgnored private var recordingStart: TimeInterval?
     @ObservationIgnored private var queue: [String] = []
     @ObservationIgnored private var running: Task<Void, Never>?
@@ -83,6 +89,16 @@ final class Game {
         recordingStart = t
     }
 
+    /// 聞き取りから。いまのお題と同じときだけ正解にする
+    func heardAnswer(for prompt: String) {
+        guard phase == .playing, current?.prompt == prompt else { return }
+        answer(.correct)
+    }
+
+    func updateHeard(_ text: String) {
+        if phase == .playing { heard = text }
+    }
+
     func answer(_ outcome: Outcome) {
         guard phase == .playing, var turn = turns.popLast() else { return }
         turn.end = now
@@ -95,6 +111,7 @@ final class Game {
 
     func backToMenu() {
         running?.cancel()
+        onPrompt?(nil)
         stopRecording?()
         phase = .menu
     }
@@ -127,7 +144,10 @@ final class Game {
 
     private func nextPrompt() {
         if queue.isEmpty { queue = deck.prompts.shuffled() }
-        turns.append(Turn(prompt: queue.removeFirst(), start: now))
+        let prompt = queue.removeFirst()
+        turns.append(Turn(prompt: prompt, start: now))
+        heard = ""
+        if voiceJudge { onPrompt?(prompt) }
     }
 
     private func finishRound() {
@@ -141,6 +161,7 @@ final class Game {
         }
         phase = .results
         answerFeedback.notificationOccurred(.success)
+        onPrompt?(nil)
         stopRecording?()
     }
 }

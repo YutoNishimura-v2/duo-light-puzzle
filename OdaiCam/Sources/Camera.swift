@@ -4,18 +4,31 @@ import SwiftUI
 import UIKit
 
 /// 背面カメラでラウンドを丸ごと録画する。Duo を開くと背面カメラは外側の画面と同じ向き（演じる人の方）を向く。
-/// セッションの操作は専用のキューで行う
+///
+/// 録画は AVAssetWriter で自前で書く。マイクの音声を録画と音声認識の両方に流すため
+/// （ムービー出力を使うと、音声を横から取り出せない）。セッションの操作は専用のキューで行う
 final class Camera: NSObject, @unchecked Sendable {
     let session = AVCaptureSession()
-    private let movie = AVCaptureMovieFileOutput()
+    private let videoOutput = AVCaptureVideoDataOutput()
+    private let audioOutput = AVCaptureAudioDataOutput()
     private let queue = DispatchQueue(label: "camera")
     private var device: AVCaptureDevice?
+
+    private var writer: AVAssetWriter?
+    private var videoInput: AVAssetWriterInput?
+    private var audioInput: AVAssetWriterInput?
+    private var writing = false
+    private var sessionStarted = false
+    private var rotationAngle: CGFloat = 90
+
     /// セッションが動き始めたら呼ぶ（main で呼ぶ）
     var onReady: (@MainActor () -> Void)?
-    /// 録画が始まった時刻（systemUptime）を知らせる（main で呼ぶ）
+    /// 録画の最初のフレームの時刻（systemUptime と同じ時計）を知らせる（main で呼ぶ）
     var onRecordingStarted: (@MainActor (TimeInterval) -> Void)?
     /// 録画ファイルができた（main で呼ぶ）
     var onRecordingFinished: (@MainActor (URL?) -> Void)?
+    /// マイクの音声（カメラのキューで呼ぶ）。音声認識に流す
+    var onAudio: ((CMSampleBuffer) -> Void)?
 
     func start() {
         queue.async { [self] in
@@ -30,12 +43,15 @@ final class Camera: NSObject, @unchecked Sendable {
                 session.addInput(input)
                 self.device = device
             }
-            // 笑い声も残す（マイクを断られても映像だけで続ける）
             if let mic = AVCaptureDevice.default(for: .audio), let input = try? AVCaptureDeviceInput(device: mic),
                session.canAddInput(input) {
                 session.addInput(input)
             }
-            if session.canAddOutput(movie) { session.addOutput(movie) }
+            videoOutput.alwaysDiscardsLateVideoFrames = false
+            videoOutput.setSampleBufferDelegate(self, queue: queue)
+            audioOutput.setSampleBufferDelegate(self, queue: queue)
+            if session.canAddOutput(videoOutput) { session.addOutput(videoOutput) }
+            if session.canAddOutput(audioOutput) { session.addOutput(audioOutput) }
             session.commitConfiguration()
             session.startRunning()
             Task { @MainActor [onReady] in onReady?() }
@@ -48,19 +64,59 @@ final class Camera: NSObject, @unchecked Sendable {
 
     func startRecording(rotationAngle: CGFloat) {
         queue.async { [self] in
-            guard !movie.isRecording else { return }
-            if let connection = movie.connection(with: .video), connection.isVideoRotationAngleSupported(rotationAngle) {
-                connection.videoRotationAngle = rotationAngle
-            }
+            guard !writing else { return }
             let url = FileManager.default.temporaryDirectory.appendingPathComponent("round-\(UUID().uuidString).mov")
-            movie.startRecording(to: url, recordingDelegate: self)
+            guard let writer = try? AVAssetWriter(outputURL: url, fileType: .mov) else {
+                finished(nil)
+                return
+            }
+            let video = AVAssetWriterInput(mediaType: .video,
+                                           outputSettings: videoOutput.recommendedVideoSettingsForAssetWriter(writingTo: .mov))
+            video.expectsMediaDataInRealTime = true
+            // フレームは横向きのまま届くので、向きは再生時の変換で付ける
+            video.transform = CGAffineTransform(rotationAngle: rotationAngle * .pi / 180)
+            if writer.canAdd(video) { writer.add(video) }
+            var audio: AVAssetWriterInput?
+            if let settings = audioOutput.recommendedAudioSettingsForAssetWriter(writingTo: .mov) {
+                let input = AVAssetWriterInput(mediaType: .audio, outputSettings: settings)
+                input.expectsMediaDataInRealTime = true
+                if writer.canAdd(input) {
+                    writer.add(input)
+                    audio = input
+                }
+            }
+            guard writer.startWriting() else {
+                finished(nil)
+                return
+            }
+            self.writer = writer
+            self.videoInput = video
+            self.audioInput = audio
+            self.rotationAngle = rotationAngle
+            sessionStarted = false
+            writing = true
         }
     }
 
     func stopRecording() {
         queue.async { [self] in
-            if movie.isRecording { movie.stopRecording() }
+            guard writing, let writer else { return }
+            writing = false
+            videoInput?.markAsFinished()
+            audioInput?.markAsFinished()
+            guard sessionStarted else {
+                writer.cancelWriting()
+                finished(nil)
+                return
+            }
+            writer.finishWriting { [self] in
+                finished(writer.status == .completed ? writer.outputURL : nil)
+            }
         }
+    }
+
+    private func finished(_ url: URL?) {
+        Task { @MainActor [onRecordingFinished] in onRecordingFinished?(url) }
     }
 
     var currentDevice: AVCaptureDevice? { device }
@@ -80,17 +136,25 @@ final class Camera: NSObject, @unchecked Sendable {
     }
 }
 
-extension Camera: AVCaptureFileOutputRecordingDelegate {
-    func fileOutput(_ output: AVCaptureFileOutput, didStartRecordingTo fileURL: URL, from connections: [AVCaptureConnection]) {
-        let t = ProcessInfo.processInfo.systemUptime
-        Task { @MainActor [onRecordingStarted] in onRecordingStarted?(t) }
-    }
-
-    func fileOutput(_ output: AVCaptureFileOutput, didFinishRecordingTo outputFileURL: URL,
-                    from connections: [AVCaptureConnection], error: Error?) {
-        // 時間切れなどで止まっても、書けたところまでは使える
-        let ok = FileManager.default.fileExists(atPath: outputFileURL.path)
-        Task { @MainActor [onRecordingFinished] in onRecordingFinished?(ok ? outputFileURL : nil) }
+extension Camera: AVCaptureVideoDataOutputSampleBufferDelegate, AVCaptureAudioDataOutputSampleBufferDelegate {
+    func captureOutput(_ output: AVCaptureOutput, didOutput sampleBuffer: CMSampleBuffer, from connection: AVCaptureConnection) {
+        let isAudio = output === audioOutput
+        if isAudio { onAudio?(sampleBuffer) }
+        guard writing, let writer else { return }
+        let pts = CMSampleBufferGetPresentationTimeStamp(sampleBuffer)
+        if !sessionStarted {
+            // 映像の最初のフレームから書き始める
+            guard !isAudio else { return }
+            writer.startSession(atSourceTime: pts)
+            sessionStarted = true
+            let t = pts.seconds
+            Task { @MainActor [onRecordingStarted] in onRecordingStarted?(t) }
+        }
+        if isAudio {
+            if let audioInput, audioInput.isReadyForMoreMediaData { audioInput.append(sampleBuffer) }
+        } else if let videoInput, videoInput.isReadyForMoreMediaData {
+            videoInput.append(sampleBuffer)
+        }
     }
 }
 

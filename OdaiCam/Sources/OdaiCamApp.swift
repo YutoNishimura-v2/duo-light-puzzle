@@ -17,6 +17,8 @@ struct OdaiCamApp: App {
 struct GuesserView: View {
     @State private var game = Game()
     @State private var camera = Camera()
+    @State private var listener = Listener()
+    @State private var voiceReady = false
     @State private var cameraReady = false
     @State private var cameraDenied = false
     @State private var editingDeck = false
@@ -69,6 +71,14 @@ struct GuesserView: View {
                 Text("90 秒").tag(90.0)
             }
             .pickerStyle(.segmented)
+            Toggle(isOn: $game.voiceJudge) {
+                VStack(alignment: .leading) {
+                    Text("声で自動判定")
+                    Text(voiceReady ? "当てる人が答えを声に出すと、合っていれば自動で正解" : "この端末では使えません（音声認識の許可と、端末内での日本語の聞き取りが必要）")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
+            }
+            .disabled(!voiceReady)
             Button("お題帳を作る（内輪ネタ）", systemImage: "square.and.pencil") { editingDeck = true }
             Button {
                 game.startRound()
@@ -102,6 +112,12 @@ struct GuesserView: View {
             .padding(.horizontal, 12).padding(.vertical, 6)
             .background(.black.opacity(0.45), in: Capsule())
             Spacer()
+            if game.voiceJudge && voiceReady && !game.heard.isEmpty {
+                Text("🎤 \(game.heard)")
+                    .font(.callout).lineLimit(1)
+                    .padding(.horizontal, 12).padding(.vertical, 6)
+                    .background(.black.opacity(0.45), in: Capsule())
+            }
             if let last = game.lastAnswer {
                 Text("\(last.outcome.rawValue)  \(last.prompt)")
                     .font(.title3.bold())
@@ -183,12 +199,20 @@ struct GuesserView: View {
         camera.onReady = { cameraReady = true }
         camera.onRecordingStarted = { game.recordingStarted(at: $0) }
         camera.onRecordingFinished = { game.recordingFinished($0) }
+        camera.onAudio = { [listener] in listener.append($0) }
+        listener.onHeard = { game.updateHeard($0) }
+        listener.onMatch = { game.heardAnswer(for: $0) }
+        game.onPrompt = { [listener, game] prompt in
+            if let prompt { listener.listen(for: prompt, hints: game.deck.prompts) } else { listener.stop() }
+        }
         var granted = AVCaptureDevice.authorizationStatus(for: .video) == .authorized
         if !granted { granted = await AVCaptureDevice.requestAccess(for: .video) }
         cameraDenied = !granted
         if granted {
             _ = await AVCaptureDevice.requestAccess(for: .audio)
             camera.start()
+            voiceReady = await Listener.requestPermission() && listener.isAvailable
+            if !voiceReady { game.voiceJudge = false }
         }
     }
 }
