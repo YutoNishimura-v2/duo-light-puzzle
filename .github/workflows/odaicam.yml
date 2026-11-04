@@ -1,0 +1,22 @@
+name: odaicam
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "OdaiCam/**"
+      - ".github/workflows/odaicam.yml"
+      - ".github/workflows/ios-build.yml"
+  workflow_dispatch:
+
+concurrency:
+  group: odaicam
+  cancel-in-progress: false
+
+jobs:
+  ios:
+    uses: ./.github/workflows/ios-build.yml
+    with:
+      dir: OdaiCam
+      app: OdaiCam
+    secrets: inherit
