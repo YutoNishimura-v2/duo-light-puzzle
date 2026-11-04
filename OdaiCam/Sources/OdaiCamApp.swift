@@ -88,6 +88,9 @@ struct GuesserView: View {
             .buttonStyle(.borderedProminent)
             .disabled(!cameraReady)
             if cameraDenied { Text("設定でカメラを許可してください").foregroundStyle(.red) }
+            // 調査用：背面と内側のカメラを同時に使えるか（MultiCam）
+            Text(MultiCamProbe.summary).font(.caption2.monospaced()).foregroundStyle(.secondary)
+                .multilineTextAlignment(.leading).textSelection(.enabled)
             Spacer()
         }
     }
@@ -260,4 +263,25 @@ struct ActorView: View {
         }
         .persistentSystemOverlays(.hidden)
     }
+}
+
+/// 背面と内側のカメラを同時に使えるかを調べる（調査用の表示）
+enum MultiCamProbe {
+    static let summary: String = {
+        let supported = AVCaptureMultiCamSession.isMultiCamSupported
+        let discovery = AVCaptureDevice.DiscoverySession(
+            deviceTypes: [.builtInWideAngleCamera, .builtInUltraWideCamera, .builtInDualWideCamera,
+                          .builtInInnerUltraWideCamera, .builtInOuterUltraWideCamera],
+            mediaType: .video, position: .unspecified)
+        let sets = discovery.supportedMultiCamDeviceSets.map { set in
+            set.map { "\($0.deviceType.rawValue.replacingOccurrences(of: "AVCaptureDeviceTypeBuiltIn", with: ""))/\($0.position.rawValue)" }
+                .sorted().joined(separator: "+")
+        }
+        let wanted = discovery.supportedMultiCamDeviceSets.contains { set in
+            set.contains { $0.deviceType == .builtInInnerUltraWideCamera } && set.contains { $0.position == .back }
+        }
+        return "MultiCam: \(supported ? "対応" : "非対応")／背面＋内側: \(wanted ? "可" : "不可")
+" + sets.joined(separator: "
+")
+    }()
 }
