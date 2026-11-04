@@ -6,7 +6,9 @@ public enum StageCatalog {
     public static let freeCount = 3
 
     public static func load() throws -> [Stage] {
-        let urls = (Bundle.module.urls(forResourcesWithExtension: "json", subdirectory: "Stages") ?? [])
+        guard let dir = Bundle.module.resourceURL?.appendingPathComponent("Stages") else { return [] }
+        let urls = try FileManager.default.contentsOfDirectory(at: dir, includingPropertiesForKeys: nil)
+            .filter { $0.pathExtension == "json" }
             .sorted { $0.lastPathComponent < $1.lastPathComponent }
         return try urls.map { try JSONDecoder().decode(Stage.self, from: Data(contentsOf: $0)) }
     }
