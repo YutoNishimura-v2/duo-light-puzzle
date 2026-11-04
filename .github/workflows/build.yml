@@ -81,3 +81,5 @@ jobs:
           fi
           gh release create "$APP-v$VERSION" "$APP.ipa" --repo YutoNishimura-v2/ios-apps \
             --title "$APP $VERSION" --notes "Unsigned IPA (build ${GITHUB_SHA::7}). Install it with SideStore."
+          # 配布元の JSON を作り直してもらう
+          gh api repos/YutoNishimura-v2/ios-apps/dispatches -f event_type=ipa-published
