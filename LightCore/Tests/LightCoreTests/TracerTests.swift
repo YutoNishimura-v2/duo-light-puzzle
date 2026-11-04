@@ -96,3 +96,21 @@ final class TracerTests: XCTestCase {
         XCTAssertTrue(Tracer.trace(stage, hinge: 122.5).allLit)
     }
 }
+
+final class StageCatalogTests: XCTestCase {
+    func testBundledStagesLoadInOrder() throws {
+        let stages = try StageCatalog.load()
+        XCTAssertGreaterThanOrEqual(stages.count, StageCatalog.freeCount)
+        XCTAssertEqual(stages.map(\.id), stages.map(\.id).sorted())
+    }
+
+    /// どのステージも、遊ぶ範囲の中に「0.5 秒止めて確定」できる幅（2° 以上）の正解がある
+    func testEveryStageIsSolvableWithRoomToHold() throws {
+        for stage in try StageCatalog.load() {
+            let ranges = StageCatalog.solutionRanges(stage)
+            let widest = ranges.map { $0.upperBound - $0.lowerBound }.max() ?? 0
+            print("stage \(stage.id): \(ranges.map { String(format: "%.1f〜%.1f", $0.lowerBound, $0.upperBound) })")
+            XCTAssertGreaterThanOrEqual(widest, 2.0, "stage \(stage.id) has no 2-degree window: \(ranges)")
+        }
+    }
+}

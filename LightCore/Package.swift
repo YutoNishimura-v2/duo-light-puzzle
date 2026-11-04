@@ -7,7 +7,7 @@ let package = Package(
     platforms: [.iOS(.v17), .macOS(.v14)],
     products: [.library(name: "LightCore", targets: ["LightCore"])],
     targets: [
-        .target(name: "LightCore"),
+        .target(name: "LightCore", resources: [.copy("Stages")]),
         .testTarget(name: "LightCoreTests", dependencies: ["LightCore"]),
     ]
 )

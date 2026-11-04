@@ -1,0 +1,9 @@
+{
+  "id": "03",
+  "title": "壁の向こう",
+  "hinge": {"center": {"x": 500, "y": 700}, "length": 240, "baseDegrees": 45},
+  "emitters": [{"position": {"x": 150, "y": 350}, "degrees": 45}],
+  "mirrors": [{"center": {"x": 880, "y": 920}, "length": 180, "degrees": 105}],
+  "blocks": [{"a": {"x": 330, "y": 760}, "b": {"x": 330, "y": 880}}],
+  "targets": [{"center": {"x": 150, "y": 920}, "radius": 60}]
+}
