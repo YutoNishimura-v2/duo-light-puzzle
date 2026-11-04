@@ -1,0 +1,22 @@
+name: catchlight
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "CatchLight/**"
+      - ".github/workflows/catchlight.yml"
+      - ".github/workflows/ios-build.yml"
+  workflow_dispatch:
+
+concurrency:
+  group: catchlight
+  cancel-in-progress: false
+
+jobs:
+  ios:
+    uses: ./.github/workflows/ios-build.yml
+    with:
+      dir: CatchLight
+      app: CatchLight
+    secrets: inherit

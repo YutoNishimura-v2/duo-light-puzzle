@@ -1,0 +1,50 @@
+name: CatchLight
+options:
+  bundleIdPrefix: io.github.yutonishimura-v2
+  # 外側の画面に出す CameraCaptureAccessory は iOS 27.1 から
+  deploymentTarget:
+    iOS: "27.1"
+  createIntermediateGroups: true
+settings:
+  base:
+    MARKETING_VERSION: "0.1.0"
+    CURRENT_PROJECT_VERSION: "1"
+    SWIFT_VERSION: "5.0"
+    # 署名なしでビルドし、SideStore が無料 Apple ID で署名する
+    CODE_SIGN_STYLE: Manual
+    CODE_SIGN_IDENTITY: ""
+    DEVELOPMENT_TEAM: ""
+    CODE_SIGNING_ALLOWED: "NO"
+    CODE_SIGNING_REQUIRED: "NO"
+targets:
+  CatchLight:
+    type: application
+    platform: iOS
+    sources:
+      - Sources
+      - Resources
+    scheme: {}
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: io.github.yutonishimura-v2.catchlight
+        PRODUCT_NAME: CatchLight
+        TARGETED_DEVICE_FAMILY: "1"
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+    info:
+      path: Info.plist
+      properties:
+        # SideStore（0.7.0-alpha）は表示名を App ID の名前に使い、Apple は ASCII 以外を断る。日本語名は ja.lproj の訳で出す
+        CFBundleDisplayName: CatchLight
+        CFBundleLocalizations: [en, ja]
+        CFBundleShortVersionString: $(MARKETING_VERSION)
+        CFBundleVersion: $(CURRENT_PROJECT_VERSION)
+        UILaunchScreen: {}
+        UIStatusBarHidden: true
+        UIViewControllerBasedStatusBarAppearance: false
+        UISupportedInterfaceOrientations:
+          - UIInterfaceOrientationPortrait
+          - UIInterfaceOrientationLandscapeLeft
+          - UIInterfaceOrientationLandscapeRight
+        NSCameraUsageDescription: 背面カメラで撮影し、外側の画面の光を被写体に当てるために使います。
+        NSPhotoLibraryAddUsageDescription: 撮った写真を写真ライブラリに保存します。
+        ITSAppUsesNonExemptEncryption: false
