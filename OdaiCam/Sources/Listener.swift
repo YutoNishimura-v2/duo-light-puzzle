@@ -47,8 +47,8 @@ final class Listener: @unchecked Sendable {
             // 第一候補だけでなく、ほかの候補も見る
             let candidates = result.transcriptions.map(\.formattedString)
             let hit: Bool = lock.withLock {
-                guard !matched, AnswerMatcher.matches(candidates, keys: target) else { return false }
-                matched = true
+                guard !self.matched, AnswerMatcher.matches(candidates, keys: self.target) else { return false }
+                self.matched = true
                 return true
             }
             if hit { Task { @MainActor [onMatch] in onMatch?(prompt) } }
