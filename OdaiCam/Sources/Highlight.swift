@@ -108,14 +108,14 @@ enum Highlight {
             let layer = AVMutableVideoCompositionLayerInstruction(assetTrack: piece.seen ? seenTrack : rawTrack)
             layer.setTransform(piece.seen ? seenScale : .identity, at: instruction.timeRange.start)
             instruction.layerInstructions = [layer]
-            // ワイプは右上に小さく重ねる（先頭の指示ほど上に描かれる）
+            // ワイプは左上に小さく重ねる（BeReal と同じ位置。先頭の指示ほど上に描かれる）
             if let wipeTrack, let frontSource, !wipeTrack.segments.isEmpty {
                 let width = renderSize.width * 0.3
                 let s = width / frontSource.size.width
                 let margin = renderSize.width * 0.03
                 let wipe = AVMutableVideoCompositionLayerInstruction(assetTrack: wipeTrack)
                 wipe.setTransform(CGAffineTransform(scaleX: s, y: s)
-                    .concatenating(CGAffineTransform(translationX: renderSize.width - width - margin, y: margin)),
+                    .concatenating(CGAffineTransform(translationX: margin, y: margin)),
                                   at: instruction.timeRange.start)
                 instruction.layerInstructions = [wipe, layer]
             }
@@ -125,7 +125,15 @@ enum Highlight {
         videoComposition.renderSize = renderSize
         videoComposition.frameDuration = CMTime(value: 1, timescale: 30)
         videoComposition.instructions = instructions
-        videoComposition.animationTool = await overlayTool(size: renderSize, pieces: pieces)
+        // ワイプの枠（左上）。合成の座標は左上が原点、重ねる層は左下が原点
+        var wipeFrame: CGRect?
+        if let frontSource, let wipeTrack, !wipeTrack.segments.isEmpty {
+            let width = renderSize.width * 0.3
+            let height = frontSource.size.height * width / frontSource.size.width
+            let margin = renderSize.width * 0.03
+            wipeFrame = CGRect(x: margin, y: renderSize.height - margin - height, width: width, height: height)
+        }
+        videoComposition.animationTool = await overlayTool(size: renderSize, pieces: pieces, wipe: wipeFrame)
 
         // 見ていた画面の場面がひとつもなければ、空のトラックを外す
         if seenTrack.segments.isEmpty { composition.removeTrack(seenTrack) }
@@ -146,22 +154,42 @@ enum Highlight {
 
     /// 場面ごとに、その区間だけ見える帯を重ねる
     @MainActor
-    private static func overlayTool(size: CGSize, pieces: [Piece]) -> AVVideoCompositionCoreAnimationTool {
+    private static func overlayTool(size: CGSize, pieces: [Piece], wipe: CGRect?) -> AVVideoCompositionCoreAnimationTool {
         let parent = CALayer()
         parent.frame = CGRect(origin: .zero, size: size)
         let video = CALayer()
         video.frame = parent.frame
         parent.addSublayer(video)
 
+        if let wipe {
+            let border = CALayer()
+            border.frame = wipe
+            border.borderColor = UIColor.white.cgColor
+            border.borderWidth = max(4, size.width * 0.006)
+            border.cornerRadius = 0
+            parent.addSublayer(border)
+        }
+        // 右下に小さくアプリ名（共有されたとき用）
+        let mark = CATextLayer()
+        mark.frame = CGRect(x: size.width * 0.55, y: size.height * 0.015, width: size.width * 0.42, height: size.height * 0.035)
+        mark.string = "お題カメラ"
+        mark.font = UIFont.systemFont(ofSize: 10, weight: .heavy)
+        mark.fontSize = size.height * 0.024
+        mark.foregroundColor = UIColor.white.withAlphaComponent(0.85).cgColor
+        mark.alignmentMode = .right
+        mark.contentsScale = 2
+        parent.addSublayer(mark)
+
         let bandHeight = size.height * 0.1
         for piece in pieces {
             let band = CATextLayer()
             // この座標は左下が原点。下の方に帯を置く
             band.frame = CGRect(x: 0, y: size.height * 0.06, width: size.width, height: bandHeight)
+            // アプリの色にそろえる（見えていた画面＝藍、本当の演技＝ピンク）
             band.backgroundColor = (piece.seen
-                ? UIColor(white: 0.1, alpha: 0.85)
-                : UIColor(red: 1, green: 0.92, blue: 0.5, alpha: 0.92)).cgColor
-            band.foregroundColor = (piece.seen ? UIColor.white : UIColor.black).cgColor
+                ? UIColor(red: 0.106, green: 0.063, blue: 0.208, alpha: 0.88)
+                : UIColor(red: 1, green: 0.31, blue: 0.48, alpha: 0.92)).cgColor
+            band.foregroundColor = UIColor.white.cgColor
             band.font = UIFont.systemFont(ofSize: 10, weight: .heavy)
             band.fontSize = bandHeight * 0.45
             band.alignmentMode = .center

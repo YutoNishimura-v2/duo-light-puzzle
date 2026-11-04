@@ -39,6 +39,11 @@ final class Game {
     private(set) var remaining = 0.0
     /// 直前の答え（当てる人に一瞬だけ見せる）
     private(set) var lastAnswer: (prompt: String, outcome: Outcome)?
+    /// 正解・パスで画面全体を一瞬光らせる
+    private(set) var lastAnswerAt: Date?
+    /// 自己ベストを更新したか（結果で紙吹雪）
+    private(set) var isNewBest = false
+    var best: Int { UserDefaults.standard.integer(forKey: "bestScore") }
     private(set) var highlightURL: URL?
     private(set) var highlightError: String?
     private(set) var building = false
@@ -81,6 +86,8 @@ final class Game {
         cheats = 0
         lastCheat = nil
         lastAnswer = nil
+        lastAnswerAt = nil
+        isNewBest = false
         highlightURL = nil
         highlightError = nil
         recordingStart = nil
@@ -90,6 +97,7 @@ final class Game {
             for n in stride(from: 3, through: 1, by: -1) {
                 phase = .countdown(n)
                 tick.impactOccurred()
+                Sound.tick()
                 try? await Task.sleep(for: .seconds(1))
             }
             phase = .playing
@@ -120,6 +128,7 @@ final class Game {
         cheats += 1
         lastCheat = Date()
         answerFeedback.notificationOccurred(.error)
+        Sound.buzzer()
     }
 
     func updateHeard(_ text: String) {
@@ -132,7 +141,9 @@ final class Game {
         turn.outcome = outcome
         turns.append(turn)
         lastAnswer = (turn.prompt, outcome)
+        lastAnswerAt = Date()
         answerFeedback.notificationOccurred(outcome == .correct ? .success : .warning)
+        if outcome == .correct { Sound.correct() } else { Sound.pass() }
         nextPrompt()
     }
 
@@ -198,8 +209,13 @@ final class Game {
             }
             turns.append(last)
         }
+        if score > best {
+            UserDefaults.standard.set(score, forKey: "bestScore")
+            isNewBest = score > 0
+        }
         phase = .results
         answerFeedback.notificationOccurred(.success)
+        Sound.finish()
         onPrompt?(nil)
         onEffect?(nil, 0)
         onWatch?(false)
