@@ -18,6 +18,9 @@ struct GuesserView: View {
     @State private var game = Game()
     @State private var camera = Camera()
     @State private var listener = Listener()
+    @State private var effects = EffectEngine()
+    /// しばりをかけた画面（当てる人はプレイ中これだけを見る）
+    @State private var seenFrame: CGImage?
     @State private var voiceReady = false
     @State private var cameraReady = false
     @State private var cameraDenied = false
@@ -29,6 +32,13 @@ struct GuesserView: View {
         ZStack {
             CameraPreview(camera: camera, ready: cameraReady).ignoresSafeArea()
             Color.black.opacity(game.phase == .playing ? 0 : 0.7).ignoresSafeArea()
+            // プレビューは下に残したまま（外側の画面の表示は撮影画面があることが前提）、しばった画面で覆う
+            if game.phase == .playing, game.current?.effect != nil {
+                Color.black.ignoresSafeArea()
+                if let seenFrame {
+                    Image(decorative: seenFrame, scale: 1).resizable().scaledToFit().ignoresSafeArea()
+                }
+            }
             VStack(spacing: 14) {
                 switch game.phase {
                 case .menu: menu
@@ -79,6 +89,19 @@ struct GuesserView: View {
                 }
             }
             .disabled(!voiceReady)
+            Toggle(isOn: $game.effectsOn) {
+                VStack(alignment: .leading) {
+                    Text("見え方しばり")
+                    Text("当てる人は本人を見ずに、棒人間や影絵になった画面だけで当てる").font(.caption).foregroundStyle(.secondary)
+                }
+            }
+            if game.effectsOn {
+                Picker("しばり", selection: $game.fixedEffect) {
+                    Text("おまかせ").tag(Effect?.none)
+                    ForEach(Effect.allCases) { Text($0.label).tag(Effect?.some($0)) }
+                }
+                .pickerStyle(.menu)
+            }
             Button("お題帳を作る（内輪ネタ）", systemImage: "square.and.pencil") { editingDeck = true }
             Button {
                 game.startRound()
@@ -114,6 +137,12 @@ struct GuesserView: View {
             }
             .padding(.horizontal, 12).padding(.vertical, 6)
             .background(.black.opacity(0.45), in: Capsule())
+            if let effect = game.current?.effect {
+                Text("しばり：\(effect.label)　顔を上げずに画面だけで当てよう")
+                    .font(.callout.bold())
+                    .padding(.horizontal, 12).padding(.vertical, 6)
+                    .background(.black.opacity(0.45), in: Capsule())
+            }
             Spacer()
             if game.voiceJudge && voiceReady && !game.heard.isEmpty {
                 Text("🎤 \(game.heard)")
@@ -201,7 +230,14 @@ struct GuesserView: View {
         game.stopRecording = { [camera] in camera.stopRecording() }
         camera.onReady = { cameraReady = true }
         camera.onRecordingStarted = { game.recordingStarted(at: $0) }
-        camera.onRecordingFinished = { game.recordingFinished($0) }
+        camera.onRecordingFinished = { game.recordingFinished($0, seen: $1) }
+        camera.onVideo = { [effects] in effects.process($0, time: $1) }
+        effects.onPixelBuffer = { [camera] in camera.appendEffect($0, time: $1) }
+        effects.onFrame = { seenFrame = $0 }
+        game.onEffect = { [effects] effect, start in
+            if effect == nil { seenFrame = nil }
+            effects.set(effect: effect, promptStart: start)
+        }
         camera.onAudio = { [listener] in listener.append($0) }
         listener.onHeard = { game.updateHeard($0) }
         listener.onMatch = { game.heardAnswer(for: $0) }

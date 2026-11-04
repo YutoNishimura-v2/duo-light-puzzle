@@ -24,6 +24,8 @@ final class Game {
     struct Turn: Identifiable {
         let id = UUID()
         let prompt: String
+        /// 当てる人に見せたしばり（なしなら nil）
+        let effect: Effect?
         /// 録画の頭からの秒数
         let start: TimeInterval
         var end: TimeInterval?
@@ -44,6 +46,10 @@ final class Game {
     var voiceJudge = true
     /// 聞き取った言葉（当てる人に小さく見せる）
     private(set) var heard = ""
+    /// 見え方しばり。当てる人はカメラ越しのしばられた画面だけで当てる
+    var effectsOn = true
+    /// nil ならおまかせ（お題ごとにくじ）
+    var fixedEffect: Effect?
 
     var current: Turn? { phase == .playing ? turns.last : nil }
     var score: Int { turns.filter { $0.outcome == .correct }.count }
@@ -52,6 +58,8 @@ final class Game {
     @ObservationIgnored var stopRecording: (() -> Void)?
     /// 新しいお題になった（聞き取りをやり直す）。nil でラウンド終わり
     @ObservationIgnored var onPrompt: ((String?) -> Void)?
+    /// いまのしばりが変わった（しばりの処理に渡す）。nil でしばりなし
+    @ObservationIgnored var onEffect: ((Effect?, TimeInterval) -> Void)?
     @ObservationIgnored private var recordingStart: TimeInterval?
     @ObservationIgnored private var queue: [String] = []
     @ObservationIgnored private var running: Task<Void, Never>?
@@ -112,12 +120,13 @@ final class Game {
     func backToMenu() {
         running?.cancel()
         onPrompt?(nil)
+        onEffect?(nil, 0)
         stopRecording?()
         phase = .menu
     }
 
     /// 録画ファイルができたら、ハイライト動画を作る
-    func recordingFinished(_ url: URL?) {
+    func recordingFinished(_ url: URL?, seen: URL?) {
         guard phase == .results else { return }
         guard let url else {
             highlightError = "録画できませんでした"
@@ -125,12 +134,12 @@ final class Game {
         }
         let clips = turns.compactMap { t -> Highlight.Clip? in
             guard let end = t.end, let outcome = t.outcome else { return nil }
-            return Highlight.Clip(prompt: t.prompt, outcome: outcome.rawValue, start: t.start, end: end)
+            return Highlight.Clip(prompt: t.prompt, outcome: outcome.rawValue, effect: t.effect?.label, start: t.start, end: end)
         }
         building = true
         Task {
             do {
-                highlightURL = try await Highlight.make(from: url, clips: clips)
+                highlightURL = try await Highlight.make(raw: url, seen: seen, clips: clips)
             } catch {
                 highlightError = "ハイライトを作れませんでした: \(error.localizedDescription)"
             }
@@ -145,9 +154,19 @@ final class Game {
     private func nextPrompt() {
         if queue.isEmpty { queue = deck.prompts.shuffled() }
         let prompt = queue.removeFirst()
-        turns.append(Turn(prompt: prompt, start: now))
+        let effect = nextEffect()
+        turns.append(Turn(prompt: prompt, effect: effect, start: now))
+        onEffect?(effect, ProcessInfo.processInfo.systemUptime)
         heard = ""
         if voiceJudge { onPrompt?(prompt) }
+    }
+
+    /// おまかせなら、直前と同じにならないようにくじで選ぶ
+    private func nextEffect() -> Effect? {
+        guard effectsOn else { return nil }
+        if let fixedEffect { return fixedEffect }
+        let last = turns.last?.effect
+        return Effect.allCases.filter { $0 != last }.randomElement()
     }
 
     private func finishRound() {
@@ -162,6 +181,7 @@ final class Game {
         phase = .results
         answerFeedback.notificationOccurred(.success)
         onPrompt?(nil)
+        onEffect?(nil, 0)
         stopRecording?()
     }
 }
