@@ -50,9 +50,16 @@ final class Game {
     var effectsOn = true
     /// nil ならおまかせ（お題ごとにくじ）
     var fixedEffect: Effect?
+    /// 内側のカメラで当てる人を見張る（顔を上げて本人を見たら減点）
+    var cheatGuard = true
+    private(set) var cheats = 0
+    /// 直前にカンニングした時刻（画面に「カンニング！」を一瞬出す）
+    private(set) var lastCheat: Date?
 
     var current: Turn? { phase == .playing ? turns.last : nil }
-    var score: Int { turns.filter { $0.outcome == .correct }.count }
+    var correct: Int { turns.filter { $0.outcome == .correct }.count }
+    /// 正解の数からカンニングの数を引く
+    var score: Int { max(0, correct - cheats) }
 
     @ObservationIgnored var startRecording: (() -> Void)?
     @ObservationIgnored var stopRecording: (() -> Void)?
@@ -60,6 +67,8 @@ final class Game {
     @ObservationIgnored var onPrompt: ((String?) -> Void)?
     /// いまのしばりが変わった（しばりの処理に渡す）。nil でしばりなし
     @ObservationIgnored var onEffect: ((Effect?, TimeInterval) -> Void)?
+    /// 見張りを始める・止める
+    @ObservationIgnored var onWatch: ((Bool) -> Void)?
     @ObservationIgnored private var recordingStart: TimeInterval?
     @ObservationIgnored private var queue: [String] = []
     @ObservationIgnored private var running: Task<Void, Never>?
@@ -69,6 +78,8 @@ final class Game {
     func startRound() {
         guard phase == .menu || phase == .results else { return }
         turns = []
+        cheats = 0
+        lastCheat = nil
         lastAnswer = nil
         highlightURL = nil
         highlightError = nil
@@ -82,6 +93,7 @@ final class Game {
                 try? await Task.sleep(for: .seconds(1))
             }
             phase = .playing
+            if cheatGuard { onWatch?(true) }
             nextPrompt()
             let end = ProcessInfo.processInfo.systemUptime + roundLength
             while !Task.isCancelled {
@@ -103,6 +115,13 @@ final class Game {
         answer(.correct)
     }
 
+    func cheated() {
+        guard phase == .playing else { return }
+        cheats += 1
+        lastCheat = Date()
+        answerFeedback.notificationOccurred(.error)
+    }
+
     func updateHeard(_ text: String) {
         if phase == .playing { heard = text }
     }
@@ -121,14 +140,15 @@ final class Game {
         running?.cancel()
         onPrompt?(nil)
         onEffect?(nil, 0)
+        onWatch?(false)
         stopRecording?()
         phase = .menu
     }
 
     /// 録画ファイルができたら、ハイライト動画を作る
-    func recordingFinished(_ url: URL?, seen: URL?) {
+    func recordingFinished(_ recordings: Camera.Recordings) {
         guard phase == .results else { return }
-        guard let url else {
+        guard let url = recordings.raw else {
             highlightError = "録画できませんでした"
             return
         }
@@ -139,7 +159,7 @@ final class Game {
         building = true
         Task {
             do {
-                highlightURL = try await Highlight.make(raw: url, seen: seen, clips: clips)
+                highlightURL = try await Highlight.make(raw: url, seen: recordings.seen, front: recordings.front, clips: clips)
             } catch {
                 highlightError = "ハイライトを作れませんでした: \(error.localizedDescription)"
             }
@@ -182,6 +202,7 @@ final class Game {
         answerFeedback.notificationOccurred(.success)
         onPrompt?(nil)
         onEffect?(nil, 0)
+        onWatch?(false)
         stopRecording?()
     }
 }

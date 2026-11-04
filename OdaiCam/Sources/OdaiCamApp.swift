@@ -19,6 +19,9 @@ struct GuesserView: View {
     @State private var camera = Camera()
     @State private var listener = Listener()
     @State private var effects = EffectEngine()
+    @State private var watch = CheatWatch()
+    /// 内側のカメラが動いているか（カンニングの見張りとワイプに要る）
+    @State private var innerReady = false
     /// しばりをかけた画面（当てる人はプレイ中これだけを見る）
     @State private var seenFrame: CGImage?
     @State private var voiceReady = false
@@ -102,6 +105,14 @@ struct GuesserView: View {
                 }
                 .pickerStyle(.menu)
             }
+            Toggle(isOn: $game.cheatGuard) {
+                VStack(alignment: .leading) {
+                    Text("カンニング禁止")
+                    Text(innerReady ? "内側のカメラで当てる人の顔を見て、顔を上げて本人を見たら −1" : "この端末では使えません（背面と内側のカメラを同時に使えない）")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
+            }
+            .disabled(!innerReady)
             Button("お題帳を作る（内輪ネタ）", systemImage: "square.and.pencil") { editingDeck = true }
             Button {
                 game.startRound()
@@ -144,6 +155,15 @@ struct GuesserView: View {
                     .background(.black.opacity(0.45), in: Capsule())
             }
             Spacer()
+            if let cheat = game.lastCheat {
+                TimelineView(.periodic(from: cheat, by: 0.2)) { context in
+                    if context.date.timeIntervalSince(cheat) < 1.5 {
+                        Text("カンニング！ −1").font(.system(size: 40, weight: .heavy)).foregroundStyle(.white)
+                            .padding(.horizontal, 20).padding(.vertical, 8)
+                            .background(.red, in: Capsule())
+                    }
+                }
+            }
             if game.voiceJudge && voiceReady && !game.heard.isEmpty {
                 Text("🎤 \(game.heard)")
                     .font(.callout).lineLimit(1)
@@ -173,7 +193,10 @@ struct GuesserView: View {
 
     private var results: some View {
         VStack(spacing: 12) {
-            Text("○ \(game.score) 問").font(.largeTitle.bold())
+            Text("\(game.score) 点").font(.largeTitle.bold())
+            if game.cheats > 0 {
+                Text("正解 \(game.correct)　カンニング −\(game.cheats)").font(.headline).foregroundStyle(.secondary)
+            }
             ScrollView {
                 VStack(alignment: .leading, spacing: 4) {
                     ForEach(game.turns) { t in
@@ -228,9 +251,16 @@ struct GuesserView: View {
     private func startCamera() async {
         game.startRecording = { [camera] in camera.startRecording(rotationAngle: CameraPreview.PreviewView.latestCaptureAngle) }
         game.stopRecording = { [camera] in camera.stopRecording() }
-        camera.onReady = { cameraReady = true }
+        camera.onReady = { inner in
+            cameraReady = true
+            innerReady = inner
+            if !inner { game.cheatGuard = false }
+        }
+        camera.onFront = { [watch] in watch.process($0) }
+        watch.onCheat = { game.cheated() }
+        game.onWatch = { [watch] in watch.setActive($0) }
         camera.onRecordingStarted = { game.recordingStarted(at: $0) }
-        camera.onRecordingFinished = { game.recordingFinished($0, seen: $1) }
+        camera.onRecordingFinished = { game.recordingFinished($0) }
         camera.onVideo = { [effects] in effects.process($0, time: $1) }
         effects.onPixelBuffer = { [camera] in camera.appendEffect($0, time: $1) }
         effects.onFrame = { seenFrame = $0 }

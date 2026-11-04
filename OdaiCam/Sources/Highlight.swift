@@ -40,11 +40,14 @@ enum Highlight {
         return (Source(track: video, size: size, duration: duration), audio)
     }
 
-    static func make(raw: URL, seen: URL?, clips: [Clip]) async throws -> URL {
+    static func make(raw: URL, seen: URL?, front: URL?, clips: [Clip]) async throws -> URL {
         guard let rawLoaded = try await load(raw) else { throw failure("映像がありません") }
         let (rawSource, audioTrack) = rawLoaded
         var seenSource: Source?
         if let seen { seenSource = try await load(seen)?.0 }
+        // 当てる人の顔（ワイプ）
+        var frontSource: Source?
+        if let front { frontSource = try await load(front)?.0 }
 
         let composition = AVMutableComposition()
         guard let rawTrack = composition.addMutableTrack(withMediaType: .video, preferredTrackID: kCMPersistentTrackID_Invalid),
@@ -52,9 +55,18 @@ enum Highlight {
         else { throw failure("合成できません") }
         let audio = audioTrack == nil ? nil
             : composition.addMutableTrack(withMediaType: .audio, preferredTrackID: kCMPersistentTrackID_Invalid)
-
+        let wipeTrack = frontSource == nil ? nil
+            : composition.addMutableTrack(withMediaType: .video, preferredTrackID: kCMPersistentTrackID_Invalid)
         func range(_ from: Double, _ to: Double) -> CMTimeRange {
             CMTimeRange(start: CMTime(seconds: from, preferredTimescale: 600), end: CMTime(seconds: to, preferredTimescale: 600))
+        }
+
+        /// 同じ場面の当てる人の顔を、ワイプの位置に入れる
+        func addWipe(_ from: Double, _ to: Double, at: CMTime) {
+            guard let frontSource, let wipeTrack, to <= frontSource.duration + 0.5 else { return }
+            let end = min(to, frontSource.duration)
+            guard end - from > 0.3 else { return }
+            try? wipeTrack.insertTimeRange(range(from, end), of: frontSource.track, at: at)
         }
 
         var pieces: [Piece] = []
@@ -70,6 +82,7 @@ enum Highlight {
                     let at = CMTime(seconds: cursor, preferredTimescale: 600)
                     try seenTrack.insertTimeRange(range(from, seenTo), of: seenSource.track, at: at)
                     if let audioTrack, let audio { try audio.insertTimeRange(range(from, seenTo), of: audioTrack, at: at) }
+                    addWipe(from, seenTo, at: at)
                     pieces.append(Piece(caption: "見えていたのは…（\(effect)）", at: cursor, length: seenTo - from, seen: true))
                     cursor += seenTo - from
                 }
@@ -78,6 +91,7 @@ enum Highlight {
             let at = CMTime(seconds: cursor, preferredTimescale: 600)
             try rawTrack.insertTimeRange(range(from, to), of: rawSource.track, at: at)
             if let audioTrack, let audio { try audio.insertTimeRange(range(from, to), of: audioTrack, at: at) }
+            addWipe(from, to, at: at)
             pieces.append(Piece(caption: "お題：\(clip.prompt)　\(clip.outcome)", at: cursor, length: to - from, seen: false))
             cursor += to - from
         }
@@ -94,6 +108,17 @@ enum Highlight {
             let layer = AVMutableVideoCompositionLayerInstruction(assetTrack: piece.seen ? seenTrack : rawTrack)
             layer.setTransform(piece.seen ? seenScale : .identity, at: instruction.timeRange.start)
             instruction.layerInstructions = [layer]
+            // ワイプは右上に小さく重ねる（先頭の指示ほど上に描かれる）
+            if let wipeTrack, let frontSource, !wipeTrack.segments.isEmpty {
+                let width = renderSize.width * 0.3
+                let s = width / frontSource.size.width
+                let margin = renderSize.width * 0.03
+                let wipe = AVMutableVideoCompositionLayerInstruction(assetTrack: wipeTrack)
+                wipe.setTransform(CGAffineTransform(scaleX: s, y: s)
+                    .concatenating(CGAffineTransform(translationX: renderSize.width - width - margin, y: margin)),
+                                  at: instruction.timeRange.start)
+                instruction.layerInstructions = [wipe, layer]
+            }
             return instruction
         }
         let videoComposition = AVMutableVideoComposition()
@@ -104,6 +129,7 @@ enum Highlight {
 
         // 見ていた画面の場面がひとつもなければ、空のトラックを外す
         if seenTrack.segments.isEmpty { composition.removeTrack(seenTrack) }
+        if let wipeTrack, wipeTrack.segments.isEmpty { composition.removeTrack(wipeTrack) }
 
         let out = FileManager.default.temporaryDirectory.appendingPathComponent("highlight-\(UUID().uuidString).mp4")
         guard let exporter = AVAssetExportSession(asset: composition, presetName: AVAssetExportPresetHighestQuality) else {

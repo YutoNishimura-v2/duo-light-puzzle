@@ -4,15 +4,22 @@ import SwiftUI
 import UIKit
 
 /// 背面カメラでラウンドを丸ごと録画する。Duo を開くと背面カメラは外側の画面と同じ向き（演じる人の方）を向く。
+/// できる端末では、内側のカメラ（当てる人の顔）も同時に撮る（カンニングの見張りとワイプ用）。
 ///
 /// 録画は AVAssetWriter で自前で書く。マイクの音声を録画と音声認識の両方に流すため
 /// （ムービー出力を使うと、音声を横から取り出せない）。セッションの操作は専用のキューで行う
 final class Camera: NSObject, @unchecked Sendable {
-    let session = AVCaptureSession()
+    let session: AVCaptureSession
+    /// 背面と内側のカメラを同時に使うか（MultiCam に対応し、その組み合わせが許されているとき）
+    let usesInnerCamera: Bool
     private let videoOutput = AVCaptureVideoDataOutput()
+    private let frontOutput = AVCaptureVideoDataOutput()
     private let audioOutput = AVCaptureAudioDataOutput()
     private let queue = DispatchQueue(label: "camera")
     private var device: AVCaptureDevice?
+    private var innerDevice: AVCaptureDevice?
+    private var backPort: AVCaptureInput.Port?
+    private var innerRotation: AVCaptureDevice.RotationCoordinator?
 
     private var writer: AVAssetWriter?
     private var videoInput: AVAssetWriterInput?
@@ -21,20 +28,53 @@ final class Camera: NSObject, @unchecked Sendable {
     private var effectWriter: AVAssetWriter?
     private var effectAdaptor: AVAssetWriterInputPixelBufferAdaptor?
     private var effectStarted = false
+    /// 内側のカメラ（当てる人の顔）の録画。生の録画と同じ時刻で書く
+    private var frontWriter: AVAssetWriter?
+    private var frontInput: AVAssetWriterInput?
+    private var frontStarted = false
     private var writing = false
     /// 生の録画の最初のフレームの時刻。どの録画もここから書き始める
     private var startTime: CMTime?
 
-    /// セッションが動き始めたら呼ぶ（main で呼ぶ）
-    var onReady: (@MainActor () -> Void)?
+    /// セッションが動き始めたら呼ぶ（main で呼ぶ）。内側のカメラが動いているか
+    var onReady: (@MainActor (Bool) -> Void)?
     /// 録画の最初のフレームの時刻（systemUptime と同じ時計）を知らせる（main で呼ぶ）
     var onRecordingStarted: (@MainActor (TimeInterval) -> Void)?
-    /// 録画ファイルができた（main で呼ぶ）。生の録画と、しばりをかけた画面の録画
-    var onRecordingFinished: (@MainActor (URL?, URL?) -> Void)?
+    /// 録画ファイルができた（main で呼ぶ）。生・しばりをかけた画面・内側のカメラの順
+    var onRecordingFinished: (@MainActor (Recordings) -> Void)?
     /// 背面カメラのフレーム（カメラのキューで呼ぶ）。しばりの処理に流す
     var onVideo: ((CVPixelBuffer, CMTime) -> Void)?
+    /// 内側のカメラのフレーム（カメラのキューで呼ぶ）。カンニングの見張りに流す
+    var onFront: ((CVPixelBuffer) -> Void)?
     /// マイクの音声（カメラのキューで呼ぶ）。音声認識に流す
     var onAudio: ((CMSampleBuffer) -> Void)?
+
+    struct Recordings: Sendable {
+        var raw: URL?
+        var seen: URL?
+        var front: URL?
+    }
+
+    override init() {
+        usesInnerCamera = Self.canUseInnerCamera
+        session = usesInnerCamera ? AVCaptureMultiCamSession() : AVCaptureSession()
+        super.init()
+    }
+
+    private static var innerCamera: AVCaptureDevice? {
+        AVCaptureDevice.DiscoverySession(deviceTypes: [.builtInInnerUltraWideCamera], mediaType: .video, position: .unspecified)
+            .devices.first
+    }
+
+    private static var canUseInnerCamera: Bool {
+        guard AVCaptureMultiCamSession.isMultiCamSupported else { return false }
+        let discovery = AVCaptureDevice.DiscoverySession(
+            deviceTypes: [.builtInWideAngleCamera, .builtInInnerUltraWideCamera], mediaType: .video, position: .unspecified)
+        return discovery.supportedMultiCamDeviceSets.contains { set in
+            set.contains { $0.deviceType == .builtInInnerUltraWideCamera }
+                && set.contains { $0.deviceType == .builtInWideAngleCamera && $0.position == .back }
+        }
+    }
 
     func start() {
         queue.async { [self] in
@@ -42,26 +82,111 @@ final class Camera: NSObject, @unchecked Sendable {
                 if !session.isRunning { session.startRunning() }
                 return
             }
-            session.beginConfiguration()
-            session.sessionPreset = .high
-            if let device = AVCaptureDevice.default(.builtInWideAngleCamera, for: .video, position: .back),
-               let input = try? AVCaptureDeviceInput(device: device), session.canAddInput(input) {
-                session.addInput(input)
-                self.device = device
-            }
-            if let mic = AVCaptureDevice.default(for: .audio), let input = try? AVCaptureDeviceInput(device: mic),
-               session.canAddInput(input) {
-                session.addInput(input)
-            }
             videoOutput.alwaysDiscardsLateVideoFrames = false
             videoOutput.setSampleBufferDelegate(self, queue: queue)
+            frontOutput.alwaysDiscardsLateVideoFrames = true
+            frontOutput.setSampleBufferDelegate(self, queue: queue)
             audioOutput.setSampleBufferDelegate(self, queue: queue)
-            if session.canAddOutput(videoOutput) { session.addOutput(videoOutput) }
-            if session.canAddOutput(audioOutput) { session.addOutput(audioOutput) }
-            setRotation(90)
-            session.commitConfiguration()
+            var inner = false
+            if usesInnerCamera {
+                inner = configureMultiCam()
+            } else {
+                configureSingle()
+            }
             session.startRunning()
-            Task { @MainActor [onReady] in onReady?() }
+            Task { @MainActor [onReady] in onReady?(inner) }
+        }
+    }
+
+    private func configureSingle() {
+        session.beginConfiguration()
+        session.sessionPreset = .high
+        if let device = AVCaptureDevice.default(.builtInWideAngleCamera, for: .video, position: .back),
+           let input = try? AVCaptureDeviceInput(device: device), session.canAddInput(input) {
+            session.addInput(input)
+            self.device = device
+        }
+        if let mic = AVCaptureDevice.default(for: .audio), let input = try? AVCaptureDeviceInput(device: mic),
+           session.canAddInput(input) {
+            session.addInput(input)
+        }
+        if session.canAddOutput(videoOutput) { session.addOutput(videoOutput) }
+        if session.canAddOutput(audioOutput) { session.addOutput(audioOutput) }
+        setRotation(90)
+        session.commitConfiguration()
+    }
+
+    /// 背面・内側・マイクを、つなぐ先を明示して組む。内側をつなげたら true
+    private func configureMultiCam() -> Bool {
+        guard let ms = session as? AVCaptureMultiCamSession,
+              let back = AVCaptureDevice.default(.builtInWideAngleCamera, for: .video, position: .back) else { return false }
+        ms.beginConfiguration()
+        defer { ms.commitConfiguration() }
+
+        Self.pickMultiCamFormat(back, minWidth: 1280)
+        if let input = try? AVCaptureDeviceInput(device: back), ms.canAddInput(input) {
+            ms.addInputWithNoConnections(input)
+            device = back
+            backPort = input.ports(for: .video, sourceDeviceType: back.deviceType, sourceDevicePosition: back.position).first
+            if ms.canAddOutput(videoOutput) { ms.addOutputWithNoConnections(videoOutput) }
+            if let backPort {
+                let c = AVCaptureConnection(inputPorts: [backPort], output: videoOutput)
+                if ms.canAddConnection(c) { ms.addConnection(c) }
+            }
+            setRotation(90)
+        }
+
+        var innerOK = false
+        if let inner = Self.innerCamera {
+            Self.pickMultiCamFormat(inner, minWidth: 640)
+            if let input = try? AVCaptureDeviceInput(device: inner), ms.canAddInput(input) {
+                ms.addInputWithNoConnections(input)
+                if ms.canAddOutput(frontOutput) { ms.addOutputWithNoConnections(frontOutput) }
+                if let port = input.ports(for: .video, sourceDeviceType: inner.deviceType, sourceDevicePosition: inner.position).first {
+                    let c = AVCaptureConnection(inputPorts: [port], output: frontOutput)
+                    // 自撮りと同じ見え方にする
+                    if c.isVideoMirroringSupported {
+                        c.automaticallyAdjustsVideoMirroring = false
+                        c.isVideoMirrored = true
+                    }
+                    if ms.canAddConnection(c) {
+                        ms.addConnection(c)
+                        innerDevice = inner
+                        innerOK = true
+                    }
+                }
+            }
+        }
+
+        if let mic = AVCaptureDevice.default(for: .audio), let input = try? AVCaptureDeviceInput(device: mic), ms.canAddInput(input) {
+            ms.addInputWithNoConnections(input)
+            if ms.canAddOutput(audioOutput) { ms.addOutputWithNoConnections(audioOutput) }
+            let ports = input.ports(for: .audio, sourceDeviceType: mic.deviceType, sourceDevicePosition: .unspecified)
+            if !ports.isEmpty {
+                let c = AVCaptureConnection(inputPorts: ports, output: audioOutput)
+                if ms.canAddConnection(c) { ms.addConnection(c) }
+            }
+        }
+        return innerOK && ms.hardwareCost <= 1
+    }
+
+    /// 同時に使える形式のうち、minWidth 以上でいちばん小さいもの（負荷を抑える）
+    private static func pickMultiCamFormat(_ device: AVCaptureDevice, minWidth: Int32) {
+        let formats = device.formats
+            .filter { $0.isMultiCamSupported && CMVideoFormatDescriptionGetDimensions($0.formatDescription).width >= minWidth }
+            .sorted { CMVideoFormatDescriptionGetDimensions($0.formatDescription).width < CMVideoFormatDescriptionGetDimensions($1.formatDescription).width }
+        guard let format = formats.first, (try? device.lockForConfiguration()) != nil else { return }
+        device.activeFormat = format
+        device.unlockForConfiguration()
+    }
+
+    /// MultiCam ではプレビューも自分でつなぐ（main から呼ぶ）
+    func connectPreview(_ layer: AVCaptureVideoPreviewLayer) {
+        guard usesInnerCamera else { return }
+        queue.async { [self] in
+            guard let backPort, layer.connection == nil else { return }
+            let c = AVCaptureConnection(inputPort: backPort, videoPreviewLayer: layer)
+            if session.canAddConnection(c) { session.addConnection(c) }
         }
     }
 
@@ -70,11 +195,16 @@ final class Camera: NSObject, @unchecked Sendable {
     }
 
     func startRecording(rotationAngle: CGFloat) {
+        let innerAngle: CGFloat? = {
+            guard let innerDevice else { return nil }
+            if innerRotation == nil { innerRotation = AVCaptureDevice.RotationCoordinator(device: innerDevice, previewLayer: nil) }
+            return innerRotation?.videoRotationAngleForHorizonLevelCapture
+        }()
         queue.async { [self] in
             guard !writing else { return }
             let url = FileManager.default.temporaryDirectory.appendingPathComponent("round-\(UUID().uuidString).mov")
             guard let writer = try? AVAssetWriter(outputURL: url, fileType: .mov) else {
-                finished(nil)
+                finished(Recordings())
                 return
             }
             // フレームは出力の接続で回してから届くので、録画にも向きの変換は要らない
@@ -93,7 +223,7 @@ final class Camera: NSObject, @unchecked Sendable {
                 }
             }
             guard writer.startWriting() else {
-                finished(nil)
+                finished(Recordings())
                 return
             }
             self.writer = writer
@@ -103,6 +233,15 @@ final class Camera: NSObject, @unchecked Sendable {
             effectStarted = false
             effectWriter = nil
             effectAdaptor = nil
+            frontStarted = false
+            frontWriter = nil
+            frontInput = nil
+            if innerDevice != nil {
+                if let innerAngle, let c = frontOutput.connection(with: .video), c.isVideoRotationAngleSupported(innerAngle) {
+                    c.videoRotationAngle = innerAngle
+                }
+                makeFrontWriter()
+            }
             writing = true
         }
     }
@@ -139,6 +278,19 @@ final class Camera: NSObject, @unchecked Sendable {
         effectAdaptor = AVAssetWriterInputPixelBufferAdaptor(assetWriterInput: input, sourcePixelBufferAttributes: nil)
     }
 
+    private func makeFrontWriter() {
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent("front-\(UUID().uuidString).mov")
+        guard let w = try? AVAssetWriter(outputURL: url, fileType: .mov) else { return }
+        let input = AVAssetWriterInput(mediaType: .video,
+                                       outputSettings: frontOutput.recommendedVideoSettingsForAssetWriter(writingTo: .mov))
+        input.expectsMediaDataInRealTime = true
+        guard w.canAdd(input) else { return }
+        w.add(input)
+        guard w.startWriting() else { return }
+        frontWriter = w
+        frontInput = input
+    }
+
     /// カメラのキューで呼ぶ
     private func setRotation(_ angle: CGFloat) {
         if let c = videoOutput.connection(with: .video), c.isVideoRotationAngleSupported(angle) {
@@ -153,29 +305,40 @@ final class Camera: NSObject, @unchecked Sendable {
             videoInput?.markAsFinished()
             audioInput?.markAsFinished()
             effectAdaptor?.assetWriterInput.markAsFinished()
+            frontInput?.markAsFinished()
             guard startTime != nil else {
                 writer.cancelWriting()
                 effectWriter?.cancelWriting()
-                finished(nil)
+                frontWriter?.cancelWriting()
+                finished(Recordings())
                 return
             }
-            let effectWriter = effectStarted ? self.effectWriter : nil
-            if !effectStarted { self.effectWriter?.cancelWriting() }
-            writer.finishWriting { [self] in
-                let raw = writer.status == .completed ? writer.outputURL : nil
-                guard let effectWriter else {
-                    finished(raw)
-                    return
-                }
-                effectWriter.finishWriting { [self] in
-                    finished(raw, effectWriter.status == .completed ? effectWriter.outputURL : nil)
+            let others: [(AVAssetWriter, WritableKeyPath<Recordings, URL?>)] =
+                [(effectStarted ? effectWriter : nil, \Recordings.seen), (frontStarted ? frontWriter : nil, \Recordings.front)]
+                .compactMap { w, key in w.map { ($0, key) } }
+            if !effectStarted { effectWriter?.cancelWriting() }
+            if !frontStarted { frontWriter?.cancelWriting() }
+            let group = DispatchGroup()
+            let lock = NSLock()
+            var result = Recordings()
+            group.enter()
+            writer.finishWriting {
+                lock.withLock { result.raw = writer.status == .completed ? writer.outputURL : nil }
+                group.leave()
+            }
+            for (w, key) in others {
+                group.enter()
+                w.finishWriting {
+                    lock.withLock { result[keyPath: key] = w.status == .completed ? w.outputURL : nil }
+                    group.leave()
                 }
             }
+            group.notify(queue: queue) { [self] in finished(result) }
         }
     }
 
-    private func finished(_ raw: URL?, _ seen: URL? = nil) {
-        Task { @MainActor [onRecordingFinished] in onRecordingFinished?(raw, seen) }
+    private func finished(_ recordings: Recordings) {
+        Task { @MainActor [onRecordingFinished] in onRecordingFinished?(recordings) }
     }
 
     var currentDevice: AVCaptureDevice? { device }
@@ -197,8 +360,18 @@ final class Camera: NSObject, @unchecked Sendable {
 
 extension Camera: AVCaptureVideoDataOutputSampleBufferDelegate, AVCaptureAudioDataOutputSampleBufferDelegate {
     func captureOutput(_ output: AVCaptureOutput, didOutput sampleBuffer: CMSampleBuffer, from connection: AVCaptureConnection) {
-        let isAudio = output === audioOutput
         let pts = CMSampleBufferGetPresentationTimeStamp(sampleBuffer)
+        if output === frontOutput {
+            if let pb = CMSampleBufferGetImageBuffer(sampleBuffer) { onFront?(pb) }
+            guard writing, let startTime, pts >= startTime, let frontWriter, let frontInput else { return }
+            if !frontStarted {
+                frontWriter.startSession(atSourceTime: startTime)
+                frontStarted = true
+            }
+            if frontInput.isReadyForMoreMediaData { frontInput.append(sampleBuffer) }
+            return
+        }
+        let isAudio = output === audioOutput
         if isAudio {
             onAudio?(sampleBuffer)
         } else if let pb = CMSampleBufferGetImageBuffer(sampleBuffer) {
@@ -229,13 +402,19 @@ struct CameraPreview: UIViewRepresentable {
 
     func makeUIView(context: Context) -> PreviewView {
         let view = PreviewView()
-        view.previewLayer.session = camera.session
+        if camera.usesInnerCamera {
+            view.previewLayer.setSessionWithNoConnection(camera.session)
+        } else {
+            view.previewLayer.session = camera.session
+        }
         view.previewLayer.videoGravity = .resizeAspectFill
         return view
     }
 
     func updateUIView(_ view: PreviewView, context: Context) {
-        if ready { view.attach(device: camera.currentDevice) }
+        guard ready else { return }
+        camera.connectPreview(view.previewLayer)
+        view.attach(device: camera.currentDevice)
     }
 
     final class PreviewView: UIView {
