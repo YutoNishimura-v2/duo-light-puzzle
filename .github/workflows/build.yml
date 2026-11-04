@@ -1,0 +1,83 @@
+name: build
+
+# 署名なしの IPA を作り、公開の ios-apps の Release に載せる（SideStore の配布元はそちら）。
+# ソースはこのリポジトリ（非公開）に置いたまま。IPA は公開になる。
+on:
+  push:
+    branches: [main]
+    paths:
+      - "App/**"
+      - "LightCore/**"
+      - ".github/workflows/build.yml"
+  workflow_dispatch:
+
+concurrency:
+  group: build
+  cancel-in-progress: false
+
+jobs:
+  ios:
+    runs-on: xcode-27
+    defaults:
+      run:
+        working-directory: App
+    env:
+      APP: LightPuzzle
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Toolchain
+        run: |
+          set -euo pipefail
+          sudo xcode-select -s /Applications/Xcode_27.1.app
+          sw_vers
+          xcodebuild -version
+          echo "iOS SDK: $(xcrun --sdk iphoneos --show-sdk-version)"
+          brew install xcodegen
+
+      - name: Generate Xcode project
+        run: xcodegen generate
+
+      - name: Build (unsigned)
+        run: |
+          set -euo pipefail
+          VERSION="0.1.$GITHUB_RUN_NUMBER"
+          xcodebuild build -quiet \
+            -project "$APP.xcodeproj" -scheme "$APP" \
+            -configuration Release -sdk iphoneos -destination 'generic/platform=iOS' \
+            -derivedDataPath build \
+            MARKETING_VERSION="$VERSION" CURRENT_PROJECT_VERSION="$GITHUB_RUN_NUMBER" \
+            CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY=""
+          echo "VERSION=$VERSION" >> "$GITHUB_ENV"
+
+      - name: Package IPA
+        run: |
+          set -euo pipefail
+          APP_DIR="build/Build/Products/Release-iphoneos/$APP.app"
+          PLIST="$APP_DIR/Info.plist"
+          plutil -p "$PLIST"
+          test "$(plutil -extract CFBundleShortVersionString raw "$PLIST")" = "$VERSION"
+          plutil -extract CFBundleIcons xml1 -o - "$PLIST" > /dev/null
+          # ステージの JSON が入っているか
+          find "$APP_DIR" -name 'stage*.json' | sort
+          test -n "$(find "$APP_DIR" -name 'stage01.json')"
+          rm -rf Payload && mkdir Payload && cp -R "$APP_DIR" Payload/
+          zip -qry "$APP.ipa" Payload
+          unzip -l "$APP.ipa" | tail -n 1
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: LightPuzzle-${{ env.VERSION }}
+          path: App/LightPuzzle.ipa
+
+      - name: Publish to ios-apps
+        env:
+          # ios-apps の Contents: write だけを持つ fine-grained トークン（本人が作って登録する）
+          GH_TOKEN: ${{ secrets.IOS_APPS_TOKEN }}
+        run: |
+          if [ -z "$GH_TOKEN" ]; then
+            echo "::warning::IOS_APPS_TOKEN is not set; the IPA is only in this run's artifacts."
+            exit 0
+          fi
+          gh release create "$APP-v$VERSION" "$APP.ipa" --repo YutoNishimura-v2/ios-apps \
+            --title "$APP $VERSION" --notes "Unsigned IPA (build ${GITHUB_SHA::7}). Install it with SideStore."

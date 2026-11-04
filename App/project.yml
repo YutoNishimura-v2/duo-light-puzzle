@@ -1,0 +1,49 @@
+name: LightPuzzle
+options:
+  bundleIdPrefix: io.github.yutonishimura-v2
+  # 開き角度の API（onHingeChange）は iOS 27.1 から
+  deploymentTarget:
+    iOS: "27.1"
+  createIntermediateGroups: true
+packages:
+  LightCore:
+    path: ../LightCore
+settings:
+  base:
+    MARKETING_VERSION: "0.1.0"
+    CURRENT_PROJECT_VERSION: "1"
+    SWIFT_VERSION: "5.0"
+    # 署名なしでビルドし、SideStore が無料 Apple ID で署名する
+    CODE_SIGN_STYLE: Manual
+    CODE_SIGN_IDENTITY: ""
+    DEVELOPMENT_TEAM: ""
+    CODE_SIGNING_ALLOWED: "NO"
+    CODE_SIGNING_REQUIRED: "NO"
+targets:
+  LightPuzzle:
+    type: application
+    platform: iOS
+    sources:
+      - Sources
+      - Resources
+    dependencies:
+      - package: LightCore
+    scheme: {}
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: io.github.yutonishimura-v2.lightpuzzle
+        PRODUCT_NAME: LightPuzzle
+        TARGETED_DEVICE_FAMILY: "1"
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+    info:
+      path: Info.plist
+      properties:
+        CFBundleDisplayName: 光の反射
+        CFBundleShortVersionString: $(MARKETING_VERSION)
+        CFBundleVersion: $(CURRENT_PROJECT_VERSION)
+        UILaunchScreen: {}
+        UIRequiresFullScreen: true
+        # Duo をノート PC のように置いた向き（折り目が横）で遊ぶ
+        UISupportedInterfaceOrientations:
+          - UIInterfaceOrientationPortrait
+        ITSAppUsesNonExemptEncryption: false
