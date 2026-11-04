@@ -280,8 +280,6 @@ enum MultiCamProbe {
         let wanted = discovery.supportedMultiCamDeviceSets.contains { set in
             set.contains { $0.deviceType == .builtInInnerUltraWideCamera } && set.contains { $0.position == .back }
         }
-        return "MultiCam: \(supported ? "対応" : "非対応")／背面＋内側: \(wanted ? "可" : "不可")
-" + sets.joined(separator: "
-")
+        return "MultiCam: \(supported ? "対応" : "非対応")／背面＋内側: \(wanted ? "可" : "不可")\n" + sets.joined(separator: "\n")
     }()
 }
