@@ -1,0 +1,22 @@
+name: test
+
+# 画面に依存しない LightCore のテストは Linux で回す（非公開リポジトリの macOS の無料枠を節約）
+on:
+  push:
+    branches: [main]
+    paths:
+      - "LightCore/**"
+      - ".github/workflows/test.yml"
+  workflow_dispatch:
+
+jobs:
+  lightcore:
+    runs-on: ubuntu-latest
+    container: swift:6.2
+    defaults:
+      run:
+        working-directory: LightCore
+    steps:
+      - uses: actions/checkout@v5
+      - run: swift --version
+      - run: swift test
