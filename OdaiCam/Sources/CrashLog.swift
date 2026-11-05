@@ -13,8 +13,8 @@ enum CrashLog {
 
     /// 起動直後に呼ぶ。前回が落ちて終わっていたら、その足跡を報告に回す
     static func start() {
-        if defaults.bool(forKey: runningKey), defaults.string(forKey: reportKey) == nil {
-            let last = defaults.stringArray(forKey: trailKey) ?? []
+        let last = defaults.stringArray(forKey: trailKey) ?? []
+        if defaults.bool(forKey: runningKey), !last.isEmpty, defaults.string(forKey: reportKey) == nil {
             defaults.set("前回は途中で終了しました。直前の操作:\n" + last.joined(separator: "\n"), forKey: reportKey)
         }
         defaults.set(true, forKey: runningKey)

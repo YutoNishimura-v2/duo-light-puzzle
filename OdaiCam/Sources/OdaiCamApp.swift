@@ -481,10 +481,12 @@ struct DeckSheet: View {
                                 }
                                 Spacer()
                                 if game.deck.id == deck.id {
-                                    Image(systemName: "checkmark").font(.body.weight(.semibold)).foregroundStyle(.tint)
+                                    Image(systemName: "checkmark").font(.body.weight(.semibold)).foregroundStyle(.blue)
                                 }
                             }
+                            .contentShape(Rectangle())
                         }
+                        .buttonStyle(.plain)
                     }
                 }
                 Section {
@@ -536,8 +538,10 @@ struct SettingsSheet: View {
                     Text(footer)
                 }
                 Section {
-                    Button { editingDeck = true } label: { row("square.and.pencil", .pink, "お題帳を編集") }
-                    Button(action: replayOnboarding) { row("questionmark", .gray, "遊び方") }
+                    Button { editingDeck = true } label: { link("square.and.pencil", .pink, "お題帳を編集") }
+                        .buttonStyle(.plain)
+                    Button(action: replayOnboarding) { link("questionmark", .gray, "遊び方") }
+                        .buttonStyle(.plain)
                 }
                 Section {
                     LabeledContent { Text("\(game.best) 点").monospacedDigit() } label: { row("trophy.fill", .orange, "自己ベスト") }
@@ -574,6 +578,16 @@ struct SettingsSheet: View {
         lines.append(voiceReady ? "答えを声に出すと、合っていれば自動で正解になります。" : "この iPhone では声の判定を使えません。")
         lines.append(innerReady ? "顔を上げて演じる人を直接見ると −1 点です。" : "この iPhone では 2 つのカメラを同時に使えないため、カンニング禁止は使えません。")
         return lines.joined(separator: "\n")
+    }
+
+    /// 設定アプリと同じ、右に「>」のつく行
+    private func link(_ symbol: String, _ color: Color, _ title: String) -> some View {
+        HStack {
+            row(symbol, color, title)
+            Spacer()
+            Image(systemName: "chevron.right").font(.footnote.weight(.semibold)).foregroundStyle(.tertiary)
+        }
+        .contentShape(Rectangle())
     }
 
     private func row(_ symbol: String, _ color: Color, _ title: String) -> some View {

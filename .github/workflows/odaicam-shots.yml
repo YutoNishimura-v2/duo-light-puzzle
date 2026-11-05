@@ -53,11 +53,7 @@ jobs:
           xcrun simctl bootstatus "$UDID" -b
           xcrun simctl ui "$UDID" appearance dark
           xcrun simctl status_bar "$UDID" override --time 9:41 || true
-          # Duo を開いた状態にする（外側の画面を消し、内側の画面をつける）
-          xcrun simctl io "$UDID" enumerate | grep -iE "display|screen|name|power" | head -20 || true
-          xcrun simctl io "$UDID" screenConfig --display=3 power on || true
-          xcrun simctl io "$UDID" screenConfig --display=1 power off || true
-          sleep 5
+          # シミュレータの Duo は閉じた状態で起動し、アプリは外側の画面に出る（内側は黒のまま。開く命令は simctl にない）
           xcrun simctl install "$UDID" build/Build/Products/Debug-iphonesimulator/OdaiCam.app
           mkdir -p shots
           for s in welcome home play countdown results settings decks; do
