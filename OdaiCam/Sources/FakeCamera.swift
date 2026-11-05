@@ -158,3 +158,43 @@ final class FakeCamera: @unchecked Sendable {
         return pb
     }
 }
+
+/// 試験用：ハイライトが作れないとき、どこで失敗するかを部品ごとに試して文にする
+enum ExportProbe {
+    static func run(raw: URL, seen: URL?, clips: [Highlight.Clip]) async -> String {
+        var lines: [String] = []
+        for (name, url) in [("生", raw), ("見えていた画面", seen)] {
+            guard let url else { lines.append("\(name)：なし"); continue }
+            let asset = AVURLAsset(url: url)
+            if let track = try? await asset.loadTracks(withMediaType: .video).first,
+               let size = try? await track.load(.naturalSize), let range = try? await track.load(.timeRange),
+               let duration = try? await asset.load(.duration) {
+                lines.append("\(name)：\(Int(size.width))x\(Int(size.height)) 長さ \(fmt(duration.seconds)) 映像 \(fmt(range.start.seconds))〜\(fmt(range.end.seconds))")
+            } else {
+                lines.append("\(name)：読めない")
+            }
+        }
+        lines.append("場面：" + clips.map { "\(fmt($0.start))〜\(fmt($0.end))" }.joined(separator: ","))
+        let asset = AVURLAsset(url: raw)
+        lines.append("生をそのまま mp4：" + (await export(asset, preset: AVAssetExportPresetHighestQuality, as: .mp4)))
+        lines.append("生をそのまま mov：" + (await export(asset, preset: AVAssetExportPresetHighestQuality, as: .mov)))
+        lines.append("生を 640x480 で mp4：" + (await export(asset, preset: AVAssetExportPreset640x480, as: .mp4)))
+        lines.append("生を素通し mov：" + (await export(asset, preset: AVAssetExportPresetPassthrough, as: .mov)))
+        return lines.joined(separator: "／")
+    }
+
+    private static func export(_ asset: AVAsset, preset: String, as type: AVFileType) async -> String {
+        let out = FileManager.default.temporaryDirectory.appendingPathComponent("probe-\(UUID().uuidString).\(type == .mp4 ? "mp4" : "mov")")
+        guard let session = AVAssetExportSession(asset: asset, presetName: preset) else { return "作れない" }
+        do {
+            try await session.export(to: out, as: type)
+            return "成功"
+        } catch {
+            let e = error as NSError
+            let u = e.userInfo[NSUnderlyingErrorKey] as? NSError
+            return "失敗 \(e.code)" + (u.map { " ← \($0.code)" } ?? "")
+        }
+    }
+
+    private static func fmt(_ t: Double) -> String { String(format: "%.2f", t) }
+}

@@ -184,6 +184,7 @@ final class Game {
                                                             overlay: overlay, useSeen: useSeen)) != nil
                         message += "／\(name)：\(ok ? "成功" : "失敗")"
                     }
+                    message += "／" + (await ExportProbe.run(raw: url, seen: recordings.seen, clips: clips))
                 }
                 highlightError = message
                 CrashLog.mark("ハイライト失敗：\(Self.describe(error))")
