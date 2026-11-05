@@ -177,15 +177,60 @@ enum ExportProbe {
         lines.append("場面：" + clips.map { "\(fmt($0.start))〜\(fmt($0.end))" }.joined(separator: ","))
         let asset = AVURLAsset(url: raw)
         lines.append("生をそのまま mp4：" + (await export(asset, preset: AVAssetExportPresetHighestQuality, as: .mp4)))
-        lines.append("生をそのまま mov：" + (await export(asset, preset: AVAssetExportPresetHighestQuality, as: .mov)))
-        lines.append("生を 640x480 で mp4：" + (await export(asset, preset: AVAssetExportPreset640x480, as: .mp4)))
-        lines.append("生を素通し mov：" + (await export(asset, preset: AVAssetExportPresetPassthrough, as: .mov)))
+        guard let track = try? await asset.loadTracks(withMediaType: .video).first else { return lines.joined(separator: "／") }
+        if let ts = try? await track.load(.naturalTimeScale), let fd = try? await track.load(.minFrameDuration) {
+            lines.append("時間の目盛り \(ts)・最短のコマ \(fd.value)/\(fd.timescale)")
+        }
+        let duration = (try? await asset.load(.duration)) ?? .zero
+        // 合成：まるごと 1 本／場面ごとに切ってつなぐ
+        for cut in [false, true] {
+            let comp = AVMutableComposition()
+            guard let t = comp.addMutableTrack(withMediaType: .video, preferredTrackID: kCMPersistentTrackID_Invalid) else { continue }
+            var cursor = CMTime.zero
+            var ranges: [CMTimeRange] = []
+            let parts: [(Double, Double)] = cut ? clips.map { (max($0.end - 3.5, $0.start, 0), min($0.end + 0.8, duration.seconds)) } : [(0, duration.seconds)]
+            for (from, to) in parts {
+                let r = CMTimeRange(start: CMTime(seconds: from, preferredTimescale: 600), end: CMTime(seconds: to, preferredTimescale: 600))
+                do { try t.insertTimeRange(r, of: track, at: cursor) } catch { lines.append("入れられない \((error as NSError).code)"); continue }
+                ranges.append(CMTimeRange(start: cursor, duration: r.duration))
+                cursor = cursor + r.duration
+            }
+            let name = cut ? "切って合成" : "まるごと合成"
+            lines.append("\(name)（長さ \(String(format: "%.2f", comp.duration.seconds))）：" + (await export(comp, preset: AVAssetExportPresetHighestQuality, as: .mp4)))
+            // 自動の指示
+            guard let auto = try? await AVMutableVideoComposition.videoComposition(withPropertiesOf: comp) else { continue }
+            lines.append("\(name)＋自動の指示（\(auto.instructions.count)）：" + (await export(comp, preset: AVAssetExportPresetHighestQuality, as: .mp4, video: auto)))
+            // ハイライトと同じ手書きの指示
+            let manual = AVMutableVideoComposition()
+            manual.renderSize = auto.renderSize
+            manual.frameDuration = CMTime(value: 1, timescale: 30)
+            manual.instructions = ranges.map { r in
+                let i = AVMutableVideoCompositionInstruction()
+                i.timeRange = r
+                let l = AVMutableVideoCompositionLayerInstruction(assetTrack: t)
+                l.setTransform(.identity, at: r.start)
+                i.layerInstructions = [l]
+                return i
+            }
+            lines.append("\(name)＋手書きの指示：" + (await export(comp, preset: AVAssetExportPresetHighestQuality, as: .mp4, video: manual)))
+            // 指示を 1 つにまとめる
+            let single = AVMutableVideoComposition()
+            single.renderSize = auto.renderSize
+            single.frameDuration = CMTime(value: 1, timescale: 30)
+            let i = AVMutableVideoCompositionInstruction()
+            i.timeRange = CMTimeRange(start: .zero, duration: comp.duration)
+            i.layerInstructions = [AVMutableVideoCompositionLayerInstruction(assetTrack: t)]
+            single.instructions = [i]
+            lines.append("\(name)＋指示 1 つ：" + (await export(comp, preset: AVAssetExportPresetHighestQuality, as: .mp4, video: single)))
+        }
         return lines.joined(separator: "／")
     }
 
-    private static func export(_ asset: AVAsset, preset: String, as type: AVFileType) async -> String {
+    private static func export(_ asset: AVAsset, preset: String, as type: AVFileType,
+                               video: AVVideoComposition? = nil) async -> String {
         let out = FileManager.default.temporaryDirectory.appendingPathComponent("probe-\(UUID().uuidString).\(type == .mp4 ? "mp4" : "mov")")
         guard let session = AVAssetExportSession(asset: asset, presetName: preset) else { return "作れない" }
+        session.videoComposition = video
         do {
             try await session.export(to: out, as: type)
             return "成功"
