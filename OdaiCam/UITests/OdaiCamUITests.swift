@@ -50,6 +50,11 @@ final class OdaiCamUITests: XCTestCase {
         XCTAssertTrue(thirty.waitForExistence(timeout: 5), "30 秒のボタンがない")
         thirty.tap()
         for (i, mode) in Self.modes.enumerated() {
+            // 落ちたら、残りのラウンドは飛ばす
+            guard app.state == .runningForeground else {
+                XCTFail("アプリが落ちたので \(mode) から先は飛ばす")
+                return
+            }
             tapMode(mode)
             sleep(1)
             XCTContext.runActivity(named: "ラウンド：\(mode)") { _ in
@@ -97,7 +102,10 @@ final class OdaiCamUITests: XCTestCase {
         while Date() < deadline {
             if app.buttons["共有"].exists || app.buttons["写真に保存"].exists { ready = true; break }
             if failed.exists { break }
-            XCTAssertEqual(app.state, .runningForeground, "\(name)：動画を作っている間に落ちた")
+            if app.state != .runningForeground {
+                XCTFail("\(name)：動画を作っている間に落ちた")
+                return
+            }
             sleep(1)
         }
         shot("\(name)-highlight")
