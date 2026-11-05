@@ -58,7 +58,9 @@ jobs:
           for s in welcome home play countdown results settings decks; do
             xcrun simctl launch --terminate-running-process "$UDID" io.github.yutonishimura-v2.odaicam -shot "$s"
             sleep 6
-            xcrun simctl io "$UDID" screenshot "shots/$s.png"
+            # Duo は画面が 2 つ（内側と外側）。両方撮る
+            xcrun simctl io "$UDID" screenshot --display=3 "shots/$s-inner.png" || xcrun simctl io "$UDID" screenshot "shots/$s-inner.png"
+            xcrun simctl io "$UDID" screenshot --display=1 "shots/$s-outer.png" || true
           done
           ls -la shots
 
