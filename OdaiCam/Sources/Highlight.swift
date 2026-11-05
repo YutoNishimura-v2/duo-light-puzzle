@@ -142,7 +142,14 @@ enum Highlight {
             let margin = renderSize.width * 0.03
             wipeFrame = CGRect(x: margin, y: renderSize.height - margin - height, width: width, height: height)
         }
-        if overlay {
+        // シミュレータでは帯の重ね絵（CoreAnimation）の描画で落ちる（OpenGL ES の道で IOSurface を作れない）。
+        // 試験では帯なしで書き出す。実機はそのまま
+        #if targetEnvironment(simulator)
+        let drawOverlay = false
+        #else
+        let drawOverlay = overlay
+        #endif
+        if drawOverlay {
             videoComposition.animationTool = await overlayTool(size: renderSize, pieces: pieces, wipe: wipeFrame)
         }
 
