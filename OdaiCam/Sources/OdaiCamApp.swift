@@ -301,8 +301,7 @@ struct HomeView: View {
         ZStack {
             // 選んだしばりをその場でかけて見せる
             if let seenFrame, game.effectsOn, game.fixedEffect != nil {
-                Color.black.ignoresSafeArea()
-                Image(decorative: seenFrame, scale: 1).resizable().scaledToFill().ignoresSafeArea()
+                EffectFrame(image: seenFrame)
             }
             VStack(spacing: 0) {
                 topBar
@@ -682,11 +681,13 @@ struct PlayView: View {
         ZStack {
             // しばりがあるときは、しばった画面で覆う（本人の映像は見せない）
             if game.current?.effect != nil {
-                Color.black.ignoresSafeArea()
                 if let seenFrame {
-                    Image(decorative: seenFrame, scale: 1).resizable().scaledToFill().ignoresSafeArea()
+                    EffectFrame(image: seenFrame)
                 } else if Shot.name != nil {
                     SampleStick()
+                } else {
+                    // 最初のしばりの画面が届くまでは、本人の映像を見せない
+                    Color.black.ignoresSafeArea()
                 }
             }
             VStack(spacing: 0) {
@@ -816,6 +817,22 @@ struct PlayView: View {
             .animation(.spring(response: 0.4, dampingFraction: 0.8), value: game.lastCheat.map { context.date.timeIntervalSince($0) < 1.6 })
             .allowsHitTesting(false)
         }
+    }
+}
+
+/// しばりをかけた画面を全面に敷く。
+/// 画像そのものを並べると、はみ出した分だけ画面の枠が広がり、上に重ねたボタンが画面の外に押し出される。
+/// 黒い面の重ね絵にして、枠の大きさは画面のままにする
+struct EffectFrame: View {
+    let image: CGImage
+
+    var body: some View {
+        Color.black
+            .overlay {
+                Image(decorative: image, scale: 1).resizable().scaledToFill()
+            }
+            .clipped()
+            .ignoresSafeArea()
     }
 }
 
