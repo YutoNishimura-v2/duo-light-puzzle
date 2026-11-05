@@ -44,6 +44,8 @@ final class OdaiCamUITests: XCTestCase {
     @MainActor
     func test2Rounds() {
         launch()
+        // 動画の失敗はしばりごとに見たいので、1 つ失敗しても続ける
+        continueAfterFailure = true
         let thirty = app.buttons.matching(NSPredicate(format: "label BEGINSWITH '30'")).firstMatch
         XCTAssertTrue(thirty.waitForExistence(timeout: 5), "30 秒のボタンがない")
         thirty.tap()

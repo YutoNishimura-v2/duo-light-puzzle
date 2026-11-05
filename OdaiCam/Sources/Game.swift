@@ -176,7 +176,16 @@ final class Game {
             do {
                 highlightURL = try await Highlight.make(raw: url, seen: recordings.seen, front: recordings.front, clips: clips)
             } catch {
-                highlightError = "ハイライトを作れませんでした: \(Self.describe(error))"
+                var message = "ハイライトを作れませんでした: \(Self.describe(error))"
+                // 試験用：どこで失敗するかを絞るため、部品を外して作り直してみる
+                if FakeCamera.isOn {
+                    for (name, overlay, useSeen) in [("帯なし", false, true), ("見えていた画面なし", true, false), ("両方なし", false, false)] {
+                        let ok = (try? await Highlight.make(raw: url, seen: recordings.seen, front: recordings.front, clips: clips,
+                                                            overlay: overlay, useSeen: useSeen)) != nil
+                        message += "／\(name)：\(ok ? "成功" : "失敗")"
+                    }
+                }
+                highlightError = message
                 CrashLog.mark("ハイライト失敗：\(Self.describe(error))")
             }
             building = false

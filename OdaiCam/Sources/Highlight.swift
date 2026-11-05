@@ -23,6 +23,8 @@ enum Highlight {
         let length: Double
         /// true なら当てる人が見ていた画面、false なら実際の演技
         let seen: Bool
+        /// 合成の中の区間（入れた区間と同じ値を使い、指示との間にすき間を作らない）
+        let time: CMTimeRange
     }
 
     private struct Source {
@@ -40,11 +42,13 @@ enum Highlight {
         return (Source(track: video, size: size, duration: duration), audio)
     }
 
-    static func make(raw: URL, seen: URL?, front: URL?, clips: [Clip]) async throws -> URL {
+    /// overlay・useSeen は、試験で失敗の場所を絞るときだけ切る
+    static func make(raw: URL, seen: URL?, front: URL?, clips: [Clip],
+                     overlay: Bool = true, useSeen: Bool = true) async throws -> URL {
         guard let rawLoaded = try await load(raw) else { throw failure("映像がありません") }
         let (rawSource, audioTrack) = rawLoaded
         var seenSource: Source?
-        if let seen { seenSource = try await load(seen)?.0 }
+        if let seen, useSeen { seenSource = try await load(seen)?.0 }
         // 当てる人の顔（ワイプ）
         var frontSource: Source?
         if let front { frontSource = try await load(front)?.0 }
@@ -70,7 +74,7 @@ enum Highlight {
         }
 
         var pieces: [Piece] = []
-        var cursor = 0.0
+        var cursor = CMTime.zero
         for clip in clips {
             let from = max(clip.start, clip.end - before, 0)
             let to = min(clip.end + after, rawSource.duration)
@@ -79,21 +83,23 @@ enum Highlight {
             if let seenSource, let effect = clip.effect, to <= seenSource.duration + 0.5 {
                 let seenTo = min(to, seenSource.duration)
                 if seenTo - from > 0.3 {
-                    let at = CMTime(seconds: cursor, preferredTimescale: 600)
-                    try seenTrack.insertTimeRange(range(from, seenTo), of: seenSource.track, at: at)
-                    if let audioTrack, let audio { try audio.insertTimeRange(range(from, seenTo), of: audioTrack, at: at) }
-                    addWipe(from, seenTo, at: at)
-                    pieces.append(Piece(caption: "見えていたのは…（\(effect)）", at: cursor, length: seenTo - from, seen: true))
-                    cursor += seenTo - from
+                    let r = range(from, seenTo)
+                    try seenTrack.insertTimeRange(r, of: seenSource.track, at: cursor)
+                    if let audioTrack, let audio { try audio.insertTimeRange(r, of: audioTrack, at: cursor) }
+                    addWipe(from, seenTo, at: cursor)
+                    pieces.append(Piece(caption: "見えていたのは…（\(effect)）", at: cursor.seconds, length: r.duration.seconds, seen: true,
+                                        time: CMTimeRange(start: cursor, duration: r.duration)))
+                    cursor = cursor + r.duration
                 }
             }
             // 後半：実際の演技
-            let at = CMTime(seconds: cursor, preferredTimescale: 600)
-            try rawTrack.insertTimeRange(range(from, to), of: rawSource.track, at: at)
-            if let audioTrack, let audio { try audio.insertTimeRange(range(from, to), of: audioTrack, at: at) }
-            addWipe(from, to, at: at)
-            pieces.append(Piece(caption: "お題：\(clip.prompt)　\(clip.outcome)", at: cursor, length: to - from, seen: false))
-            cursor += to - from
+            let r = range(from, to)
+            try rawTrack.insertTimeRange(r, of: rawSource.track, at: cursor)
+            if let audioTrack, let audio { try audio.insertTimeRange(r, of: audioTrack, at: cursor) }
+            addWipe(from, to, at: cursor)
+            pieces.append(Piece(caption: "お題：\(clip.prompt)　\(clip.outcome)", at: cursor.seconds, length: r.duration.seconds, seen: false,
+                                time: CMTimeRange(start: cursor, duration: r.duration)))
+            cursor = cursor + r.duration
         }
         guard !pieces.isEmpty else { throw failure("使える場面がありません") }
 
@@ -104,7 +110,7 @@ enum Highlight {
         } ?? .identity
         let instructions: [AVMutableVideoCompositionInstruction] = pieces.map { piece in
             let instruction = AVMutableVideoCompositionInstruction()
-            instruction.timeRange = range(piece.at, piece.at + piece.length)
+            instruction.timeRange = piece.time
             let layer = AVMutableVideoCompositionLayerInstruction(assetTrack: piece.seen ? seenTrack : rawTrack)
             layer.setTransform(piece.seen ? seenScale : .identity, at: instruction.timeRange.start)
             instruction.layerInstructions = [layer]
@@ -133,7 +139,9 @@ enum Highlight {
             let margin = renderSize.width * 0.03
             wipeFrame = CGRect(x: margin, y: renderSize.height - margin - height, width: width, height: height)
         }
-        videoComposition.animationTool = await overlayTool(size: renderSize, pieces: pieces, wipe: wipeFrame)
+        if overlay {
+            videoComposition.animationTool = await overlayTool(size: renderSize, pieces: pieces, wipe: wipeFrame)
+        }
 
         // 見ていた画面の場面がひとつもなければ、空のトラックを外す
         if seenTrack.segments.isEmpty { composition.removeTrack(seenTrack) }
