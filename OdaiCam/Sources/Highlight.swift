@@ -28,6 +28,9 @@ enum Highlight {
     }
 
     private struct Source {
+        /// 元の動画。トラックは動画を弱くしか持たないので、書き出し終わるまでここで持っておく
+        /// （手放すと、書き出しの途中で読めなくなり -11800/-12780 で失敗する）
+        let asset: AVAsset
         let track: AVAssetTrack
         let size: CGSize
         let duration: Double
@@ -39,7 +42,7 @@ enum Highlight {
         let size = try await video.load(.naturalSize)
         let duration = try await asset.load(.duration).seconds
         let audio = try await asset.loadTracks(withMediaType: .audio).first
-        return (Source(track: video, size: size, duration: duration), audio)
+        return (Source(asset: asset, track: video, size: size, duration: duration), audio)
     }
 
     /// overlay・useSeen は、試験で失敗の場所を絞るときだけ切る
@@ -153,6 +156,8 @@ enum Highlight {
         }
         exporter.videoComposition = videoComposition
         try await exporter.export(to: out, as: .mp4)
+        // 元の動画を書き出しの終わりまで手放さない
+        withExtendedLifetime([rawSource.asset, seenSource?.asset, frontSource?.asset]) {}
         return out
     }
 
