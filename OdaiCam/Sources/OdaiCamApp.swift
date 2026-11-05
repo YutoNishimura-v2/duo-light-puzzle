@@ -163,6 +163,12 @@ struct GuesserView: View {
         game.onPrompt = { [listener, game] prompt in
             if let prompt { listener.listen(for: prompt, hints: game.deck.prompts) } else { listener.stop() }
         }
+        if FakeCamera.isOn {
+            // 試験用：許可を求めず、偽のカメラだけ動かす（声の判定は使わない）
+            game.voiceJudge = false
+            camera.start()
+            return
+        }
         var granted = AVCaptureDevice.authorizationStatus(for: .video) == .authorized
         if !granted { granted = await AVCaptureDevice.requestAccess(for: .video) }
         cameraDenied = !granted

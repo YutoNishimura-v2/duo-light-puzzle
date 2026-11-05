@@ -35,6 +35,8 @@ final class Camera: NSObject, @unchecked Sendable {
     private var writing = false
     /// 生の録画の最初のフレームの時刻。どの録画もここから書き始める
     private var startTime: CMTime?
+    /// 試験用の偽カメラ（起動引数 -fakeCamera のときだけ）
+    private(set) var fake: FakeCamera?
 
     /// セッションが動き始めたら呼ぶ（main で呼ぶ）。内側のカメラが動いているか
     var onReady: (@MainActor (Bool) -> Void)?
@@ -56,9 +58,12 @@ final class Camera: NSObject, @unchecked Sendable {
     }
 
     override init() {
-        usesInnerCamera = Self.canUseInnerCamera
+        usesInnerCamera = FakeCamera.isOn ? false : Self.canUseInnerCamera
         session = usesInnerCamera ? AVCaptureMultiCamSession() : AVCaptureSession()
         super.init()
+        fake = FakeCamera.isOn ? FakeCamera(queue: queue) : nil
+        // 偽カメラのコマも、本物の背面カメラと同じ処理に流す
+        fake?.deliver = { [weak self] in self?.handle($0, isAudio: false) }
     }
 
     private static var innerCamera: AVCaptureDevice? {
@@ -77,6 +82,13 @@ final class Camera: NSObject, @unchecked Sendable {
     }
 
     func start() {
+        if let fake {
+            queue.async { [self] in
+                fake.start()
+                Task { @MainActor [onReady] in onReady?(false) }
+            }
+            return
+        }
         queue.async { [self] in
             guard session.inputs.isEmpty else {
                 if !session.isRunning { session.startRunning() }
@@ -191,7 +203,9 @@ final class Camera: NSObject, @unchecked Sendable {
     }
 
     func stop() {
-        queue.async { [self] in session.stopRunning() }
+        queue.async { [self] in
+            if let fake { fake.stop() } else { session.stopRunning() }
+        }
     }
 
     func startRecording(rotationAngle: CGFloat) {
@@ -209,8 +223,10 @@ final class Camera: NSObject, @unchecked Sendable {
             }
             // フレームは出力の接続で回してから届くので、録画にも向きの変換は要らない
             setRotation(rotationAngle)
+            // 偽カメラではカメラの出力が動いていないので、自前の設定を使う
             let video = AVAssetWriterInput(mediaType: .video,
-                                           outputSettings: videoOutput.recommendedVideoSettingsForAssetWriter(writingTo: .mov))
+                                           outputSettings: videoOutput.recommendedVideoSettingsForAssetWriter(writingTo: .mov)
+                                               ?? fake?.videoSettings)
             video.expectsMediaDataInRealTime = true
             if writer.canAdd(video) { writer.add(video) }
             var audio: AVAssetWriterInput?
@@ -373,7 +389,12 @@ extension Camera: AVCaptureVideoDataOutputSampleBufferDelegate, AVCaptureAudioDa
             if frontInput.isReadyForMoreMediaData { frontInput.append(sampleBuffer) }
             return
         }
-        let isAudio = output === audioOutput
+        handle(sampleBuffer, isAudio: output === audioOutput)
+    }
+
+    /// 背面カメラとマイクの 1 コマ（カメラのキューで呼ぶ）。試験用の偽カメラもここに流す
+    func handle(_ sampleBuffer: CMSampleBuffer, isAudio: Bool) {
+        let pts = CMSampleBufferGetPresentationTimeStamp(sampleBuffer)
         if isAudio {
             onAudio?(sampleBuffer)
         } else if let pb = CMSampleBufferGetImageBuffer(sampleBuffer) {
@@ -404,6 +425,14 @@ struct CameraPreview: UIViewRepresentable {
 
     func makeUIView(context: Context) -> PreviewView {
         let view = PreviewView()
+        if let fake = camera.fake {
+            // 偽カメラでは、最後に流したコマを出す
+            view.fakeLayer.contentsGravity = .resizeAspectFill
+            view.fakeLayer.masksToBounds = true
+            view.layer.addSublayer(view.fakeLayer)
+            fake.previewLayer = view.fakeLayer
+            return view
+        }
         if camera.usesInnerCamera {
             view.previewLayer.setSessionWithNoConnection(camera.session)
         } else {
@@ -424,6 +453,13 @@ struct CameraPreview: UIViewRepresentable {
         var previewLayer: AVCaptureVideoPreviewLayer { layer as! AVCaptureVideoPreviewLayer }
         private var coordinator: AVCaptureDevice.RotationCoordinator?
         private var observation: NSKeyValueObservation?
+        /// 偽カメラのコマを描く層
+        let fakeLayer = CALayer()
+
+        override func layoutSubviews() {
+            super.layoutSubviews()
+            fakeLayer.frame = bounds
+        }
 
         /// 録画の向き（最後に見えていたプレビューの値）
         nonisolated(unsafe) static var latestCaptureAngle: CGFloat = 90

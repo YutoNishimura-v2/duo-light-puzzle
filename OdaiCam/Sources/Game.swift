@@ -105,7 +105,9 @@ final class Game {
             CrashLog.mark("プレイ開始")
             if cheatGuard { onWatch?(true) }
             nextPrompt()
-            let end = ProcessInfo.processInfo.systemUptime + roundLength
+            // 試験用：起動引数 -testRoundSeconds 8 で短くする
+            let test = UserDefaults.standard.double(forKey: "testRoundSeconds")
+            let end = ProcessInfo.processInfo.systemUptime + (test > 0 ? test : roundLength)
             while !Task.isCancelled {
                 remaining = max(0, end - ProcessInfo.processInfo.systemUptime)
                 if remaining <= 0 { break }

@@ -4,3 +4,4 @@ Info.plist
 build/
 *.ipa
 .DS_Store
+OdaiCam/TestAssets/

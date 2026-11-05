@@ -1,9 +1,10 @@
 name: odaicam-shots
 
 # シミュレータで各画面を開いて画面写真を撮る（見た目の確認用。配布はしない）
+# あわせて、偽カメラ（動画）を使ってひととおり遊ぶ UI テストを動かす。テストが落ちたらこのワークフローも落ちる
 on:
   push:
-    branches: [main]
+    branches: [main, odaicam-uitest]
     paths:
       - "OdaiCam/**"
       - ".github/workflows/odaicam-shots.yml"
@@ -69,3 +70,110 @@ jobs:
         with:
           name: odaicam-shots
           path: OdaiCam/shots
+
+  uitest:
+    runs-on: xcode-27
+    timeout-minutes: 40
+    defaults:
+      run:
+        working-directory: OdaiCam
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Toolchain
+        run: |
+          set -euo pipefail
+          sudo xcode-select -s /Applications/Xcode_27.1.app
+          brew install xcodegen
+
+      - name: Sample clip
+        # 偽カメラに流す人の動画。The Grizzly Bear Dance (1913)、パブリックドメイン（Wikimedia Commons）。
+        # 取れなければアプリが描く人形で代わりにする（テストは続ける）
+        run: |
+          set -uo pipefail
+          mkdir -p TestAssets
+          SRC="$RUNNER_TEMP/src.webm"
+          if curl -fsSL --retry 3 -A "OdaiCamCI/1.0 (https://github.com/YutoNishimura-v2)" -o "$SRC"                "https://upload.wikimedia.org/wikipedia/commons/5/55/The_Grizzly_Bear_Dance_%281913%29.webm"              && (command -v ffmpeg || brew install ffmpeg) > /dev/null; then
+            # 真ん中を縦長に切り出し、10 秒・30 コマ/秒・音なし
+            ffmpeg -y -loglevel error -ss 14 -t 10 -i "$SRC"               -vf "crop=ih*9/16:ih,scale=540:960,fps=30,format=yuv420p" -an -c:v libx264 -crf 28               TestAssets/fake-camera.mp4 || rm -f TestAssets/fake-camera.mp4
+          fi
+          ls -la TestAssets
+
+      - name: Boot simulator
+        run: |
+          set -euo pipefail
+          UDID=$(xcrun simctl list devices available -j | python3 -c '
+          import json, sys
+          d = json.load(sys.stdin)["devices"]
+          devs = [x for k, v in d.items() if "iOS" in k for x in v]
+          pick = [x for x in devs if "Duo" in x["name"]] or [x for x in devs if "Pro" in x["name"] and "Max" not in x["name"]] or devs
+          print(pick[-1]["udid"]); print(pick[-1]["name"], file=sys.stderr)')
+          echo "UDID=$UDID" >> "$GITHUB_ENV"
+          xcrun simctl boot "$UDID" || true
+          xcrun simctl bootstatus "$UDID" -b
+          xcrun simctl ui "$UDID" appearance dark
+
+      - name: Build for testing
+        run: |
+          set -euo pipefail
+          xcodegen generate
+          xcodebuild build-for-testing -quiet             -project OdaiCam.xcodeproj -scheme OdaiCamUITests             -configuration Debug -destination "id=$UDID"             -derivedDataPath build             CODE_SIGNING_ALLOWED=YES CODE_SIGN_IDENTITY=- CODE_SIGN_STYLE=Manual
+
+      - name: UI test
+        run: |
+          set -uo pipefail
+          mkdir -p uitest
+          # 外側の画面（アプリが出る方）を録画しておく
+          xcrun simctl io "$UDID" recordVideo --display=1 --codec=h264 --force uitest/run.mp4 &
+          REC=$!
+          sleep 2
+          xcodebuild test-without-building             -project OdaiCam.xcodeproj -scheme OdaiCamUITests             -destination "id=$UDID" -derivedDataPath build             -resultBundlePath uitest/Result.xcresult > uitest/xcodebuild.log 2>&1
+          STATUS=$?
+          grep -E "Test (Case|Suite)|error:|XCTAssert|failed|passed" uitest/xcodebuild.log || tail -50 uitest/xcodebuild.log
+          kill -INT $REC || true
+          wait $REC || true
+          echo "xcodebuild exit $STATUS"
+          echo "STATUS=$STATUS" >> "$GITHUB_ENV"
+
+      - name: Summary
+        if: always()
+        run: |
+          set -uo pipefail
+          R=uitest/Result.xcresult
+          if [ -d "$R" ]; then
+            xcrun xcresulttool get test-results summary --path "$R" > uitest/summary.json || true
+            python3 - <<'PY' | tee -a "$GITHUB_STEP_SUMMARY"
+          import json
+          try:
+              s = json.load(open("uitest/summary.json"))
+          except Exception as e:
+              print("summary なし:", e); raise SystemExit
+          print(f"## OdaiCam UI テスト: {s.get('result')}")
+          print(f"成功 {s.get('passedTests')} / 失敗 {s.get('failedTests')} / 飛ばし {s.get('skippedTests')}  ({s.get('finishTime', 0) - s.get('startTime', 0):.0f} 秒)")
+          for f in s.get("testFailures", []):
+              print(f"- {f.get('testName')}: {f.get('failureText')}")
+          PY
+            mkdir -p uitest/attachments
+            xcrun xcresulttool export attachments --path "$R" --output-path uitest/attachments || true
+            ls uitest/attachments | head -100
+          fi
+          # 落ちたときの記録（シミュレータのクラッシュレポート）
+          mkdir -p uitest/crashes
+          find ~/Library/Logs/DiagnosticReports -name 'OdaiCam*' -newer project.yml -exec cp {} uitest/crashes/ \; 2>/dev/null || true
+          ls uitest/crashes
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: odaicam-uitest
+          path: |
+            OdaiCam/uitest/attachments
+            OdaiCam/uitest/crashes
+            OdaiCam/uitest/run.mp4
+            OdaiCam/uitest/xcodebuild.log
+            OdaiCam/uitest/summary.json
+
+      - name: Result
+        run: |
+          echo "xcodebuild exit $STATUS"
+          test "$STATUS" = 0

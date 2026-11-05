@@ -23,6 +23,10 @@ targets:
     sources:
       - Sources
       - Resources
+      # 試験用の偽カメラの動画（CI の UI テストでだけ置く。リポジトリには入れない）
+      - path: TestAssets
+        optional: true
+        buildPhase: resources
     scheme: {}
     settings:
       base:
@@ -50,3 +54,26 @@ targets:
         NSSpeechRecognitionUsageDescription: 当てる人が声に出した答えを端末の中で聞き取り、お題と合っているかを判定します。
         NSPhotoLibraryAddUsageDescription: ハイライト動画を写真ライブラリに保存します。
         ITSAppUsesNonExemptEncryption: false
+  # シミュレータで偽カメラを使ってひととおり遊ぶ UI テスト（odaicam-shots ワークフローで動かす）
+  OdaiCamUITests:
+    type: bundle.ui-testing
+    platform: iOS
+    sources:
+      - UITests
+    dependencies:
+      - target: OdaiCam
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: io.github.yutonishimura-v2.odaicam.uitests
+        TEST_TARGET_NAME: OdaiCam
+        GENERATE_INFOPLIST_FILE: "YES"
+schemes:
+  OdaiCamUITests:
+    build:
+      targets:
+        OdaiCam: all
+        OdaiCamUITests: [test]
+    test:
+      config: Debug
+      targets:
+        - OdaiCamUITests
