@@ -4,7 +4,7 @@ name: odaicam-shots
 # あわせて、偽カメラ（動画）を使ってひととおり遊ぶ UI テストを動かす。テストが落ちたらこのワークフローも落ちる
 on:
   push:
-    branches: [main, odaicam-uitest]
+    branches: [main]
     paths:
       - "OdaiCam/**"
       - ".github/workflows/odaicam-shots.yml"
@@ -143,6 +143,13 @@ jobs:
           grep -E "Test (Case|Suite)|error:|XCTAssert|failed|passed" uitest/xcodebuild.log || tail -50 uitest/xcodebuild.log
           kill -INT $REC || true
           wait $REC || true
+          # 録画はそのままだと 500 MB ほどあるので、小さくしてから上げる
+          if command -v ffmpeg > /dev/null; then
+            ffmpeg -y -loglevel error -i uitest/run.mp4 -vf "scale=540:-2,fps=15" -c:v libx264 -crf 32 -an uitest/run-small.mp4               && mv uitest/run-small.mp4 uitest/run.mp4
+          else
+            avconvert --preset Preset960x540 --source uitest/run.mp4 --output uitest/run-small.mp4 --replace               && mv uitest/run-small.mp4 uitest/run.mp4
+          fi
+          ls -la uitest/run.mp4
           echo "xcodebuild exit $STATUS"
           echo "STATUS=$STATUS" >> "$GITHUB_ENV"
 
