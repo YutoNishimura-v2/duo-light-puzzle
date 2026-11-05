@@ -176,10 +176,22 @@ final class Game {
             do {
                 highlightURL = try await Highlight.make(raw: url, seen: recordings.seen, front: recordings.front, clips: clips)
             } catch {
-                highlightError = "ハイライトを作れませんでした: \(error.localizedDescription)"
+                highlightError = "ハイライトを作れませんでした: \(Self.describe(error))"
+                CrashLog.mark("ハイライト失敗：\(Self.describe(error))")
             }
             building = false
         }
+    }
+
+    /// 失敗の理由を、元の原因の番号まで並べる（AVFoundation の文言だけでは分からないため）
+    private static func describe(_ error: Error) -> String {
+        var parts: [String] = []
+        var e: NSError? = error as NSError
+        while let n = e, parts.count < 4 {
+            parts.append("\(n.localizedDescription)（\(n.domain) \(n.code)）")
+            e = n.userInfo[NSUnderlyingErrorKey] as? NSError
+        }
+        return parts.joined(separator: " ← ")
     }
 
     /// 画面の確認用（起動引数 -shot）。カメラなしで各画面の状態を作る
