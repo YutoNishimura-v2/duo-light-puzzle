@@ -28,6 +28,10 @@ jobs:
           sudo xcode-select -s /Applications/Xcode_27.1.app
           brew install xcodegen
           xcrun simctl list devices available
+          # 折りたたみ（Duo）の開き具合を変える命令を探す
+          xcrun simctl help 2>&1 | head -80
+          xcrun simctl help ui 2>&1 | head -60
+          xcrun simctl help io 2>&1 | head -60
 
       - name: Build for simulator
         run: |

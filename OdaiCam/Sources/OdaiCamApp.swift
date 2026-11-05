@@ -198,9 +198,12 @@ struct WelcomeSheet: View {
                 VStack(alignment: .leading, spacing: 34) {
                     VStack(spacing: 18) {
                         AppMark(size: 84)
-                        Text("お題カメラへようこそ")
-                            .font(.largeTitle.bold())
-                            .multilineTextAlignment(.center)
+                        VStack(spacing: 6) {
+                            Text("お題カメラ").font(.largeTitle.bold())
+                            Text("Duo の 2 つの画面で遊ぶジェスチャーゲーム")
+                                .font(.subheadline).foregroundStyle(.secondary)
+                        }
+                        .multilineTextAlignment(.center)
                     }
                     .frame(maxWidth: .infinity)
                     .padding(.top, 56)
@@ -1003,7 +1006,12 @@ struct ResultsView: View {
             }
         }
         .padding(.horizontal, 16)
+        .padding(.top, 28)
         .padding(.bottom, 8)
+        .background(
+            LinearGradient(colors: [.black.opacity(0), .black.opacity(0.9), .black], startPoint: .top, endPoint: .bottom)
+                .ignoresSafeArea()
+        )
     }
 }
 
