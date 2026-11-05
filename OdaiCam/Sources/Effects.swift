@@ -30,7 +30,10 @@ final class EffectEngine: @unchecked Sendable {
     private var busy = false
     private var effect: Effect?
     private var promptStart: TimeInterval = 0
+    /// 3 秒遅れの絵。effects キューだけで触る
     private var history: [(t: TimeInterval, image: CIImage)] = []
+    /// しばりが変わったら、次の処理で history を空にする（lock で守る）
+    private var clearHistory = false
     private var lastHistory: TimeInterval = 0
 
     private let bodyRequest = VNDetectHumanBodyPoseRequest()
@@ -52,7 +55,7 @@ final class EffectEngine: @unchecked Sendable {
 
     func set(effect: Effect?, promptStart: TimeInterval) {
         lock.withLock {
-            if self.effect != effect { history.removeAll() }
+            if self.effect != effect { clearHistory = true }
             self.effect = effect
             self.promptStart = promptStart
         }
@@ -60,14 +63,17 @@ final class EffectEngine: @unchecked Sendable {
 
     /// カメラのキューから呼ぶ
     func process(_ buffer: CVPixelBuffer, time: CMTime) {
-        let (effect, start, skip): (Effect?, TimeInterval, Bool) = lock.withLock {
-            if busy || effect == nil { return (nil, 0, true) }
+        let (effect, start, skip, clear): (Effect?, TimeInterval, Bool, Bool) = lock.withLock {
+            if busy || effect == nil { return (nil, 0, true, false) }
             busy = true
-            return (self.effect, promptStart, false)
+            let clear = clearHistory
+            clearHistory = false
+            return (self.effect, promptStart, false, clear)
         }
         guard !skip, let effect else { return }
         queue.async { [self] in
             defer { lock.withLock { busy = false } }
+            if clear { history.removeAll() }
             let now = ProcessInfo.processInfo.systemUptime
             let input = Self.downscaled(CIImage(cvPixelBuffer: buffer))
             let output = render(effect, input: input, source: buffer, now: now, elapsed: now - start)

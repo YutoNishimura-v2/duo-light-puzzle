@@ -4,19 +4,30 @@ import SwiftUI
 
 @main
 struct OdaiCamApp: App {
+    init() { CrashLog.start() }
+
     var body: some Scene {
         WindowGroup {
             GuesserView()
                 .preferredColorScheme(.dark)
                 .statusBarHidden(true)
-                .tint(Theme.coral)
         }
     }
 }
 
-/// 内側の画面：当てる人。カメラ越しに演技を見て当てる。お題は見えない
+/// 画面の確認用の起動引数（-shot home など）。カメラを使わずに各画面を出す
+enum Shot {
+    static let name: String? = {
+        let args = ProcessInfo.processInfo.arguments
+        guard let i = args.firstIndex(of: "-shot"), i + 1 < args.count else { return nil }
+        return args[i + 1]
+    }()
+}
+
+/// 内側の画面：当てる人。iPhone のカメラアプリと同じく、映像を全面に出し、操作はすりガラスで上に重ねる
 struct GuesserView: View {
     @AppStorage("onboarded") private var onboarded = false
+    @Environment(\.scenePhase) private var scenePhase
     @State private var game = Game()
     @State private var camera = Camera()
     @State private var listener = Listener()
@@ -30,60 +41,109 @@ struct GuesserView: View {
     /// しばりをかけた画面（当てる人はプレイ中これだけを見る）
     @State private var seenFrame: CGImage?
     @State private var showSettings = false
+    @State private var showDecks = false
     @State private var editingDeck = false
     @State private var started = false
 
     var body: some View {
         ZStack {
-            Theme.bg.ignoresSafeArea()
-            if onboarded {
-                // プレビューは常に下に置く（外側の画面の表示は撮影画面があることが前提）
+            Color.black.ignoresSafeArea()
+            // プレビューは常に下に置く（外側の画面の表示は撮影画面があることが前提）
+            if Shot.name == nil {
                 CameraPreview(camera: camera, ready: cameraReady).ignoresSafeArea()
-                switch game.phase {
-                case .menu:
-                    HomeView(game: game, cameraReady: cameraReady, cameraDenied: cameraDenied,
-                             showSettings: $showSettings, editingDeck: $editingDeck)
-                case .countdown(let n):
-                    CountdownView(n: n, effect: game.effectsOn ? (game.fixedEffect?.label ?? "おまかせ") : nil)
-                case .playing:
-                    PlayView(game: game, seenFrame: seenFrame, voiceOn: game.voiceJudge && voiceReady)
-                case .results:
-                    ResultsView(game: game)
-                }
             } else {
-                OnboardingView {
-                    withAnimation(.spring) { onboarded = true }
-                    Task { await startCamera() }
-                }
+                SampleScene().ignoresSafeArea()
+            }
+            switch game.phase {
+            case .menu:
+                HomeView(game: game, seenFrame: seenFrame, cameraReady: cameraReady, cameraDenied: cameraDenied,
+                         showSettings: $showSettings, showDecks: $showDecks)
+            case .countdown(let n):
+                CountdownView(n: n, game: game)
+            case .playing:
+                PlayView(game: game, seenFrame: seenFrame, voiceOn: game.voiceJudge && voiceReady)
+            case .results:
+                ResultsView(game: game)
             }
         }
+        .animation(.smooth(duration: 0.35), value: game.phase)
         // 撮影画面が内側に全画面で出ていて、撮影が動いている間だけ、システムが外側の画面に出す
         .sceneAccessory {
             CameraCaptureAccessory {
                 ActorView(game: game)
             }
         }
+        .sheet(isPresented: Binding(get: { !onboarded }, set: { _ in })) {
+            WelcomeSheet {
+                onboarded = true
+                Task { await startCamera() }
+            }
+            .interactiveDismissDisabled()
+        }
         .sheet(isPresented: $showSettings) {
             SettingsSheet(game: game, voiceReady: voiceReady, innerReady: innerReady, editingDeck: $editingDeck) {
                 showSettings = false
-                onboarded = false
+                // 設定の画面が閉じきってから、ようこそを出す
+                Task {
+                    try? await Task.sleep(for: .milliseconds(600))
+                    onboarded = false
+                }
             }
-            .presentationDetents([.medium, .large])
+        }
+        .sheet(isPresented: $showDecks) {
+            DeckSheet(game: game, editingDeck: $editingDeck)
+                .presentationDetents([.medium, .large])
         }
         .sheet(isPresented: $editingDeck) { DeckEditor(game: game) }
-        .task { if onboarded { await startCamera() } }
+        .task {
+            if let shot = Shot.name {
+                onboarded = shot != "welcome"
+                cameraReady = true
+                voiceReady = true
+                innerReady = true
+                game.loadPreview(shot)
+                if shot == "settings" { showSettings = true }
+                if shot == "decks" { showDecks = true }
+                return
+            }
+            if onboarded { await startCamera() }
+        }
+        .onChange(of: scenePhase) { _, phase in
+            if phase == .background { CrashLog.suspended() } else if phase == .active { CrashLog.resumed() }
+        }
+        // ホームでは、選んだしばりの見え方をその場で見せる
+        .onChange(of: previewEffect) { _, effect in applyPreview(effect) }
+        .onChange(of: game.phase) { _, phase in
+            CrashLog.mark("画面 \(phase)")
+            if phase == .menu { applyPreview(previewEffect) }
+        }
         .onDisappear { camera.stop() }
     }
 
+    private var previewEffect: Effect? {
+        game.phase == .menu && game.effectsOn ? game.fixedEffect : nil
+    }
+
+    private func applyPreview(_ effect: Effect?) {
+        guard Shot.name == nil else { return }
+        if effect == nil { seenFrame = nil }
+        effects.set(effect: effect, promptStart: ProcessInfo.processInfo.systemUptime)
+    }
+
     private func startCamera() async {
-        guard !started else { return }
+        guard !started, Shot.name == nil else { return }
         started = true
-        game.startRecording = { [camera] in camera.startRecording(rotationAngle: CameraPreview.PreviewView.latestCaptureAngle) }
+        game.startRecording = { [camera, effects] in
+            // カウントダウン中はしばりを止める（ホームの見え方の確認を録画に混ぜない）
+            effects.set(effect: nil, promptStart: 0)
+            camera.startRecording(rotationAngle: CameraPreview.PreviewView.latestCaptureAngle)
+        }
         game.stopRecording = { [camera] in camera.stopRecording() }
         camera.onReady = { inner in
             cameraReady = true
             innerReady = inner
             if !inner { game.cheatGuard = false }
+            CrashLog.mark("カメラ準備（内側 \(inner ? "あり" : "なし")）")
         }
         camera.onFront = { [watch] in watch.process($0) }
         watch.onCheat = { game.cheated() }
@@ -115,261 +175,334 @@ struct GuesserView: View {
     }
 }
 
-// MARK: - 初回の説明と、許可の前置き
+/// 画面の確認用の背景（カメラの代わり）
+struct SampleScene: View {
+    var body: some View {
+        ZStack {
+            LinearGradient(colors: [Color(white: 0.32), Color(white: 0.12)], startPoint: .top, endPoint: .bottom)
+            Image(systemName: "figure.arms.open")
+                .font(.system(size: 260, weight: .ultraLight))
+                .foregroundStyle(.white.opacity(0.35))
+        }
+    }
+}
 
-struct OnboardingView: View {
+// MARK: - 初回の説明（Apple 純正アプリの「ようこそ」と同じ形）
+
+struct WelcomeSheet: View {
     let finish: () -> Void
-    @State private var page = 0
-
-    private let pages: [(emoji: String, title: String, text: String)] = [
-        ("🙌", "お題は外側の画面に", "Duo を開いて持つ人が「当てる人」。外側の画面の前に立つ人だけがお題を見て、声を出さずに演じます。"),
-        ("🕶️", "でも、見えるのは画面だけ", "当てる人はカメラ越しにしか見られません。しかも棒人間や影絵に変わります。顔を上げて直接見たらカンニング！"),
-        ("🎤", "答えは声に出すだけ", "当たると自動で次のお題へ。終わったら「見えていた画面 → 本当の演技」の種明かし動画ができます。"),
-    ]
 
     var body: some View {
-        VStack(spacing: 24) {
-            TabView(selection: $page) {
-                ForEach(pages.indices, id: \.self) { i in
-                    VStack(spacing: 20) {
-                        Text(pages[i].emoji).font(.system(size: 110))
-                            .frame(width: 200, height: 200)
-                            .background(Theme.brand.opacity(0.35), in: Circle())
-                        Text(pages[i].title).font(Theme.display(32)).multilineTextAlignment(.center)
-                        Text(pages[i].text).font(Theme.body(17)).foregroundStyle(Theme.textSecondary)
-                            .multilineTextAlignment(.center).padding(.horizontal, 32)
+        VStack(spacing: 0) {
+            ScrollView {
+                VStack(alignment: .leading, spacing: 34) {
+                    VStack(spacing: 18) {
+                        AppMark(size: 84)
+                        Text("お題カメラへようこそ")
+                            .font(.largeTitle.bold())
+                            .multilineTextAlignment(.center)
                     }
-                    .tag(i)
+                    .frame(maxWidth: .infinity)
+                    .padding(.top, 56)
+                    row("theatermasks.fill", "お題は外側の画面に",
+                        "Duo を開いて持つ人が当てる役。外側の画面の前に立つ人だけがお題を見て、声を出さずに演じます。")
+                    row("eye.slash.fill", "見えるのは画面越しだけ",
+                        "当てる人には、棒人間や影絵に変わった姿しか見えません。顔を上げて直接見るとカンニングで −1 点。")
+                    row("waveform", "答えは声に出すだけ",
+                        "合っていれば自動で次のお題へ。終わると、見えていた画面と本当の演技を並べた動画ができます。")
                 }
-                // 許可の前置き（なぜ要るかを先に伝えてから、OS の確認を出す）
-                VStack(spacing: 18) {
-                    Text("📷🎙️").font(.system(size: 80))
-                    Text("あそぶ前に").font(Theme.display(32))
-                    VStack(alignment: .leading, spacing: 14) {
-                        primer("camera.fill", "カメラ", "演技を写して、しばりをかける・種明かし動画を作る")
-                        primer("mic.fill", "マイクと音声認識", "答えを聞き取って自動で判定する（端末の中だけで処理）")
-                        primer("photo.on.rectangle", "写真", "種明かし動画を保存するときだけ")
-                    }
-                    .padding(20)
-                    .background(Theme.surface, in: RoundedRectangle(cornerRadius: Theme.radius, style: .continuous))
-                    .padding(.horizontal, 24)
-                }
-                .tag(pages.count)
+                .padding(.horizontal, 36)
             }
-            .tabViewStyle(.page(indexDisplayMode: .always))
-            Button(page < pages.count ? "つぎへ" : "許可してはじめる") {
-                if page < pages.count {
-                    withAnimation(.spring) { page += 1 }
-                } else {
-                    finish()
+            .scrollBounceBehavior(.basedOnSize)
+            VStack(spacing: 14) {
+                Label("声の聞き取りも映像の加工も、すべてこの iPhone の中で行います。", systemImage: "lock.fill")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+                    .multilineTextAlignment(.center)
+                Button(action: finish) {
+                    Text("続ける").font(.headline).frame(maxWidth: .infinity, minHeight: 50)
                 }
+                .buttonStyle(.glassProminent)
+                .tint(.blue)
             }
-            .buttonStyle(PrimaryButtonStyle())
-            .padding(.horizontal, 24)
-            .padding(.bottom, 16)
+            .padding(.horizontal, 28)
+            .padding(.bottom, 28)
         }
     }
 
-    private func primer(_ symbol: String, _ title: String, _ text: String) -> some View {
-        HStack(alignment: .top, spacing: 14) {
-            Image(systemName: symbol).font(.title2).foregroundStyle(Theme.coral).frame(width: 32)
-            VStack(alignment: .leading, spacing: 2) {
-                Text(title).font(Theme.title(17))
-                Text(text).font(Theme.body(14)).foregroundStyle(Theme.textSecondary)
+    private func row(_ symbol: String, _ title: String, _ text: String) -> some View {
+        HStack(alignment: .top, spacing: 18) {
+            Image(systemName: symbol)
+                .font(.system(size: 30))
+                .foregroundStyle(.blue)
+                .frame(width: 44)
+            VStack(alignment: .leading, spacing: 3) {
+                Text(title).font(.headline)
+                Text(text).font(.subheadline).foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
             }
         }
     }
 }
 
-// MARK: - ホーム
-
-struct HomeView: View {
-    @Bindable var game: Game
-    let cameraReady: Bool
-    let cameraDenied: Bool
-    @Binding var showSettings: Bool
-    @Binding var editingDeck: Bool
-
-    private var decks: [Deck] { Deck.builtIn + (CustomDeck.deck.map { [$0] } ?? []) }
+/// アプリの印（アイコンと同じ絵）
+struct AppMark: View {
+    var size: CGFloat = 60
 
     var body: some View {
         ZStack {
-            Theme.bg.opacity(0.94).ignoresSafeArea()
-            ScrollView {
-                VStack(alignment: .leading, spacing: 22) {
-                    header
-                    roles
-                    section("山札をえらぶ")
-                    LazyVGrid(columns: [GridItem(.flexible(), spacing: 12), GridItem(.flexible(), spacing: 12)], spacing: 12) {
-                        ForEach(decks) { deck in deckCard(deck) }
-                        if CustomDeck.deck == nil { newDeckCard }
-                    }
-                    section("見え方しばり")
-                    effectChips
-                    section("時間")
-                    timePills
-                }
-                .padding(20)
-                .padding(.bottom, 110)
+            RoundedRectangle(cornerRadius: size * 0.225, style: .continuous)
+                .fill(LinearGradient(colors: [Color(white: 0.22), Color(white: 0.06)], startPoint: .top, endPoint: .bottom))
+            Image(systemName: "viewfinder")
+                .font(.system(size: size * 0.66, weight: .light))
+                .foregroundStyle(.white)
+            Text("?")
+                .font(.system(size: size * 0.36, weight: .bold, design: .rounded))
+                .foregroundStyle(Theme.accent)
+        }
+        .frame(width: size, height: size)
+    }
+}
+
+// MARK: - ホーム（カメラアプリの撮影画面と同じ並び）
+
+struct HomeView: View {
+    @Bindable var game: Game
+    let seenFrame: CGImage?
+    let cameraReady: Bool
+    let cameraDenied: Bool
+    @Binding var showSettings: Bool
+    @Binding var showDecks: Bool
+
+    /// 下のモード列（カメラアプリの「写真・ビデオ・ポートレート」と同じ）
+    private enum Mode: Hashable {
+        case random, fixed(Effect), none
+
+        var title: String {
+            switch self {
+            case .random: "おまかせ"
+            case .fixed(let e): e.label
+            case .none: "しばりなし"
             }
-            VStack {
+        }
+    }
+
+    private let modes: [Mode] = [.random] + Effect.allCases.map { .fixed($0) } + [.none]
+
+    private var mode: Mode {
+        guard game.effectsOn else { return .none }
+        return game.fixedEffect.map { .fixed($0) } ?? .random
+    }
+
+    var body: some View {
+        ZStack {
+            // 選んだしばりをその場でかけて見せる
+            if let seenFrame, game.effectsOn, game.fixedEffect != nil {
+                Color.black.ignoresSafeArea()
+                Image(decorative: seenFrame, scale: 1).resizable().scaledToFill().ignoresSafeArea()
+            }
+            VStack(spacing: 0) {
+                topBar
                 Spacer()
-                VStack(spacing: 6) {
-                    Button(cameraReady ? "あそぶ" : (cameraDenied ? "カメラが使えません" : "カメラを準備中…")) {
-                        game.startRound()
-                    }
-                    .buttonStyle(PrimaryButtonStyle())
-                    .disabled(!cameraReady)
-                    .opacity(cameraReady ? 1 : 0.5)
-                    if cameraDenied {
-                        Text("設定アプリでカメラを許可してください").font(Theme.body(13)).foregroundStyle(Theme.warning)
-                    }
-                }
-                .padding(.horizontal, 20).padding(.top, 12).padding(.bottom, 8)
-                .background(LinearGradient(colors: [Theme.bg.opacity(0), Theme.bg], startPoint: .top, endPoint: .center))
+                hint
+                bottomBar
             }
         }
     }
 
-    private var header: some View {
-        HStack(alignment: .firstTextBaseline) {
-            VStack(alignment: .leading, spacing: 4) {
-                Text("お題カメラ").font(Theme.display(36))
-                Text("Duo でしか遊べないジェスチャーゲーム").font(Theme.body(14)).foregroundStyle(Theme.textSecondary)
-            }
+    private var topBar: some View {
+        HStack {
+            GlassIconButton(symbol: "gearshape.fill", label: "設定") { showSettings = true }
             Spacer()
-            Button { showSettings = true } label: {
-                Image(systemName: "gearshape.fill").font(.title2).foregroundStyle(.white)
-                    .frame(width: 48, height: 48).background(Theme.surface, in: Circle())
-            }
-            .accessibilityLabel("設定")
-        }
-    }
-
-    private var roles: some View {
-        HStack(spacing: 12) {
-            role("📱", "持つ人", "画面越しに当てる")
-            role("🙌", "外側の前", "声を出さずに演じる")
-        }
-    }
-
-    private func role(_ emoji: String, _ title: String, _ text: String) -> some View {
-        HStack(spacing: 10) {
-            Text(emoji).font(.system(size: 30))
-            VStack(alignment: .leading, spacing: 2) {
-                Text(title).font(Theme.title(15))
-                Text(text).font(Theme.body(12)).foregroundStyle(Theme.textSecondary)
-            }
-            Spacer(minLength: 0)
-        }
-        .padding(14)
-        .frame(maxWidth: .infinity)
-        .background(Theme.surface, in: RoundedRectangle(cornerRadius: 18, style: .continuous))
-    }
-
-    private func section(_ title: String) -> some View {
-        Text(title).font(Theme.title(18)).padding(.top, 4)
-    }
-
-    private func deckCard(_ deck: Deck) -> some View {
-        let selected = game.deck.id == deck.id
-        return Button {
-            withAnimation(.spring(response: 0.35, dampingFraction: 0.7)) { game.deck = deck }
-            UISelectionFeedbackGenerator().selectionChanged()
-        } label: {
-            VStack(alignment: .leading, spacing: 8) {
-                Text(deck.emoji).font(.system(size: 40))
-                Spacer(minLength: 0)
-                Text(deck.title).font(Theme.title(20)).foregroundStyle(.white)
-                Text("\(deck.prompts.count) 枚").font(Theme.body(13)).foregroundStyle(.white.opacity(0.8))
-            }
-            .padding(16)
-            .frame(maxWidth: .infinity, minHeight: 140, alignment: .leading)
-            .background(
-                LinearGradient(colors: [deck.color, deck.color.mix(with: .black, by: 0.35)], startPoint: .topLeading, endPoint: .bottomTrailing),
-                in: RoundedRectangle(cornerRadius: Theme.radius, style: .continuous))
-            .overlay(alignment: .topTrailing) {
-                if selected {
-                    Image(systemName: "checkmark.circle.fill").font(.title2).foregroundStyle(.white).padding(12)
-                        .transition(.scale.combined(with: .opacity))
-                }
-            }
-            .overlay(RoundedRectangle(cornerRadius: Theme.radius, style: .continuous)
-                .strokeBorder(.white.opacity(selected ? 0.9 : 0), lineWidth: 3))
-            .scaleEffect(selected ? 1 : 0.97)
-        }
-        .buttonStyle(PressableStyle())
-    }
-
-    private var newDeckCard: some View {
-        Button { editingDeck = true } label: {
-            VStack(alignment: .leading, spacing: 8) {
-                Image(systemName: "plus").font(.system(size: 30, weight: .bold))
-                Spacer(minLength: 0)
-                Text("お題帳をつくる").font(Theme.title(18))
-                Text("内輪ネタで遊ぶ").font(Theme.body(13)).foregroundStyle(Theme.textSecondary)
-            }
-            .foregroundStyle(.white)
-            .padding(16)
-            .frame(maxWidth: .infinity, minHeight: 140, alignment: .leading)
-            .background(Theme.surface, in: RoundedRectangle(cornerRadius: Theme.radius, style: .continuous))
-            .overlay(RoundedRectangle(cornerRadius: Theme.radius, style: .continuous)
-                .strokeBorder(style: StrokeStyle(lineWidth: 2, dash: [8, 6])).foregroundStyle(.white.opacity(0.3)))
-        }
-        .buttonStyle(PressableStyle())
-    }
-
-    private var effectChips: some View {
-        ScrollView(.horizontal, showsIndicators: false) {
-            HStack(spacing: 10) {
-                chip("おまかせ", "dice.fill", selected: game.effectsOn && game.fixedEffect == nil) {
-                    game.effectsOn = true
-                    game.fixedEffect = nil
-                }
-                ForEach(Effect.allCases) { e in
-                    chip(e.label, e.symbol, selected: game.effectsOn && game.fixedEffect == e) {
-                        game.effectsOn = true
-                        game.fixedEffect = e
+            GlassEffectContainer(spacing: 10) {
+                HStack(spacing: 10) {
+                    GlassIconButton(symbol: game.voiceJudge ? "waveform" : "waveform.slash", active: game.voiceJudge,
+                                    label: "声で自動判定") {
+                        game.voiceJudge.toggle()
+                    }
+                    GlassIconButton(symbol: game.cheatGuard ? "eye.trianglebadge.exclamationmark.fill" : "eye.slash",
+                                    active: game.cheatGuard, label: "カンニング禁止") {
+                        game.cheatGuard.toggle()
                     }
                 }
-                chip("しばりなし", "eye", selected: !game.effectsOn) { game.effectsOn = false }
             }
-            .padding(.vertical, 2)
         }
+        .padding(.horizontal, 16)
+        .padding(.top, 8)
+        .sensoryFeedback(.selection, trigger: game.voiceJudge)
+        .sensoryFeedback(.selection, trigger: game.cheatGuard)
     }
 
-    private func chip(_ title: String, _ symbol: String, selected: Bool, action: @escaping () -> Void) -> some View {
-        Button {
-            withAnimation(.spring(response: 0.3, dampingFraction: 0.7)) { action() }
-            UISelectionFeedbackGenerator().selectionChanged()
-        } label: {
-            Label(title, systemImage: symbol)
-                .font(Theme.title(15))
-                .padding(.horizontal, 16).frame(height: 44)
-                .foregroundStyle(selected ? Theme.ink : .white)
-                .background(selected ? AnyShapeStyle(Color.white) : AnyShapeStyle(Theme.surface), in: Capsule())
+    /// いまのモードの説明（カメラアプリの「ナイトモード」などの小さな表示と同じ）
+    private var hint: some View {
+        let text: String = switch mode {
+        case .random: "お題ごとに見え方が変わる"
+        case .fixed(let e): e.hint
+        case .none: "そのままの映像で当てる"
         }
-        .buttonStyle(PressableStyle())
+        return Text(cameraDenied ? "設定アプリでカメラを許可してください" : text)
+            .font(.footnote.weight(.medium))
+            .foregroundStyle(cameraDenied ? Theme.warning : .white)
+            .padding(.horizontal, 12).padding(.vertical, 6)
+            .glassEffect(.regular, in: Capsule())
+            .padding(.bottom, 14)
+            .contentTransition(.opacity)
+            .animation(.smooth, value: text)
     }
 
-    private var timePills: some View {
-        HStack(spacing: 0) {
-            ForEach([30.0, 60.0, 90.0], id: \.self) { t in
-                let selected = game.roundLength == t
-                Button {
-                    withAnimation(.spring(response: 0.3, dampingFraction: 0.8)) { game.roundLength = t }
-                    UISelectionFeedbackGenerator().selectionChanged()
-                } label: {
-                    Text("\(Int(t)) 秒").font(Theme.title(17))
-                        .frame(maxWidth: .infinity, minHeight: 48)
-                        .foregroundStyle(selected ? Theme.ink : .white)
-                        .background(selected ? Color.white : Color.clear, in: Capsule())
+    private var bottomBar: some View {
+        VStack(spacing: 18) {
+            timeSelector
+            modeStrip
+            HStack {
+                deckButton
+                Spacer()
+                ShutterButton(enabled: cameraReady) { game.startRound() }
+                Spacer()
+                Color.clear.frame(width: 56, height: 56)
+            }
+            .padding(.horizontal, 30)
+        }
+        .padding(.top, 14)
+        .padding(.bottom, 10)
+        .background(
+            LinearGradient(colors: [.black.opacity(0), .black.opacity(0.75)], startPoint: .top, endPoint: .bottom)
+                .ignoresSafeArea()
+        )
+    }
+
+    /// 時間（カメラアプリのレンズ切り替え「.5 1x 2」と同じ丸）
+    private var timeSelector: some View {
+        GlassEffectContainer(spacing: 4) {
+            HStack(spacing: 4) {
+                ForEach([30.0, 60.0, 90.0], id: \.self) { t in
+                    let selected = game.roundLength == t
+                    Button {
+                        withAnimation(.snappy) { game.roundLength = t }
+                    } label: {
+                        Text(selected ? "\(Int(t))秒" : "\(Int(t))")
+                            .font(.system(size: selected ? 13 : 12, weight: .semibold))
+                            .foregroundStyle(selected ? Theme.accent : .white)
+                            .frame(width: selected ? 46 : 34, height: selected ? 46 : 34)
+                    }
+                    .buttonStyle(.plain)
+                    .glassEffect(.regular.interactive(), in: Circle())
                 }
-                .buttonStyle(.plain)
             }
         }
-        .padding(4)
-        .background(Theme.surface, in: Capsule())
+        .sensoryFeedback(.selection, trigger: game.roundLength)
+    }
+
+    /// しばりのモード列。選ぶと中央に寄る
+    private var modeStrip: some View {
+        ScrollViewReader { proxy in
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 22) {
+                    ForEach(modes, id: \.self) { m in
+                        Button {
+                            select(m)
+                            withAnimation(.snappy) { proxy.scrollTo(m, anchor: .center) }
+                        } label: {
+                            Text(m.title)
+                                .font(.system(size: 14, weight: .semibold))
+                                .foregroundStyle(m == mode ? Theme.accent : .white)
+                        }
+                        .buttonStyle(.plain)
+                        .id(m)
+                    }
+                }
+                .padding(.horizontal, 160)
+            }
+            .onAppear { proxy.scrollTo(mode, anchor: .center) }
+        }
+        .frame(height: 22)
+        .mask(LinearGradient(stops: [.init(color: .clear, location: 0), .init(color: .black, location: 0.2),
+                                     .init(color: .black, location: 0.8), .init(color: .clear, location: 1)],
+                             startPoint: .leading, endPoint: .trailing))
+        .sensoryFeedback(.selection, trigger: mode)
+    }
+
+    private func select(_ m: Mode) {
+        switch m {
+        case .random:
+            game.effectsOn = true
+            game.fixedEffect = nil
+        case .fixed(let e):
+            game.effectsOn = true
+            game.fixedEffect = e
+        case .none:
+            game.effectsOn = false
+        }
+    }
+
+    /// 山札（カメラアプリの左下の写真の位置）
+    private var deckButton: some View {
+        Button { showDecks = true } label: {
+            VStack(spacing: 5) {
+                SymbolTile(symbol: game.deck.symbol, color: game.deck.color, size: 50)
+                    .overlay(RoundedRectangle(cornerRadius: 11.5, style: .continuous).strokeBorder(.white.opacity(0.9), lineWidth: 1.5))
+                Text(game.deck.title)
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundStyle(.white)
+                    .lineLimit(1)
+            }
+            .frame(width: 56)
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel("山札：\(game.deck.title)")
+    }
+}
+
+// MARK: - 山札をえらぶ（設定アプリと同じ一覧）
+
+struct DeckSheet: View {
+    @Bindable var game: Game
+    @Binding var editingDeck: Bool
+    @Environment(\.dismiss) private var dismiss
+
+    var body: some View {
+        NavigationStack {
+            List {
+                Section {
+                    ForEach(Deck.builtIn + (CustomDeck.deck.map { [$0] } ?? [])) { deck in
+                        Button {
+                            game.deck = deck
+                            dismiss()
+                        } label: {
+                            HStack(spacing: 14) {
+                                SymbolTile(symbol: deck.symbol, color: deck.color)
+                                VStack(alignment: .leading, spacing: 1) {
+                                    Text(deck.title).foregroundStyle(.primary)
+                                    Text(deck.prompts.prefix(3).joined(separator: "、") + " など \(deck.prompts.count) 枚")
+                                        .font(.footnote).foregroundStyle(.secondary).lineLimit(1)
+                                }
+                                Spacer()
+                                if game.deck.id == deck.id {
+                                    Image(systemName: "checkmark").font(.body.weight(.semibold)).foregroundStyle(.tint)
+                                }
+                            }
+                        }
+                    }
+                }
+                Section {
+                    Button {
+                        dismiss()
+                        editingDeck = true
+                    } label: {
+                        Label(CustomDeck.deck == nil ? "お題帳をつくる" : "お題帳を編集", systemImage: "square.and.pencil")
+                    }
+                } footer: {
+                    Text("友だちの名前や内輪ネタなど、自分たちだけのお題で遊べます。")
+                }
+            }
+            .navigationTitle("山札")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("完了", systemImage: "checkmark") { dismiss() }
+                }
+            }
+        }
     }
 }
 
@@ -381,42 +514,69 @@ struct SettingsSheet: View {
     let innerReady: Bool
     @Binding var editingDeck: Bool
     let replayOnboarding: () -> Void
+    @Environment(\.dismiss) private var dismiss
+    @State private var crash = CrashLog.report
 
     var body: some View {
         NavigationStack {
             Form {
                 Section {
                     Toggle(isOn: $game.voiceJudge) {
-                        Label { setting("声で自動判定", voiceReady ? "答えを声に出すと、合っていれば自動で正解" : "この端末では使えません") }
-                            icon: { Image(systemName: "waveform") }
+                        row("waveform", .blue, "声で自動判定")
                     }
                     .disabled(!voiceReady)
                     Toggle(isOn: $game.cheatGuard) {
-                        Label { setting("カンニング禁止", innerReady ? "顔を上げて本人を直接見たら −1" : "この端末では使えません（2 つのカメラを同時に使えない）") }
-                            icon: { Image(systemName: "eye.trianglebadge.exclamationmark") }
+                        row("eye.trianglebadge.exclamationmark.fill", .red, "カンニング禁止")
                     }
                     .disabled(!innerReady)
+                } footer: {
+                    Text(footer)
                 }
                 Section {
-                    Button("お題帳を編集", systemImage: "square.and.pencil") { editingDeck = true }
-                    Button("遊び方をもう一度見る", systemImage: "questionmark.circle", action: replayOnboarding)
+                    Button { editingDeck = true } label: { row("square.and.pencil", .pink, "お題帳を編集") }
+                    Button(action: replayOnboarding) { row("questionmark", .gray, "遊び方") }
                 }
-                Section("記録") {
-                    LabeledContent("自己ベスト", value: "\(game.best) 点")
+                Section {
+                    LabeledContent { Text("\(game.best) 点").monospacedDigit() } label: { row("trophy.fill", .orange, "自己ベスト") }
+                }
+                if let crash {
+                    Section {
+                        Text(crash).font(.caption.monospaced()).textSelection(.enabled)
+                        ShareLink(item: crash) { Label("この記録を送る", systemImage: "square.and.arrow.up") }
+                        Button("消す", role: .destructive) {
+                            CrashLog.clear()
+                            self.crash = nil
+                        }
+                    } header: {
+                        Text("前回の終了の記録")
+                    }
                 }
                 Section("診断") {
-                    Text(MultiCamProbe.summary).font(.caption.monospaced()).textSelection(.enabled)
+                    Text(MultiCamProbe.summary).font(.caption.monospaced()).foregroundStyle(.secondary).textSelection(.enabled)
+                    LabeledContent("バージョン", value: Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "-")
                 }
             }
             .navigationTitle("設定")
             .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("完了", systemImage: "checkmark") { dismiss() }
+                }
+            }
         }
     }
 
-    private func setting(_ title: String, _ detail: String) -> some View {
-        VStack(alignment: .leading, spacing: 2) {
-            Text(title)
-            Text(detail).font(.caption).foregroundStyle(.secondary)
+    private var footer: String {
+        var lines: [String] = []
+        lines.append(voiceReady ? "答えを声に出すと、合っていれば自動で正解になります。" : "この iPhone では声の判定を使えません。")
+        lines.append(innerReady ? "顔を上げて演じる人を直接見ると −1 点です。" : "この iPhone では 2 つのカメラを同時に使えないため、カンニング禁止は使えません。")
+        return lines.joined(separator: "\n")
+    }
+
+    private func row(_ symbol: String, _ color: Color, _ title: String) -> some View {
+        HStack(spacing: 14) {
+            SymbolTile(symbol: symbol, color: color)
+            Text(title).foregroundStyle(.primary)
         }
     }
 }
@@ -425,58 +585,72 @@ struct DeckEditor: View {
     let game: Game
     @Environment(\.dismiss) private var dismiss
     @State private var text = CustomDeck.text
+    @FocusState private var focused: Bool
 
     var body: some View {
         NavigationStack {
-            VStack(alignment: .leading, spacing: 8) {
-                Text("1 行に 1 つ。友だちの名前、職場のネタ、思い出の場面など。").font(Theme.body(14)).foregroundStyle(Theme.textSecondary)
-                TextEditor(text: $text)
-                    .scrollContentBackground(.hidden)
-                    .padding(12)
-                    .background(Theme.surface, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+            Form {
+                Section {
+                    TextEditor(text: $text)
+                        .frame(minHeight: 280)
+                        .focused($focused)
+                } footer: {
+                    Text("1 行に 1 つ書きます。友だちの名前、職場のネタ、思い出の場面など。")
+                }
             }
-            .padding()
-            .background(Theme.bg)
             .navigationTitle("お題帳")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
-                ToolbarItem(placement: .cancellationAction) { Button("閉じる") { dismiss() } }
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("キャンセル", systemImage: "xmark") { dismiss() }
+                }
                 ToolbarItem(placement: .confirmationAction) {
-                    Button("保存") {
+                    Button("保存", systemImage: "checkmark") {
                         CustomDeck.text = text
                         if let deck = CustomDeck.deck { game.deck = deck }
                         dismiss()
                     }
                 }
             }
+            .onAppear { focused = true }
         }
     }
 }
 
-// MARK: - カウントダウン
+// MARK: - カウントダウン（カメラアプリのセルフタイマーと同じ）
 
 struct CountdownView: View {
     let n: Int
-    let effect: String?
+    let game: Game
 
     var body: some View {
         ZStack {
-            Theme.brand.ignoresSafeArea()
-            VStack(spacing: 16) {
-                Text("演じる人は外側の画面へ！").font(Theme.title(20))
-                Text("\(n)")
-                    .font(Theme.display(180)).monospacedDigit()
-                    .id(n)
-                    .transition(.scale(scale: 1.6).combined(with: .opacity))
-                if let effect {
-                    Label("しばり：\(effect)", systemImage: "eye.slash.fill")
-                        .font(Theme.title(17))
-                        .padding(.horizontal, 16).padding(.vertical, 8)
-                        .background(.black.opacity(0.25), in: Capsule())
+            Color.black.opacity(0.45).ignoresSafeArea()
+            Text("\(n)")
+                .font(.system(size: 200, weight: .thin))
+                .monospacedDigit()
+                .foregroundStyle(.white)
+                .id(n)
+                .transition(.asymmetric(insertion: .scale(scale: 1.4).combined(with: .opacity), removal: .opacity))
+            VStack {
+                Label("演じる人は外側の画面の前へ", systemImage: "theatermasks.fill")
+                    .font(.subheadline.weight(.semibold))
+                    .padding(.horizontal, 16).padding(.vertical, 10)
+                    .glassEffect(.regular, in: Capsule())
+                    .padding(.top, 16)
+                Spacer()
+                HStack(spacing: 8) {
+                    SymbolTile(symbol: game.deck.symbol, color: game.deck.color, size: 22)
+                    Text(game.deck.title)
+                    Text("・")
+                    Text(game.effectsOn ? (game.fixedEffect?.label ?? "おまかせ") : "しばりなし")
                 }
+                .font(.footnote.weight(.semibold))
+                .foregroundStyle(.white.opacity(0.85))
+                .padding(.bottom, 40)
             }
-            .animation(.spring(response: 0.35, dampingFraction: 0.6), value: n)
         }
+        .animation(.smooth(duration: 0.3), value: n)
     }
 }
 
@@ -493,137 +667,176 @@ struct PlayView: View {
             if game.current?.effect != nil {
                 Color.black.ignoresSafeArea()
                 if let seenFrame {
-                    Image(decorative: seenFrame, scale: 1).resizable().scaledToFit().ignoresSafeArea()
+                    Image(decorative: seenFrame, scale: 1).resizable().scaledToFill().ignoresSafeArea()
+                } else if Shot.name != nil {
+                    SampleStick()
                 }
             }
-            VStack(spacing: 12) {
+            VStack(spacing: 0) {
                 hud
                 Spacer()
-                if voiceOn {
-                    Label(game.heard.isEmpty ? "答えを声に出して！" : game.heard, systemImage: "mic.fill")
-                        .font(Theme.title(18)).lineLimit(1)
-                        .padding(.horizontal, 18).padding(.vertical, 10)
-                        .background(.ultraThinMaterial, in: Capsule())
-                        .animation(.easeOut(duration: 0.15), value: game.heard)
-                }
-                HStack(spacing: 12) {
-                    Button { game.answer(.pass) } label: { Label("パス", systemImage: "forward.fill") }
-                        .buttonStyle(PrimaryButtonStyle(color: Color(hex: 0xE08E00), height: 72))
-                    Button { game.answer(.correct) } label: { Label("正解", systemImage: "checkmark") }
-                        .buttonStyle(PrimaryButtonStyle(color: Color(hex: 0x16B87A), height: 72))
-                }
+                toast
+                Spacer()
+                controls
             }
-            .padding(16)
-            flash
             cheatBanner
         }
     }
 
+    /// 上の列：点数・残り時間（カメラアプリの録画時間）・いまのしばり
     private var hud: some View {
-        HStack(alignment: .center) {
-            GlassCapsule {
-                Label("\(game.score)", systemImage: "checkmark.circle.fill")
-                    .font(Theme.title(24)).monospacedDigit()
-                    .contentTransition(.numericText())
-                    .animation(.spring, value: game.score)
-            }
+        HStack {
+            Label("\(game.score)", systemImage: "checkmark")
+                .font(.system(size: 15, weight: .semibold).monospacedDigit())
+                .contentTransition(.numericText())
+                .padding(.horizontal, 14).frame(height: 36)
+                .glassEffect(.regular, in: Capsule())
+                .animation(.snappy, value: game.score)
             Spacer()
-            if let effect = game.current?.effect {
-                GlassCapsule {
-                    Label(effect.label, systemImage: effect.symbol).font(Theme.title(16))
+            RecordingTimer(remaining: game.remaining)
+            Spacer()
+            Group {
+                if let effect = game.current?.effect {
+                    Label(effect.label, systemImage: effect.symbol)
+                        .font(.system(size: 15, weight: .semibold))
+                        .padding(.horizontal, 14).frame(height: 36)
+                        .glassEffect(.regular, in: Capsule())
+                        .id(effect)
+                        .transition(.blurReplace)
+                } else {
+                    Color.clear.frame(width: 60, height: 36)
                 }
-                .id(effect)
-                .transition(.scale.combined(with: .opacity))
             }
-            Spacer()
-            TimerRing(remaining: game.remaining, total: game.roundLength)
-                .padding(4)
-                .background(.ultraThinMaterial, in: Circle())
+            .animation(.snappy, value: game.current?.effect)
         }
-        .animation(.spring(response: 0.35, dampingFraction: 0.7), value: game.current?.effect)
+        .padding(.horizontal, 16)
+        .padding(.top, 8)
     }
 
-    /// 正解・パスのとき画面全体を一瞬光らせる
-    private var flash: some View {
+    /// 正解・パスを中央に一瞬だけ出す（音量の表示のような控えめな四角）
+    private var toast: some View {
         TimelineView(.animation(minimumInterval: 1 / 30)) { context in
-            if let at = game.lastAnswerAt, let last = game.lastAnswer {
+            if let at = game.lastAnswerAt, let last = game.lastAnswer, context.date.timeIntervalSince(at) < 1.1 {
                 let t = context.date.timeIntervalSince(at)
-                if t < 0.7 {
-                    let correct = last.outcome == .correct
-                    ZStack {
-                        (correct ? Theme.mint : Theme.sunset).opacity(0.85 * (1 - t / 0.7)).ignoresSafeArea()
-                        VStack(spacing: 6) {
-                            Text(correct ? "正解！" : "パス").font(Theme.display(64))
-                            Text(last.prompt).font(Theme.title(26))
-                        }
-                        .foregroundStyle(.white)
-                        .scaleEffect(1 + 0.15 * (1 - min(t / 0.2, 1)))
-                        .opacity(1 - max(0, (t - 0.45) / 0.25))
-                    }
-                    .allowsHitTesting(false)
+                let correct = last.outcome == .correct
+                VStack(spacing: 10) {
+                    Image(systemName: correct ? "checkmark.circle.fill" : "arrow.uturn.right.circle.fill")
+                        .font(.system(size: 54, weight: .semibold))
+                        .foregroundStyle(correct ? Theme.correct : Theme.pass)
+                    Text(last.prompt).font(.title3.weight(.semibold))
+                    Text(correct ? "正解" : "パス").font(.subheadline).foregroundStyle(.secondary)
                 }
-            }
-        }
-    }
-
-    private var cheatBanner: some View {
-        TimelineView(.periodic(from: .now, by: 0.2)) { context in
-            if let cheat = game.lastCheat, context.date.timeIntervalSince(cheat) < 1.5 {
-                VStack {
-                    Label("カンニング！ −1", systemImage: "eye.trianglebadge.exclamationmark.fill")
-                        .font(Theme.display(34)).foregroundStyle(.white)
-                        .padding(.horizontal, 24).padding(.vertical, 12)
-                        .background(Theme.warning, in: Capsule())
-                        .shadow(color: Theme.warning.opacity(0.5), radius: 20)
-                        .padding(.top, 90)
-                    Spacer()
-                }
-                .transition(.move(edge: .top).combined(with: .opacity))
+                .frame(width: 190, height: 190)
+                .glassEffect(.regular, in: RoundedRectangle(cornerRadius: 34, style: .continuous))
+                .scaleEffect(t < 0.15 ? 0.85 + t : 1)
+                .opacity(t > 0.8 ? max(0, 1 - (t - 0.8) / 0.3) : 1)
                 .allowsHitTesting(false)
             }
         }
     }
+
+    private var controls: some View {
+        VStack(spacing: 14) {
+            if voiceOn {
+                HStack(spacing: 8) {
+                    Image(systemName: "waveform")
+                        .symbolEffect(.variableColor.iterative, options: .repeating)
+                        .foregroundStyle(Theme.accent)
+                    Text(game.heard.isEmpty ? "答えを声に出してください" : game.heard)
+                        .lineLimit(1)
+                        .foregroundStyle(game.heard.isEmpty ? .secondary : .primary)
+                }
+                .font(.callout.weight(.medium))
+                .padding(.horizontal, 16).frame(height: 40)
+                .glassEffect(.regular, in: Capsule())
+                .animation(.snappy, value: game.heard)
+            }
+            GlassEffectContainer(spacing: 12) {
+                HStack(spacing: 12) {
+                    Button { game.answer(.pass) } label: {
+                        Label("パス", systemImage: "arrow.uturn.right")
+                            .font(.headline)
+                            .frame(maxWidth: .infinity, minHeight: 56)
+                    }
+                    .buttonStyle(.glass)
+                    Button { game.answer(.correct) } label: {
+                        Label("正解", systemImage: "checkmark")
+                            .font(.headline)
+                            .frame(maxWidth: .infinity, minHeight: 56)
+                    }
+                    .buttonStyle(.glassProminent)
+                    .tint(Theme.correct)
+                }
+            }
+        }
+        .padding(.horizontal, 16)
+        .padding(.bottom, 12)
+    }
+
+    /// 上から降りてくる赤い知らせ（Dynamic Island の通知のような形）
+    private var cheatBanner: some View {
+        TimelineView(.periodic(from: .now, by: 0.2)) { context in
+            VStack {
+                if let cheat = game.lastCheat, context.date.timeIntervalSince(cheat) < 1.6 {
+                    HStack(spacing: 10) {
+                        Image(systemName: "eye.trianglebadge.exclamationmark.fill").font(.title3)
+                        VStack(alignment: .leading, spacing: 0) {
+                            Text("カンニング").font(.headline)
+                            Text("画面から目を離しました").font(.caption).foregroundStyle(.white.opacity(0.8))
+                        }
+                        Spacer()
+                        Text("−1").font(Theme.number(24, weight: .bold))
+                    }
+                    .foregroundStyle(.white)
+                    .padding(.horizontal, 18).padding(.vertical, 12)
+                    .glassEffect(.regular.tint(Theme.warning), in: Capsule())
+                    .padding(.horizontal, 16)
+                    .padding(.top, 56)
+                    .transition(.move(edge: .top).combined(with: .opacity))
+                }
+                Spacer()
+            }
+            .animation(.spring(response: 0.4, dampingFraction: 0.8), value: game.lastCheat.map { context.date.timeIntervalSince($0) < 1.6 })
+            .allowsHitTesting(false)
+        }
+    }
 }
 
-// MARK: - 結果
+/// 画面の確認用の、しばりをかけた絵の代わり
+struct SampleStick: View {
+    var body: some View {
+        Image(systemName: "figure.dance")
+            .font(.system(size: 300, weight: .ultraLight))
+            .foregroundStyle(Color(red: 1, green: 0.87, blue: 0.43))
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .background(Color(red: 0.06, green: 0.07, blue: 0.12))
+            .ignoresSafeArea()
+    }
+}
+
+// MARK: - 結果（フィットネスの「概要」と同じ、黒地に集計カード）
 
 struct ResultsView: View {
     let game: Game
     @State private var shown = 0
     @State private var player: AVPlayer?
     @State private var message: String?
-    @State private var confettiAt: Date?
 
     var body: some View {
-        ZStack {
-            Theme.bg.ignoresSafeArea()
+        ZStack(alignment: .bottom) {
+            Color.black.ignoresSafeArea()
             ScrollView {
-                VStack(spacing: 20) {
-                    scoreHero
+                VStack(alignment: .leading, spacing: 16) {
+                    header
+                    scoreCard
                     highlightCard
-                    turnList
+                    turnsCard
                 }
-                .padding(20)
-                .padding(.bottom, 150)
+                .padding(.horizontal, 16)
+                .padding(.bottom, 140)
             }
-            VStack {
-                Spacer()
-                VStack(spacing: 10) {
-                    Button("役を交代してもう一回") {
-                        player?.pause()
-                        game.startRound()
-                    }
-                    .buttonStyle(PrimaryButtonStyle())
-                    Button("ホームへ") {
-                        player?.pause()
-                        game.backToMenu()
-                    }
-                    .buttonStyle(SecondaryButtonStyle())
-                }
-                .padding(.horizontal, 20).padding(.top, 16).padding(.bottom, 8)
-                .background(LinearGradient(colors: [Theme.bg.opacity(0), Theme.bg], startPoint: .top, endPoint: .center))
-            }
-            if let confettiAt { Confetti(start: confettiAt).ignoresSafeArea() }
+            .scrollIndicators(.hidden)
+            actions
         }
         .task {
             if let url = game.highlightURL, player == nil {
@@ -633,10 +846,9 @@ struct ResultsView: View {
             // 点数を数え上げる
             shown = 0
             for i in 0...max(game.score, 0) {
-                withAnimation(.spring(response: 0.2)) { shown = i }
-                try? await Task.sleep(for: .milliseconds(max(40, 700 / max(game.score, 1))))
+                withAnimation(.snappy) { shown = i }
+                try? await Task.sleep(for: .milliseconds(max(40, 600 / max(game.score, 1))))
             }
-            if game.isNewBest { confettiAt = Date() }
         }
         .onChange(of: game.highlightURL) { _, url in
             if let url {
@@ -646,92 +858,152 @@ struct ResultsView: View {
         }
     }
 
-    private var scoreHero: some View {
-        VStack(spacing: 6) {
-            if game.isNewBest {
-                Label("自己ベスト！", systemImage: "crown.fill")
-                    .font(Theme.title(16)).foregroundStyle(Theme.ink)
-                    .padding(.horizontal, 14).padding(.vertical, 6)
-                    .background(Theme.sunset, in: Capsule())
-            }
-            Text("\(shown)")
-                .font(Theme.display(110)).monospacedDigit()
-                .contentTransition(.numericText())
-            Text("点").font(Theme.title(20)).foregroundStyle(Theme.textSecondary)
-            HStack(spacing: 10) {
-                stat("正解", game.correct, Theme.mint)
-                stat("パス", game.turns.filter { $0.outcome == .pass }.count, Theme.sunset)
-                if game.cheats > 0 { stat("カンニング", -game.cheats, Theme.warning) }
-            }
+    private var header: some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Text(Date.now.formatted(.dateTime.month().day().weekday(.wide)).uppercased())
+                .font(.footnote.weight(.semibold))
+                .foregroundStyle(.secondary)
+            Text("結果").font(.largeTitle.bold())
         }
         .padding(.top, 20)
     }
 
-    private func stat(_ title: String, _ value: Int, _ color: Color) -> some View {
-        VStack(spacing: 2) {
-            Text("\(value)").font(Theme.title(22)).monospacedDigit().foregroundStyle(color)
-            Text(title).font(Theme.body(12)).foregroundStyle(Theme.textSecondary)
+    private var scoreCard: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            HStack(alignment: .firstTextBaseline) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("スコア").font(.headline)
+                    HStack(alignment: .firstTextBaseline, spacing: 4) {
+                        Text("\(shown)")
+                            .font(Theme.number(64, weight: .bold))
+                            .foregroundStyle(Theme.accent)
+                            .contentTransition(.numericText())
+                        Text("点").font(Theme.number(22, weight: .semibold)).foregroundStyle(Theme.accent)
+                    }
+                }
+                Spacer()
+                if game.isNewBest {
+                    Label("自己ベスト", systemImage: "trophy.fill")
+                        .font(.footnote.weight(.semibold))
+                        .foregroundStyle(.orange)
+                        .padding(.horizontal, 10).padding(.vertical, 5)
+                        .background(.orange.opacity(0.18), in: Capsule())
+                }
+            }
+            Divider()
+            HStack(spacing: 0) {
+                stat("正解", "\(game.correct)", Theme.correct)
+                stat("パス", "\(game.turns.filter { $0.outcome == .pass }.count)", Theme.pass)
+                stat("カンニング", game.cheats > 0 ? "−\(game.cheats)" : "0", game.cheats > 0 ? Theme.warning : .secondary)
+            }
         }
-        .frame(maxWidth: .infinity, minHeight: 64)
-        .background(Theme.surface, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+        .padding(18)
+        .background(Theme.card, in: RoundedRectangle(cornerRadius: Theme.cardRadius, style: .continuous))
+    }
+
+    private func stat(_ title: String, _ value: String, _ color: Color) -> some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Text(title).font(.subheadline).foregroundStyle(.secondary)
+            Text(value).font(Theme.number(28, weight: .semibold)).foregroundStyle(color)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 
     private var highlightCard: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            Label("種明かし動画", systemImage: "film.stack.fill").font(Theme.title(18))
-            Group {
+        VStack(alignment: .leading, spacing: 14) {
+            HStack {
+                Text("種明かし").font(.headline)
+                Spacer()
+                Text("見えていた画面 → 本当の演技").font(.footnote).foregroundStyle(.secondary)
+            }
+            ZStack {
+                Color.black
                 if let player {
                     VideoPlayer(player: player)
                 } else if let error = game.highlightError {
-                    Text(error).font(Theme.body(14)).foregroundStyle(Theme.warning).padding()
+                    ContentUnavailableView("動画を作れませんでした", systemImage: "exclamationmark.triangle", description: Text(error))
                 } else {
                     VStack(spacing: 12) {
-                        ProgressView().controlSize(.large).tint(.white)
-                        Text("名場面をつないでいます…").font(Theme.body(14)).foregroundStyle(Theme.textSecondary)
+                        ProgressView()
+                        Text("名場面をつないでいます").font(.footnote).foregroundStyle(.secondary)
                     }
                 }
             }
+            .aspectRatio(9 / 16, contentMode: .fit)
             .frame(maxWidth: .infinity)
-            .frame(height: 420)
-            .background(Color.black, in: RoundedRectangle(cornerRadius: 20, style: .continuous))
-            .clipShape(RoundedRectangle(cornerRadius: 20, style: .continuous))
+            .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
             if let url = game.highlightURL {
                 HStack(spacing: 10) {
                     ShareLink(item: url) {
-                        Label("共有", systemImage: "square.and.arrow.up").frame(maxWidth: .infinity)
+                        Label("共有", systemImage: "square.and.arrow.up").frame(maxWidth: .infinity, minHeight: 40)
                     }
-                    .buttonStyle(SecondaryButtonStyle())
+                    .buttonStyle(.glass)
                     Button {
                         Task { message = await Camera.saveVideo(url) }
                     } label: {
-                        Label(message ?? "保存", systemImage: message == "保存しました" ? "checkmark" : "square.and.arrow.down")
-                            .frame(maxWidth: .infinity)
+                        Label(message ?? "写真に保存", systemImage: message == "保存しました" ? "checkmark" : "square.and.arrow.down")
+                            .frame(maxWidth: .infinity, minHeight: 40)
                     }
-                    .buttonStyle(SecondaryButtonStyle())
+                    .buttonStyle(.glass)
                 }
+                .font(.subheadline.weight(.semibold))
             }
         }
-        .padding(16)
-        .background(Theme.surface, in: RoundedRectangle(cornerRadius: Theme.radius, style: .continuous))
+        .padding(18)
+        .background(Theme.card, in: RoundedRectangle(cornerRadius: Theme.cardRadius, style: .continuous))
     }
 
-    private var turnList: some View {
-        VStack(spacing: 0) {
+    private var turnsCard: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            Text("お題").font(.headline).padding(.bottom, 8)
             ForEach(game.turns) { t in
                 HStack(spacing: 12) {
-                    Image(systemName: t.outcome == .correct ? "checkmark.circle.fill" : "forward.circle.fill")
-                        .font(.title3).foregroundStyle(t.outcome == .correct ? Theme.mint : Theme.sunset)
-                    Text(t.prompt).font(Theme.title(17))
+                    Image(systemName: t.outcome == .correct ? "checkmark.circle.fill" : "arrow.uturn.right.circle.fill")
+                        .font(.title3)
+                        .foregroundStyle(t.outcome == .correct ? Theme.correct : Theme.pass)
+                    Text(t.prompt).font(.body)
                     Spacer()
                     if let effect = t.effect {
-                        Label(effect.label, systemImage: effect.symbol).font(Theme.body(12)).foregroundStyle(Theme.textSecondary)
+                        Label(effect.label, systemImage: effect.symbol)
+                            .font(.footnote)
+                            .foregroundStyle(.secondary)
                     }
                 }
-                .padding(.vertical, 12).padding(.horizontal, 16)
-                if t.id != game.turns.last?.id { Divider().overlay(.white.opacity(0.08)) }
+                .padding(.vertical, 11)
+                if t.id != game.turns.last?.id { Divider().padding(.leading, 36) }
             }
         }
-        .background(Theme.surface, in: RoundedRectangle(cornerRadius: Theme.radius, style: .continuous))
+        .padding(18)
+        .background(Theme.card, in: RoundedRectangle(cornerRadius: Theme.cardRadius, style: .continuous))
+    }
+
+    private var actions: some View {
+        GlassEffectContainer(spacing: 12) {
+            HStack(spacing: 12) {
+                Button {
+                    player?.pause()
+                    game.backToMenu()
+                } label: {
+                    Image(systemName: "xmark").font(.headline).frame(width: 56, height: 56)
+                }
+                .buttonStyle(.glass)
+                .buttonBorderShape(.circle)
+                .accessibilityLabel("ホームへ")
+                Button {
+                    player?.pause()
+                    game.startRound()
+                } label: {
+                    Label("役を交代してもう一回", systemImage: "arrow.triangle.2.circlepath")
+                        .font(.headline)
+                        .frame(maxWidth: .infinity, minHeight: 56)
+                }
+                .buttonStyle(.glassProminent)
+                .tint(Theme.accent)
+                .foregroundStyle(.black)
+            }
+        }
+        .padding(.horizontal, 16)
+        .padding(.bottom, 8)
     }
 }
 
@@ -742,84 +1014,100 @@ struct ActorView: View {
 
     var body: some View {
         ZStack {
-            Theme.bg.ignoresSafeArea()
+            Color.black.ignoresSafeArea()
             switch game.phase {
             case .menu:
-                VStack(spacing: 14) {
-                    Text("🙌").font(.system(size: 90))
-                    Text("演じる人はこちら").font(Theme.display(34))
-                    Text("お題がここに出ます。声は出さずに体だけで！").font(Theme.body(17)).foregroundStyle(Theme.textSecondary)
+                VStack(spacing: 16) {
+                    Image(systemName: "theatermasks.fill").font(.system(size: 64)).foregroundStyle(Theme.accent)
+                    Text("お題はここに出ます").font(.title.bold())
+                    Text("声は出さずに、体だけで演じてください。").font(.body).foregroundStyle(.secondary)
                 }
-                .multilineTextAlignment(.center).padding(24)
+                .multilineTextAlignment(.center)
+                .padding(24)
             case .countdown(let n):
-                ZStack {
-                    Theme.brand.ignoresSafeArea()
-                    Text("\(n)").font(Theme.display(200)).monospacedDigit()
-                        .id(n).transition(.scale(scale: 1.6).combined(with: .opacity))
-                }
-                .animation(.spring(response: 0.35, dampingFraction: 0.6), value: n)
+                Text("\(n)")
+                    .font(.system(size: 220, weight: .thin)).monospacedDigit()
+                    .id(n)
+                    .transition(.asymmetric(insertion: .scale(scale: 1.4).combined(with: .opacity), removal: .opacity))
             case .playing:
                 playing
             case .results:
-                VStack(spacing: 12) {
-                    Text("🎉").font(.system(size: 90))
-                    Text("おつかれさま！").font(Theme.display(36))
-                    Text("\(game.score) 点").font(Theme.title(28))
-                    Text("次は役を交代しよう").font(Theme.body(17)).foregroundStyle(Theme.textSecondary)
+                VStack(spacing: 10) {
+                    Text("おつかれさまでした").font(.title2.weight(.semibold)).foregroundStyle(.secondary)
+                    HStack(alignment: .firstTextBaseline, spacing: 4) {
+                        Text("\(game.score)").font(Theme.number(120, weight: .bold))
+                        Text("点").font(Theme.number(36, weight: .semibold))
+                    }
+                    .foregroundStyle(Theme.accent)
+                    Text("次は役を交代しましょう").font(.body).foregroundStyle(.secondary)
                 }
             }
         }
+        .animation(.smooth(duration: 0.3), value: game.phase)
         .persistentSystemOverlays(.hidden)
     }
 
     private var playing: some View {
-        VStack(spacing: 14) {
-            // 残り時間の細い帯
+        VStack(spacing: 0) {
+            HStack {
+                Label(game.deck.title, systemImage: game.deck.symbol)
+                Spacer()
+                Text(String(format: "0:%02d", Int(game.remaining.rounded(.up))))
+                    .monospacedDigit()
+                    .foregroundStyle(game.remaining <= 10 ? Theme.warning : .secondary)
+            }
+            .font(.headline)
+            .foregroundStyle(.secondary)
+            // 残り時間の細い線
             GeometryReader { geo in
-                Capsule().fill(.white.opacity(0.15))
+                Capsule().fill(.white.opacity(0.12))
                     .overlay(alignment: .leading) {
-                        Capsule().fill(game.remaining <= 10 ? Theme.warning : Theme.mint)
+                        Capsule().fill(game.remaining <= 10 ? Theme.warning : Theme.accent)
                             .frame(width: geo.size.width * max(0, game.remaining / max(game.roundLength, 1)))
                     }
             }
-            .frame(height: 10)
+            .frame(height: 4)
+            .padding(.top, 10)
+            Spacer()
             if let turn = game.current {
                 Text(turn.prompt)
-                    .font(Theme.display(88))
+                    .font(.system(size: 96, weight: .bold))
                     .multilineTextAlignment(.center)
                     .minimumScaleFactor(0.3)
                     .lineLimit(2)
                     .foregroundStyle(.white)
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
-                    .padding(20)
-                    .background(
-                        LinearGradient(colors: [game.deck.color, game.deck.color.mix(with: .black, by: 0.4)],
-                                       startPoint: .topLeading, endPoint: .bottomTrailing),
-                        in: RoundedRectangle(cornerRadius: 32, style: .continuous))
                     .id(turn.id)
                     .transition(.asymmetric(insertion: .move(edge: .trailing).combined(with: .opacity),
                                             removal: .move(edge: .leading).combined(with: .opacity)))
             }
+            Spacer()
             HStack {
-                Label("声は出さずに！", systemImage: "speaker.slash.fill")
+                Label("声は出さない", systemImage: "speaker.slash.fill")
                 Spacer()
-                Label("\(game.score)", systemImage: "checkmark.circle.fill").monospacedDigit()
+                Label("\(game.score)", systemImage: "checkmark").monospacedDigit()
             }
-            .font(Theme.title(20))
-            .foregroundStyle(Theme.textSecondary)
+            .font(.headline)
+            .foregroundStyle(.secondary)
         }
-        .padding(20)
-        .animation(.spring(response: 0.4, dampingFraction: 0.8), value: game.current?.id)
+        .padding(24)
+        .animation(.spring(response: 0.4, dampingFraction: 0.85), value: game.current?.id)
         .overlay {
             // 当たったら演じる人にも知らせる
             TimelineView(.animation(minimumInterval: 1 / 30)) { context in
-                if let at = game.lastAnswerAt, let last = game.lastAnswer, context.date.timeIntervalSince(at) < 0.7 {
+                if let at = game.lastAnswerAt, let last = game.lastAnswer, context.date.timeIntervalSince(at) < 0.9 {
                     let t = context.date.timeIntervalSince(at)
+                    let correct = last.outcome == .correct
                     ZStack {
-                        (last.outcome == .correct ? Theme.mint : Theme.sunset).opacity(0.9 * (1 - t / 0.7)).ignoresSafeArea()
-                        Text(last.outcome == .correct ? "正解！" : "パス").font(Theme.display(90)).foregroundStyle(.white)
-                            .opacity(1 - max(0, (t - 0.45) / 0.25))
+                        Color.black.opacity(0.6)
+                        VStack(spacing: 8) {
+                            Image(systemName: correct ? "checkmark.circle.fill" : "arrow.uturn.right.circle.fill")
+                                .font(.system(size: 90, weight: .semibold))
+                                .foregroundStyle(correct ? Theme.correct : Theme.pass)
+                            Text(correct ? "正解" : "パス").font(.largeTitle.bold())
+                        }
                     }
+                    .ignoresSafeArea()
+                    .opacity(t > 0.6 ? max(0, 1 - (t - 0.6) / 0.3) : 1)
                     .allowsHitTesting(false)
                 }
             }

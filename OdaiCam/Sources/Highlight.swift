@@ -185,11 +185,11 @@ enum Highlight {
             let band = CATextLayer()
             // この座標は左下が原点。下の方に帯を置く
             band.frame = CGRect(x: 0, y: size.height * 0.06, width: size.width, height: bandHeight)
-            // アプリの色にそろえる（見えていた画面＝藍、本当の演技＝ピンク）
+            // アプリの色にそろえる（見えていた画面＝黒、本当の演技＝カメラの黄色）
             band.backgroundColor = (piece.seen
-                ? UIColor(red: 0.106, green: 0.063, blue: 0.208, alpha: 0.88)
-                : UIColor(red: 1, green: 0.31, blue: 0.48, alpha: 0.92)).cgColor
-            band.foregroundColor = UIColor.white.cgColor
+                ? UIColor(white: 0, alpha: 0.7)
+                : UIColor.systemYellow.withAlphaComponent(0.95)).cgColor
+            band.foregroundColor = (piece.seen ? UIColor.white : UIColor.black).cgColor
             band.font = UIFont.systemFont(ofSize: 10, weight: .heavy)
             band.fontSize = bandHeight * 0.45
             band.alignmentMode = .center

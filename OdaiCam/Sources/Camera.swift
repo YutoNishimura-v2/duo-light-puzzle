@@ -273,9 +273,11 @@ final class Camera: NSObject, @unchecked Sendable {
         input.expectsMediaDataInRealTime = true
         guard w.canAdd(input) else { return }
         w.add(input)
+        // アダプタは書き始める前に作る（後から作ると AVFoundation が例外で落とす）
+        let adaptor = AVAssetWriterInputPixelBufferAdaptor(assetWriterInput: input, sourcePixelBufferAttributes: nil)
         guard w.startWriting() else { return }
         effectWriter = w
-        effectAdaptor = AVAssetWriterInputPixelBufferAdaptor(assetWriterInput: input, sourcePixelBufferAttributes: nil)
+        effectAdaptor = adaptor
     }
 
     private func makeFrontWriter() {

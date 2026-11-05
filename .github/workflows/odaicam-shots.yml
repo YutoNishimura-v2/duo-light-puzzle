@@ -1,0 +1,68 @@
+name: odaicam-shots
+
+# シミュレータで各画面を開いて画面写真を撮る（見た目の確認用。配布はしない）
+on:
+  push:
+    branches: [main]
+    paths:
+      - "OdaiCam/**"
+      - ".github/workflows/odaicam-shots.yml"
+  workflow_dispatch:
+
+concurrency:
+  group: odaicam-shots
+  cancel-in-progress: true
+
+jobs:
+  shots:
+    runs-on: xcode-27
+    defaults:
+      run:
+        working-directory: OdaiCam
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Toolchain
+        run: |
+          set -euo pipefail
+          sudo xcode-select -s /Applications/Xcode_27.1.app
+          brew install xcodegen
+          xcrun simctl list devices available
+
+      - name: Build for simulator
+        run: |
+          set -euo pipefail
+          xcodegen generate
+          xcodebuild build -quiet \
+            -project OdaiCam.xcodeproj -scheme OdaiCam \
+            -configuration Debug -sdk iphonesimulator -destination 'generic/platform=iOS Simulator' \
+            -derivedDataPath build \
+            CODE_SIGNING_ALLOWED=YES CODE_SIGN_IDENTITY=- CODE_SIGN_STYLE=Manual
+
+      - name: Screenshots
+        run: |
+          set -euo pipefail
+          # Duo があればそれ、なければ最新の Pro
+          UDID=$(xcrun simctl list devices available -j | python3 -c '
+          import json, sys
+          d = json.load(sys.stdin)["devices"]
+          devs = [x for k, v in d.items() if "iOS" in k for x in v]
+          pick = [x for x in devs if "Duo" in x["name"]] or [x for x in devs if "Pro" in x["name"] and "Max" not in x["name"]] or devs
+          print(pick[-1]["udid"]); print(pick[-1]["name"], file=sys.stderr)')
+          xcrun simctl boot "$UDID" || true
+          xcrun simctl bootstatus "$UDID" -b
+          xcrun simctl ui "$UDID" appearance dark
+          xcrun simctl status_bar "$UDID" override --time 9:41 || true
+          xcrun simctl install "$UDID" build/Build/Products/Debug-iphonesimulator/OdaiCam.app
+          mkdir -p shots
+          for s in welcome home play countdown results settings decks; do
+            xcrun simctl launch --terminate-running-process "$UDID" io.github.yutonishimura-v2.odaicam -shot "$s"
+            sleep 6
+            xcrun simctl io "$UDID" screenshot "shots/$s.png"
+          done
+          ls -la shots
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: odaicam-shots
+          path: OdaiCam/shots

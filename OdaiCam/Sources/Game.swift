@@ -92,6 +92,7 @@ final class Game {
         highlightError = nil
         recordingStart = nil
         queue = deck.prompts.shuffled()
+        CrashLog.mark("ラウンド開始（\(deck.title)・\(Int(roundLength)) 秒・しばり \(effectsOn ? (fixedEffect?.label ?? "おまかせ") : "なし")）")
         startRecording?()
         running = Task {
             for n in stride(from: 3, through: 1, by: -1) {
@@ -101,6 +102,7 @@ final class Game {
                 try? await Task.sleep(for: .seconds(1))
             }
             phase = .playing
+            CrashLog.mark("プレイ開始")
             if cheatGuard { onWatch?(true) }
             nextPrompt()
             let end = ProcessInfo.processInfo.systemUptime + roundLength
@@ -178,6 +180,30 @@ final class Game {
         }
     }
 
+    /// 画面の確認用（起動引数 -shot）。カメラなしで各画面の状態を作る
+    func loadPreview(_ shot: String) {
+        let sample: [(String, Effect?, Outcome)] = [
+            ("ゴリラ", .stick, .correct), ("ペンギン", .silhouette, .correct), ("カンガルー", .mosaic, .pass),
+            ("フラミンゴ", .peephole, .correct), ("ナマケモノ", .delay, .correct),
+        ]
+        turns = sample.enumerated().map { i, t in
+            Turn(prompt: t.0, effect: t.1, start: Double(i) * 8, end: Double(i) * 8 + 6, outcome: t.2)
+        }
+        remaining = 42
+        heard = "ごりら"
+        switch shot {
+        case "countdown": phase = .countdown(3)
+        case "play":
+            turns.append(Turn(prompt: "コアラ", effect: .stick, start: 40))
+            phase = .playing
+        case "results":
+            cheats = 1
+            isNewBest = true
+            phase = .results
+        default: phase = .menu
+        }
+    }
+
     private var now: TimeInterval {
         ProcessInfo.processInfo.systemUptime - (recordingStart ?? ProcessInfo.processInfo.systemUptime)
     }
@@ -187,6 +213,7 @@ final class Game {
         let prompt = queue.removeFirst()
         let effect = nextEffect()
         turns.append(Turn(prompt: prompt, effect: effect, start: now))
+        CrashLog.mark("お題 \(turns.count)：しばり \(effect?.label ?? "なし")")
         onEffect?(effect, ProcessInfo.processInfo.systemUptime)
         heard = ""
         if voiceJudge { onPrompt?(prompt) }
@@ -214,6 +241,7 @@ final class Game {
             isNewBest = score > 0
         }
         phase = .results
+        CrashLog.mark("ラウンド終了")
         answerFeedback.notificationOccurred(.success)
         Sound.finish()
         onPrompt?(nil)
