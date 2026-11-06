@@ -262,7 +262,8 @@ jobs:
           ( echo "sec,cpu_percent,rss_mb" > demo/usage.csv
             T=0
             while true; do
-              L=$(ps -A -o rss=,%cpu=,comm= | grep '/OdaiCam.app/OdaiCam$' | head -1)
+              P=$(pgrep -f 'OdaiCam.app/OdaiCam' | head -1)
+              L=""; if [ -n "$P" ]; then L=$(ps -o rss=,%cpu= -p "$P"); fi
               if [ -n "$L" ]; then echo "$L" | awk -v t=$T '{printf "%d,%s,%.1f\n", t, $2, $1/1024}' >> demo/usage.csv; fi
               sleep 2; T=$((T+2))
             done ) &
@@ -291,7 +292,8 @@ jobs:
           set -uo pipefail
           DATA=$(xcrun simctl get_app_container "$UDID" io.github.yutonishimura-v2.odaicam data)
           mkdir -p demo/videos demo/frames
-          find "$DATA" -name 'highlight-*.mp4' -exec cp {} demo/videos/ \;
+          # 仕上がった動画だけ（1 回目の書き出しの途中の highlight-base は除く）
+          find "$DATA" -name 'highlight-*.mp4' ! -name 'highlight-base-*' -exec cp {} demo/videos/ \;
           ls -la demo/videos
           i=0
           for v in $(ls -tr demo/videos/highlight-*.mp4); do

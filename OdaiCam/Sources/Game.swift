@@ -209,7 +209,9 @@ final class Game {
         building = true
         Task {
             do {
-                highlightURL = try await Highlight.make(raw: url, seen: recordings.seen, front: recordings.front, clips: clips, score: score)
+                highlightURL = try await Self.makeWithRetry {
+                    try await Highlight.make(raw: url, seen: recordings.seen, front: recordings.front, clips: clips, score: score)
+                }
             } catch {
                 var message = "ハイライトを作れませんでした: \(Self.describe(error))"
                 // 試験用：どこで失敗するかを絞るため、部品を外して作り直してみる
@@ -226,6 +228,21 @@ final class Game {
             }
             building = false
         }
+    }
+
+    /// ラウンドの直後は、しばりの処理や録画の後片付けで映像の読み込み口が埋まっていて、
+    /// 1 回目の書き出しだけ「Cannot Decode（-11821）」で落ちることがある（デモで毎回起きた。すぐ作り直すと通る）。
+    /// 少し待って 2 回まで作り直す
+    private static func makeWithRetry(_ make: () async throws -> URL) async throws -> URL {
+        var last: Error?
+        for attempt in 0..<3 {
+            if attempt > 0 {
+                CrashLog.mark("ハイライト：作り直し \(attempt) 回目（\(describe(last!))）")
+                try? await Task.sleep(for: .milliseconds(attempt == 1 ? 700 : 1500))
+            }
+            do { return try await make() } catch { last = error }
+        }
+        throw last!
     }
 
     /// 失敗の理由を、元の原因の番号まで並べる（AVFoundation の文言だけでは分からないため）
