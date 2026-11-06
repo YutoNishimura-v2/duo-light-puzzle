@@ -6,7 +6,7 @@ final class OdaiCamUITests: XCTestCase {
     /// ホームのモード列（左から順に押す。押すと中央に寄るので、隣は画面の中にある）
     static let modes = ["おまかせ", "棒人間", "影絵", "モザイク", "3秒遅れ", "のぞき穴", "しばりなし"]
     /// 1 ラウンドの秒数（起動引数で短くする）
-    static let roundSeconds = 8
+    static let roundSeconds = 15
     /// シミュレータの言葉に関係なく、アプリを日本語で動かす（ボタンは日本語の名前で探すため。山札も日本語になる）
     static let japanese = ["-AppleLanguages", "(ja)", "-AppleLocale", "ja_JP"]
 
@@ -113,9 +113,9 @@ final class OdaiCamUITests: XCTestCase {
                 }
                 let correct = app.buttons["正解"]
                 XCTAssertTrue(correct.waitForExistence(timeout: 15), "デモ \(round)：プレイ画面が出ない")
-                // 4 秒ごとに答える（4 回に 1 回はパス）
+                // 4 秒ごとに答える（4 回に 1 回はパス）。ラウンドの終わり際（30 秒のうち最後の 8 秒ほど）は押さない
                 var n = 0
-                while correct.exists && app.state == .runningForeground {
+                while correct.exists && app.state == .runningForeground && n < 5 {
                     sleep(4)
                     guard correct.exists else { break }
                     n += 1
@@ -125,7 +125,8 @@ final class OdaiCamUITests: XCTestCase {
                 }
                 XCTAssertEqual(app.state, .runningForeground, "デモ \(round)：遊んでいる間に落ちた")
                 XCTAssertTrue(app.buttons["ホームへ"].waitForExistence(timeout: 20), "デモ \(round)：結果が出ない")
-                let deadline = Date().addingTimeInterval(120)
+                // シミュレータでは 1080x1920 の書き出しが 2 回あるので遅い。4 分まで待つ
+                let deadline = Date().addingTimeInterval(240)
                 while Date() < deadline {
                     if app.buttons["共有"].exists { break }
                     sleep(1)
