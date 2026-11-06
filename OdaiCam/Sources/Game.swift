@@ -34,7 +34,7 @@ final class Game {
 
     private(set) var phase = Phase.menu
     // 最初に開いたときは「動物」・60 秒・しばりおまかせ（effectsOn = true、fixedEffect = nil）
-    var deck = Deck.builtIn.first(where: { $0.id == "animal" }) ?? Deck.builtIn[0]
+    var deck = Deck.defaultForDevice
     var roundLength = 60.0
     private(set) var turns: [Turn] = []
     private(set) var remaining = 0.0
@@ -210,7 +210,8 @@ final class Game {
         Task {
             do {
                 highlightURL = try await Self.makeWithRetry {
-                    try await Highlight.make(raw: url, seen: recordings.seen, front: recordings.front, clips: clips, score: score)
+                    try await Highlight.make(raw: url, seen: recordings.seen, front: recordings.front, clips: clips, score: score,
+                                             overlay: !Self.fastExport)
                 }
             } catch {
                 var message = "ハイライトを作れませんでした: \(Self.describe(error))"
@@ -229,6 +230,10 @@ final class Game {
             building = false
         }
     }
+
+    /// 試験用：起動引数 -testFastExport YES で、帯の重ね書き（2 回目の書き出し）を省く。
+    /// シミュレータでは 1080x1920 の重ね書きがとても遅く、8 ラウンドの UI テストが時間切れになったため
+    static let fastExport = UserDefaults.standard.bool(forKey: "testFastExport")
 
     /// ラウンドの直後は、しばりの処理や録画の後片付けで映像の読み込み口が埋まっていて、
     /// 1 回目の書き出しだけ「Cannot Decode（-11821）」で落ちることがある（デモで毎回起きた。すぐ作り直すと通る）。

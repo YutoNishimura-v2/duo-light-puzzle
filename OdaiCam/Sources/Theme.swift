@@ -60,15 +60,16 @@ struct AppMark: View {
 extension Deck {
     var symbol: String {
         switch id {
-        case "animal": "pawprint.fill"
-        case "job": "briefcase.fill"
-        case "sport": "figure.run"
-        case "action": "hand.wave.fill"
+        case "animal", "en-animal": "pawprint.fill"
+        case "job", "en-job": "briefcase.fill"
+        case "sport", "en-sport": "figure.run"
+        case "action", "en-action": "hand.wave.fill"
         case "nomikai": "wineglass.fill"
-        case "couple": "heart.fill"
-        case "aruaru": "bubble.left.fill"
-        case "muri": "flame.fill"
-        case "winter": "snowflake"
+        case "en-party": "party.popper.fill"
+        case "couple", "en-couple": "heart.fill"
+        case "aruaru", "en-relatable": "bubble.left.fill"
+        case "muri", "en-impossible": "flame.fill"
+        case "winter", "en-holiday": "snowflake"
         default: "pencil"
         }
     }

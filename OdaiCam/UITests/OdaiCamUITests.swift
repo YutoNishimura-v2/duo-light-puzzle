@@ -17,7 +17,8 @@ final class OdaiCamUITests: XCTestCase {
     @MainActor
     private func launch() {
         app = XCUIApplication()
-        app.launchArguments = ["-fakeCamera", "YES", "-onboarded", "YES", "-testRoundSeconds", "\(Self.roundSeconds)"]
+        app.launchArguments = ["-fakeCamera", "YES", "-onboarded", "YES", "-testRoundSeconds", "\(Self.roundSeconds)",
+                                 "-testFastExport", "YES"]
         app.launch()
         XCTAssertTrue(app.buttons["あそぶ"].waitForExistence(timeout: 20), "ホームが出ない")
         // 偽カメラのコマが届くまで待つ

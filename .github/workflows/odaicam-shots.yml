@@ -19,7 +19,7 @@ concurrency:
 jobs:
   check:
     runs-on: xcode-27
-    timeout-minutes: 60
+    timeout-minutes: 75
     defaults:
       run:
         working-directory: OdaiCam
@@ -30,7 +30,7 @@ jobs:
         run: |
           set -euo pipefail
           sudo xcode-select -s /Applications/Xcode_27.1.app
-          brew install xcodegen ffmpeg
+          brew install xcodegen ffmpeg coreutils
 
       - name: Sample clip
         # 偽カメラに流す人の動画。The Grizzly Bear Dance (1913)、パブリックドメイン（Wikimedia Commons）。
@@ -104,13 +104,14 @@ jobs:
           xcrun simctl io "$UDID" recordVideo --display=1 --codec=h264 --force uitest/run.mp4 &
           REC=$!
           sleep 2
-          xcodebuild test-without-building \
+          # 固まっても後ろの手順（記録の回収・デモ）が動くよう、20 分で打ち切る。進み具合はログに流す
+          gtimeout 1200 xcodebuild test-without-building \
             -project OdaiCam.xcodeproj -scheme OdaiCamUITests \
             -destination "id=$UDID" -derivedDataPath build \
             -skip-testing:OdaiCamUITests/OdaiCamUITests/test3Demo \
-            -resultBundlePath uitest/Result.xcresult > uitest/xcodebuild.log 2>&1
-          STATUS=$?
-          grep -E "Test (Case|Suite)|error:|XCTAssert|failed|passed" uitest/xcodebuild.log || tail -50 uitest/xcodebuild.log
+            -resultBundlePath uitest/Result.xcresult 2>&1 | tee uitest/xcodebuild.log | grep --line-buffered -E "Test Case|error:|XCTAssert"
+          STATUS=${PIPESTATUS[0]}
+          tail -30 uitest/xcodebuild.log
           kill -INT $REC || true
           wait $REC || true
           # 録画はそのままだと 500 MB ほどあるので、小さくしてから上げる
@@ -192,12 +193,12 @@ jobs:
               sleep 2; T=$((T+2))
             done ) &
           MON=$!
-          xcodebuild test-without-building \
+          gtimeout 1200 xcodebuild test-without-building \
             -project OdaiCam.xcodeproj -scheme OdaiCamUITests \
             -destination "id=$UDID" -derivedDataPath build \
             -only-testing:OdaiCamUITests/OdaiCamUITests/test3Demo \
-            -resultBundlePath demo/Result.xcresult > demo/xcodebuild.log 2>&1
-          STATUS=$?
+            -resultBundlePath demo/Result.xcresult 2>&1 | tee demo/xcodebuild.log | grep --line-buffered -E "Test Case|error:|XCTAssert"
+          STATUS=${PIPESTATUS[0]}
           kill $MON || true
           grep -E "Test (Case|Suite)|error:|XCTAssert|failed|passed" demo/xcodebuild.log || tail -50 demo/xcodebuild.log
           echo "DEMO_STATUS=$STATUS" >> "$GITHUB_ENV"

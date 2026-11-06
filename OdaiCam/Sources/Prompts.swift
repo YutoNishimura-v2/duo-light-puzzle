@@ -6,6 +6,32 @@ struct Deck: Identifiable, Hashable {
     let id: String
     let title: String
     let prompts: [String]
+    /// お題の言葉（"ja" か "en"）。声の判定の言葉を決めるのにも使う
+    let language: String
+
+    /// language を省くと日本語（いまある山札はそのまま）
+    init(id: String, title: String, prompts: [String], language: String = "ja") {
+        self.id = id
+        self.title = title
+        self.prompts = prompts
+        self.language = language
+    }
+
+    /// 端末の言葉。いちばん上の言語が日本語なら "ja"、それ以外は "en"
+    static var deviceLanguage: String {
+        (Locale.preferredLanguages.first ?? "ja").hasPrefix("ja") ? "ja" : "en"
+    }
+
+    /// 言葉ごとの山札（"ja" 以外はすべて英語）
+    static func all(language: String) -> [Deck] {
+        language == "ja" ? builtIn : englishBuiltIn
+    }
+
+    /// 端末の言葉に合わせた山札。並びの先頭は動物
+    static var forDevice: [Deck] { all(language: deviceLanguage) }
+
+    /// 端末の言葉での最初の山札（Game の初期値）
+    static var defaultForDevice: Deck { forDevice[0] }
 
     static let builtIn: [Deck] = [
         // 最初はこれ（Game の初期値は builtIn[0]）
@@ -74,6 +100,90 @@ struct Deck: Identifiable, Hashable {
             "焼き芋", "おでん", "温泉", "凍った道で転ぶ", "寒くて震える", "ストーブ", "ゆず湯", "餅つき", "門松", "帰省ラッシュ",
         ]),
     ]
+
+    /// 海外向けの英語の山札（18〜30 歳の英語圏向けに書いたもの。日本語の山札の直訳ではない）。
+    /// 1〜3 語で、声を出さずに体で演じられるもの。商標・キャラクター名は入れない
+    static let englishBuiltIn: [Deck] = [
+        // 最初はこれ（日本語と同じく動物から）
+        Deck(id: "en-animal", title: "Animals", prompts: [
+            "Gorilla", "Penguin", "Kangaroo", "Elephant", "Giraffe", "Snake", "Chicken", "Crab", "Flamingo", "Sloth",
+            "Hamster", "Crocodile", "Koala", "Octopus", "Frog", "Sea otter", "Lion", "Bunny", "Jellyfish", "Monkey",
+            "Panda", "Hippo", "Zebra", "Peacock", "Turtle", "Dolphin", "Bear", "Cat", "Dog", "Horse",
+            "Sheep", "Pig", "Owl", "Bat", "Cheetah", "Ostrich", "Anteater", "Hedgehog", "Seal", "Squirrel",
+            "Snail", "Pelican", "Woodpecker", "Scorpion", "Shark", "Eagle", "Spider", "Bee", "Butterfly", "Goldfish",
+            "Cow", "Duck", "Raccoon", "Skunk", "Camel", "Moose", "Lobster", "T-Rex", "Llama", "Platypus",
+            "Worm", "Pug", "Seagull", "Possum", "Chameleon",
+        ], language: "en"),
+        Deck(id: "en-job", title: "Jobs", prompts: [
+            "Firefighter", "Lifeguard", "Barista", "Barber", "Pilot", "Dentist", "Orchestra conductor", "Police officer", "Magician", "Boxer",
+            "Pianist", "Photographer", "Chef", "Carpenter", "Astronaut", "Bus driver", "Mail carrier", "Delivery driver", "Nurse", "Surgeon",
+            "Personal trainer", "Yoga teacher", "Ballet dancer", "DJ", "Rapper", "Influencer", "Painter", "Gardener", "Security guard", "Nail tech",
+            "Farmer", "Fisherman", "Referee", "Fortune teller", "Teacher", "Mime", "Clown", "News anchor", "Model", "Babysitter",
+            "Plumber", "Mechanic", "Construction worker", "Crossing guard", "Flight attendant", "Window washer", "Dog walker", "Lumberjack", "Cowboy", "Scientist",
+            "Judge", "Tour guide", "Weather forecaster", "Air traffic controller", "Cashier", "Beekeeper", "Zookeeper", "Tattoo artist", "Paramedic", "Detective",
+            "Baker", "Janitor",
+        ], language: "en"),
+        Deck(id: "en-sport", title: "Sports", prompts: [
+            "Surfing", "Bowling", "Skiing", "Table tennis", "Archery", "Fencing", "Weightlifting", "Golf", "Volleyball", "Jump rope",
+            "Skateboarding", "Butterfly stroke", "Baseball pitcher", "Curling", "Rock climbing", "Karate", "Fishing", "Tennis", "Sumo wrestling", "Basketball",
+            "Penalty kick", "Rugby", "Badminton", "Judo", "Sprinting", "Marathon", "Long jump", "Pole vault", "Hammer throw", "Javelin",
+            "Gymnastics", "Trampoline", "Snowboarding", "Figure skating", "Speed skating", "Rowing", "Kayaking", "Horse riding", "Billiards", "Darts",
+            "Hurdles", "Goalkeeper", "Dodgeball", "Boxing", "Quarterback", "Touchdown dance", "Ice hockey", "Cricket", "Water polo", "Synchronized swimming",
+            "Wrestling", "Cycling", "Scuba diving", "Pickleball", "Cheerleading", "Shot put", "Tug of war", "Paddleboarding", "Push-ups", "Lacrosse",
+        ], language: "en"),
+        Deck(id: "en-action", title: "Everyday Actions", prompts: [
+            "Brushing teeth", "Opening an umbrella", "Crowded subway", "Slurping noodles", "Vacuuming", "Taking a selfie", "Hanging laundry", "Oversleeping", "Sneezing", "Inflating balloons",
+            "Tossing pizza dough", "Blow-drying hair", "Swatting a mosquito", "Losing your keys", "Heavy door", "Snooze button", "Putting in contacts", "Doing makeup", "Stuck jar lid", "Ironing a shirt",
+            "Cracking an egg", "Washing dishes", "Tying shoelaces", "Playing catch", "Rock paper scissors", "Arm wrestling", "Handstand", "Yawning", "Hiccups", "Sipping hot coffee",
+            "Typing fast", "Taking out trash", "Washing hair", "Hide and seek", "Making the bed", "Mowing the lawn", "Parallel parking", "Shaving", "Flossing", "Walking the dog",
+            "Grocery shopping", "Pumping gas", "Loading the dishwasher", "Folding laundry", "Changing a lightbulb", "Assembling furniture", "Flipping pancakes", "Chopping onions", "Painting nails", "Texting",
+            "Jogging", "Stretching", "Climbing stairs", "Reading a book", "Watering plants", "Feeding the cat", "Taking a shower", "Carrying groceries", "Applying sunscreen", "Drive-thru",
+            "Waving goodbye", "Hailing a taxi",
+        ], language: "en"),
+        // 13 歳以上でも大丈夫なパーティー（お酒は出さない）
+        Deck(id: "en-party", title: "Party Night", prompts: [
+            "Karaoke", "Air guitar", "Limbo", "Conga line", "Musical chairs", "Popping confetti", "Cutting the cake", "Blowing out candles", "Piñata", "Slow dance",
+            "Dance-off", "Robot dance", "The worm", "Breakdancing", "Photo booth", "Group selfie", "Photobomb", "Scratching records", "Crowd surfing", "Mosh pit",
+            "Glow sticks", "Making a toast", "Last pizza slice", "Board game night", "Video game rage", "Poker face", "Card trick", "Roasting marshmallows", "Ghost story", "Pillow fight",
+            "Hitting high notes", "Mic drop", "Fist bump", "High five", "Chest bump", "Secret handshake", "Wallflower", "Awkward small talk", "Sneaking out early", "Bouncer",
+            "Bathroom line", "Encore", "Costume party", "Spilled drink", "Hot potato", "Freeze dance", "Silent disco", "Disco ball", "Strobe lights", "Party crasher",
+            "Noise complaint", "Cleaning up after", "Doing the splits", "Cartwheel", "Hype man", "Bongo drums",
+        ], language: "en"),
+        Deck(id: "en-couple", title: "Couples & Dating", prompts: [
+            "Holding hands", "Proposing", "First date", "Blind date", "Sharing a milkshake", "Couple selfie", "Matching outfits", "Long distance", "Left on read", "Jealousy",
+            "Anniversary", "Surprise date", "Giving flowers", "Running late", "Ferris wheel", "Haunted house", "Movie date", "Sharing popcorn", "Finger heart", "First fight",
+            "Making up", "Back hug", "Head pat", "Confessing feelings", "Getting dumped", "Love at first sight", "Love letter", "Late night call", "Cooking together", "Sharing an umbrella",
+            "Arm in arm", "Wink", "Blowing a kiss", "Wrapping a scarf", "Road trip", "Stargazing", "Picnic", "Wedding", "Bouquet toss", "Honeymoon",
+            "Moving in together", "Meeting the parents", "Swiping right", "Double texting", "Double date", "Piggyback ride", "Kitchen dancing", "Stealing fries", "Hogging the blanket", "Picking a movie",
+            "Butterflies", "Friend zone", "Third wheel", "Breakup", "Holding the door", "Beach sunset", "Ice skating date",
+        ], language: "en"),
+        // 「あるある」の英語版（直訳ではなく英語圏の日常）
+        Deck(id: "en-relatable", title: "Relatable", prompts: [
+            "Stubbed toe", "Phone at 1%", "Waiting for pickup", "Brain freeze", "Slow Wi-Fi", "Lost the remote", "Tangled earbuds", "Cracked screen", "Phone on face", "Leg cramp",
+            "Forgot their name", "Waving at strangers", "Pushing pull doors", "Static shock", "Sneeze won't come", "Melting ice cream", "Mosquito bite", "Fridge staring", "Monday morning", "Payday",
+            "Midnight snack", "Couch nap", "Sore muscles", "Hallway dodge", "Bad hair day", "Hole in sock", "Forgot your wallet", "Slept through alarm", "All-nighter", "Job interview nerves",
+            "Packed elevator", "Chasing the bus", "Missed the bus", "Thermostat war", "Typing then deleting", "Talking while muted", "Frozen video call", "Autocorrect fail", "Taking 100 selfies", "Burnt tongue",
+            "Paper cut", "Earworm", "Tripping on nothing", "Totally blanking", "Wobbly shopping cart", "Self-checkout error", "Lost your car", "Slow walkers", "Spam call", "Elevator small talk",
+            "Wrong turn", "Stubborn ketchup bottle", "Folding fitted sheets", "Sunburn", "Stepping on toys", "Pretending to text", "Impossible packaging", "Gym selfie",
+        ], language: "en"),
+        Deck(id: "en-impossible", title: "Impossible Mode", prompts: [
+            "Moon landing", "Spacewalk", "Turning invisible", "Stopping time", "Dinosaur chase", "Inside a tornado", "Jungle survival", "Swimming with sharks", "Tightrope walk", "Breathing fire",
+            "Teleporting", "Struck by lightning", "Shrinking", "Becoming a robot", "Zombie apocalypse", "Ghost possession", "Slow-motion fight", "Rewinding time", "Unicycle juggling", "Meeting an alien",
+            "Bear encounter", "Quicksand", "Desert mirage", "Deserted island", "Building a pyramid", "Becoming a burrito", "Being popcorn", "Melting snowman", "Blown away", "Mirror reflection",
+            "Puppet on strings", "Vending machine", "Traffic light", "Robot vacuum", "Washing machine", "Lava lamp", "Toaster", "Wi-Fi signal", "Black hole", "Volcano erupting",
+            "Northern lights", "Solar eclipse", "Gravity flipping", "Photosynthesis", "Caterpillar to butterfly", "Glitching video game", "Time traveler", "Superhero landing", "Moonwalk", "Jet lag",
+            "Being a cloud", "Ocean wave", "Inflatable tube man", "Revolving door", "Buffering", "Ice cube melting", "Procrastination", "Deja vu",
+        ], language: "en"),
+        // 季節の山札（2026 年 11 月〜：感謝祭・クリスマス・年越し）
+        Deck(id: "en-holiday", title: "Holiday Season", prompts: [
+            "Carving the turkey", "Pumpkin pie", "Wishbone", "Food coma", "Parade float", "Giant balloon", "Backyard football", "Giving thanks", "Second helping", "Mashed potatoes",
+            "Black Friday rush", "Pilgrim hat", "Leftovers", "Decorating the tree", "Santa Claus", "Reindeer sleigh", "Hanging stockings", "Wrapping presents", "Opening presents", "Ugly sweater",
+            "Secret Santa", "Building a snowman", "Snowball fight", "Snow angel", "Ice skating", "Caroling", "Gingerbread house", "Hot cocoa", "Candy cane", "Untangling lights",
+            "Chimney", "Elf", "Nutcracker", "Baking cookies", "Milk and cookies", "Sledding", "Shoveling snow", "Fireplace", "Advent calendar", "Regifting",
+            "Fake gift smile", "Lighting a menorah", "Spinning a dreidel", "Countdown", "Fireworks", "Ball drop", "Popping champagne", "Party hat", "Party horn", "New Year's resolution",
+            "January gym rush", "Scraping the windshield", "Shivering", "Mittens", "Earmuffs", "Airport delay", "Family photo", "Matching pajamas", "Kids' table", "Awkward family dinner",
+        ], language: "en"),
+    ]
 }
 
 /// 自分たちで作るお題帳（内輪ネタ）。1 行に 1 つ
@@ -89,6 +199,6 @@ enum CustomDeck {
         let prompts = text.split(whereSeparator: \.isNewline)
             .map { $0.trimmingCharacters(in: .whitespaces) }
             .filter { !$0.isEmpty }
-        return prompts.isEmpty ? nil : Deck(id: "custom", title: "お題帳", prompts: prompts)
+        return prompts.isEmpty ? nil : Deck(id: "custom", title: Deck.deviceLanguage == "ja" ? "お題帳" : "My Deck", prompts: prompts, language: Deck.deviceLanguage)
     }
 }

@@ -653,7 +653,7 @@ struct DeckSheet: View {
             .padding(.bottom, 20)
             ScrollView {
                 VStack(spacing: 10) {
-                    ForEach(Deck.builtIn + (CustomDeck.deck.map { [$0] } ?? [])) { deck in
+                    ForEach(Deck.forDevice + (CustomDeck.deck.map { [$0] } ?? [])) { deck in
                         let selected = game.deck.id == deck.id
                         Button {
                             game.deck = deck
