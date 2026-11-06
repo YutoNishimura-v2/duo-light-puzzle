@@ -139,6 +139,26 @@ final class EffectEngine: @unchecked Sendable {
     private var lastHistory: TimeInterval = 0
     /// 背景の絵（一度描いたら使い回す）。effects キューだけで触る
     private var backgrounds: [Effect: (size: CGSize, image: CIImage)] = [:]
+    /// main に渡したしばりの画面がまだ受け取られていない（lock で守る）。
+    /// main が追いつかないときは新しい画面を渡さない（Task と画素の箱が積み上がってメモリが増え続けないように）
+    private var frameInFlight = false
+
+    /// 棒人間・デモの型抜きを描く画素の箱（毎コマ新しい CGImage を作らない）。effects キューだけで触る
+    private var stickPool: CVPixelBufferPool?
+    private var stickPoolSize: CGSize = .zero
+    private var maskPool: CVPixelBufferPool?
+    private var maskPoolSize: CGSize = .zero
+
+    /// デモだけ：Vision の読み取りを間引く。effects キューだけで触る
+    /// 最後に Vision が見つけた人の型抜きと、その時刻
+    private var lastPersonMask: CVPixelBuffer?
+    private var lastPersonTime: TimeInterval = 0
+    /// Vision が人を見つけられなかったら、この時刻までは Vision を回さず役者の型抜き・骨組みを使う
+    private var personRetryAt: TimeInterval = 0
+    private var bodyRetryAt: TimeInterval = 0
+    /// デモで Vision を回す間隔（見つけているとき）と、見つからなかったときに待つ時間
+    static let demoVisionInterval = 1.0 / 12
+    static let demoVisionRetry = 1.0
 
     /// Vision の読み取り。使うときに作る（メモリが足りないときは手放して、次に使うとき作り直す）。effects キューだけで触る
     private var bodyRequestStore: VNDetectHumanBodyPoseRequest?
@@ -192,6 +212,11 @@ final class EffectEngine: @unchecked Sendable {
             backgrounds.removeAll()
             pool = nil
             poolSize = .zero
+            stickPool = nil
+            stickPoolSize = .zero
+            maskPool = nil
+            maskPoolSize = .zero
+            lastPersonMask = nil
             if vision {
                 bodyRequestStore = nil
                 personRequestStore = nil
@@ -214,7 +239,12 @@ final class EffectEngine: @unchecked Sendable {
             defer { lock.withLock { busy = false } }
             // コマごとの一時的な絵（Vision・Core Image の中身）を、このコマの終わりで手放す
             autoreleasepool {
-                if clear { history.removeAll() }
+                if clear {
+                    history.removeAll()
+                    lastPersonMask = nil
+                    // しばりが変わったら、前のしばりで Core Image が持っていた絵を手放す（2 秒ごとの切り替えでも軽い）
+                    context.clearCaches()
+                }
                 let now = ProcessInfo.processInfo.systemUptime
                 let input = Self.downscaled(CIImage(cvPixelBuffer: buffer))
                 let rendered = render(effect, input: input, source: buffer, now: now, elapsed: now - start, frameTime: time.seconds)
@@ -224,11 +254,30 @@ final class EffectEngine: @unchecked Sendable {
                 guard let pb = makeBuffer(size: input.extent.size) else { return }
                 context.render(output, to: pb)
                 onPixelBuffer?(pb, time)
+                // 前の画面を main がまだ受け取っていなければ、この画面は見せない（録画には上で書いてある）
+                let send: Bool = lock.withLock {
+                    if frameInFlight { return false }
+                    frameInFlight = true
+                    return true
+                }
+                guard send else { return }
                 var cg: CGImage?
                 VTCreateCGImageFromCVPixelBuffer(pb, options: nil, imageOut: &cg)
-                if let cg { Task { @MainActor [onFrame] in onFrame?(cg) } }
+                guard let cg else {
+                    lock.withLock { frameInFlight = false }
+                    return
+                }
+                Task { @MainActor [onFrame, weak self] in
+                    onFrame?(cg)
+                    self?.frameDelivered()
+                }
             }
         }
+    }
+
+    /// main が画面を受け取った（main で呼ぶ）
+    private func frameDelivered() {
+        lock.withLock { frameInFlight = false }
     }
 
     // MARK: しばりごとの絵
@@ -239,14 +288,14 @@ final class EffectEngine: @unchecked Sendable {
                         frameTime: TimeInterval) -> (image: CIImage, visible: Bool) {
         let black = CIImage(color: .black).cropped(to: input.extent)
         if effect.isBackground {
-            return backdrop(effect, source: source, input: input, frameTime: frameTime, black: black)
+            return backdrop(effect, source: source, input: input, now: now, frameTime: frameTime, black: black)
         }
         switch effect {
         case .stick:
-            let stick = stickFigure(source: source, size: input.extent.size, frameTime: frameTime)
+            let stick = stickFigure(source: source, size: input.extent.size, now: now, frameTime: frameTime)
             return (stick.image ?? black, stick.found)
         case .silhouette:
-            let shadow = silhouette(source: source, input: input, frameTime: frameTime)
+            let shadow = silhouette(source: source, input: input, now: now, frameTime: frameTime)
             return (shadow.image ?? black, shadow.found)
         default:
             return (plain(effect, input: input, now: now, elapsed: elapsed, black: black), true)
@@ -312,28 +361,60 @@ final class EffectEngine: @unchecked Sendable {
     }
 
     /// 人の形の型抜き（白が人、input の大きさ）。found は人の形が画面に十分あったか
-    private func personMask(source: CVPixelBuffer, input: CIImage, frameTime: TimeInterval) -> (mask: CIImage?, found: Bool) {
-        let handler = VNImageRequestHandler(cvPixelBuffer: source)
-        try? handler.perform([personRequest])
-        var mask: CIImage?
+    /// デモでは Vision を間引く：見つけているときは 12 回/秒まで（間は前の型抜きを使う）、
+    /// 見つからなかったら 1 秒は Vision を回さず役者の型抜きを使う（シミュレータの Vision は人を見つけず、重いだけ）
+    private func personMask(source: CVPixelBuffer, input: CIImage, now: TimeInterval,
+                            frameTime: TimeInterval) -> (mask: CIImage?, found: Bool) {
+        let demo = FakeCamera.isDemo
+        var maskBuffer: CVPixelBuffer?
         var found = false
-        if let maskBuffer = personRequest.results?.first?.pixelBuffer {
-            found = Self.coverage(maskBuffer) > Self.minCoverage
+        if demo, now < personRetryAt {
+            // Vision は休み（下で役者の型抜きを使う）
+        } else if demo, let last = lastPersonMask, now - lastPersonTime < Self.demoVisionInterval {
+            maskBuffer = last
+            found = true
+        } else {
+            let handler = VNImageRequestHandler(cvPixelBuffer: source)
+            try? handler.perform([personRequest])
+            if let m = personRequest.results?.first?.pixelBuffer {
+                maskBuffer = m
+                found = Self.coverage(m) > Self.minCoverage
+            }
+            if demo {
+                if found {
+                    lastPersonMask = maskBuffer
+                    lastPersonTime = now
+                } else {
+                    lastPersonMask = nil
+                    personRetryAt = now + Self.demoVisionRetry
+                }
+            }
+        }
+        var mask: CIImage?
+        if let maskBuffer {
             let m = CIImage(cvPixelBuffer: maskBuffer)
             mask = m.transformed(by: CGAffineTransform(scaleX: input.extent.width / m.extent.width,
                                                        y: input.extent.height / m.extent.height))
         }
-        // デモ：Vision が人を見つけられないときは、偽カメラの役者の型抜きを使う
-        if !found, FakeCamera.isDemo, let demo = DemoActor.mask(at: frameTime, size: input.extent.size) {
-            mask = demo
-            found = true
+        // デモ：Vision が人を見つけられないときは、偽カメラの役者の型抜きを使う。
+        // 型抜きは使い回しの画素の箱に半分の大きさで描く（毎コマ新しい CGImage を作ると Core Image が抱え込む）
+        if !found, demo {
+            let size = CGSize(width: (input.extent.width / 2).rounded(), height: (input.extent.height / 2).rounded())
+            if let pb = Self.pooledBuffer(&maskPool, &maskPoolSize, size: size, format: kCVPixelFormatType_OneComponent8),
+               DemoActor.mask(at: frameTime, into: pb) {
+                let m = CIImage(cvPixelBuffer: pb)
+                mask = m.transformed(by: CGAffineTransform(scaleX: input.extent.width / m.extent.width,
+                                                           y: input.extent.height / m.extent.height))
+                found = true
+            }
         }
         return (mask, found)
     }
 
     /// found は人の形が画面に十分あったか
-    private func silhouette(source: CVPixelBuffer, input: CIImage, frameTime: TimeInterval) -> (image: CIImage?, found: Bool) {
-        let person = personMask(source: source, input: input, frameTime: frameTime)
+    private func silhouette(source: CVPixelBuffer, input: CIImage, now: TimeInterval,
+                            frameTime: TimeInterval) -> (image: CIImage?, found: Bool) {
+        let person = personMask(source: source, input: input, now: now, frameTime: frameTime)
         guard let mask = person.mask else { return (nil, false) }
         let blend = CIFilter.blendWithMask()
         blend.inputImage = CIImage(color: CIColor(red: 0.05, green: 0.05, blue: 0.08)).cropped(to: input.extent)
@@ -344,9 +425,10 @@ final class EffectEngine: @unchecked Sendable {
 
     /// 本物の人（カメラの画素そのまま）を、描いておいた背景の上に切り抜いて置く。
     /// 人が見つからないときは背景だけ（visible は false）
-    private func backdrop(_ effect: Effect, source: CVPixelBuffer, input: CIImage, frameTime: TimeInterval,
+    private func backdrop(_ effect: Effect, source: CVPixelBuffer, input: CIImage, now: TimeInterval, frameTime: TimeInterval,
                           black: CIImage) -> (image: CIImage, visible: Bool) {
-        let size = input.extent.size
+        // 大きさは整数に丸めて比べる（小数のぶれで描き直さない）。しばりごとに 1 枚だけ持つ（最大 4 枚）
+        let size = CGSize(width: input.extent.width.rounded(), height: input.extent.height.rounded())
         var background = black
         if let cached = backgrounds[effect], cached.size == size {
             background = cached.image
@@ -354,7 +436,7 @@ final class EffectEngine: @unchecked Sendable {
             background = CIImage(cgImage: cg)
             backgrounds[effect] = (size, background)
         }
-        let person = personMask(source: source, input: input, frameTime: frameTime)
+        let person = personMask(source: source, input: input, now: now, frameTime: frameTime)
         guard let mask = person.mask else { return (background, false) }
         // 縁を少しだけぼかして、切り抜きのギザギザを目立たなくする
         let soft = mask.clampedToExtent().applyingGaussianBlur(sigma: 1.5).cropped(to: input.extent)
@@ -384,28 +466,41 @@ final class EffectEngine: @unchecked Sendable {
     }
 
     /// 骨組みだけを描く。found は関節が十分に見つかったか
-    private func stickFigure(source: CVPixelBuffer, size: CGSize, frameTime: TimeInterval) -> (image: CIImage?, found: Bool) {
-        let handler = VNImageRequestHandler(cvPixelBuffer: source)
-        try? handler.perform([bodyRequest])
-        let w = Int(size.width), h = Int(size.height)
-        guard let ctx = CGContext(data: nil, width: w, height: h, bitsPerComponent: 8, bytesPerRow: 0,
-                                  space: CGColorSpaceCreateDeviceRGB(),
-                                  bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue) else { return (nil, false) }
+    private func stickFigure(source: CVPixelBuffer, size: CGSize, now: TimeInterval,
+                             frameTime: TimeInterval) -> (image: CIImage?, found: Bool) {
+        let demo = FakeCamera.isDemo
         var found = false
         // 人ごとの関節（確かなものだけ。0〜1、左下が原点）
         var bodies: [[VNHumanBodyPoseObservation.JointName: CGPoint]] = []
-        for body in bodyRequest.results ?? [] {
-            guard let points = try? body.recognizedPoints(.all) else { continue }
-            var sure: [VNHumanBodyPoseObservation.JointName: CGPoint] = [:]
-            for (name, pt) in points where pt.confidence > 0.2 { sure[name] = pt.location }
-            if sure.count >= Self.minJoints { found = true }
-            bodies.append(sure)
+        // デモで Vision が人を見つけられなかった直後は、しばらく Vision を回さない
+        if !(demo && now < bodyRetryAt) {
+            let handler = VNImageRequestHandler(cvPixelBuffer: source)
+            try? handler.perform([bodyRequest])
+            for body in bodyRequest.results ?? [] {
+                guard let points = try? body.recognizedPoints(.all) else { continue }
+                var sure: [VNHumanBodyPoseObservation.JointName: CGPoint] = [:]
+                for (name, pt) in points where pt.confidence > 0.2 { sure[name] = pt.location }
+                if sure.count >= Self.minJoints { found = true }
+                bodies.append(sure)
+            }
+            if demo, !found { bodyRetryAt = now + Self.demoVisionRetry }
         }
         // デモ：Vision が人を見つけられないときは、偽カメラの役者の骨組みを使う
-        if !found, FakeCamera.isDemo {
+        if !found, demo {
             bodies = [DemoActor.joints(at: frameTime)]
             found = true
         }
+        // 使い回しの画素の箱（BGRA）に描く。毎コマ新しい CGImage を作ると Core Image が抱え込む
+        let w = Int(size.width.rounded()), h = Int(size.height.rounded())
+        guard w > 0, h > 0,
+              let pb = Self.pooledBuffer(&stickPool, &stickPoolSize, size: CGSize(width: w, height: h),
+                                         format: kCVPixelFormatType_32BGRA) else { return (nil, found) }
+        CVPixelBufferLockBaseAddress(pb, [])
+        defer { CVPixelBufferUnlockBaseAddress(pb, []) }
+        guard let ctx = CGContext(data: CVPixelBufferGetBaseAddress(pb), width: w, height: h, bitsPerComponent: 8,
+                                  bytesPerRow: CVPixelBufferGetBytesPerRow(pb), space: CGColorSpaceCreateDeviceRGB(),
+                                  bitmapInfo: CGImageAlphaInfo.premultipliedFirst.rawValue | CGBitmapInfo.byteOrder32Little.rawValue)
+        else { return (nil, found) }
         ctx.setFillColor(UIColor(red: 0.06, green: 0.07, blue: 0.12, alpha: 1).cgColor)
         ctx.fill(CGRect(x: 0, y: 0, width: w, height: h))
         ctx.setLineCap(.round)
@@ -439,8 +534,8 @@ final class EffectEngine: @unchecked Sendable {
                 ctx.strokeEllipse(in: CGRect(x: nose.x - r, y: nose.y - r, width: r * 2, height: r * 2))
             }
         }
-        guard let cg = ctx.makeImage() else { return (nil, found) }
-        return (CIImage(cgImage: cg), found)
+        ctx.flush()
+        return (CIImage(cvPixelBuffer: pb), found)
     }
 
     // MARK: 下ごしらえ
@@ -455,6 +550,29 @@ final class EffectEngine: @unchecked Sendable {
 
     private var pool: CVPixelBufferPool?
     private var poolSize: CGSize = .zero
+
+    /// 大きさと並びを決めた箱を、使い回しの置き場から 1 つ取る（大きさが変わったら置き場を作り直す）
+    private static func pooledBuffer(_ pool: inout CVPixelBufferPool?, _ poolSize: inout CGSize, size: CGSize,
+                                     format: OSType) -> CVPixelBuffer? {
+        let width = Int(size.width.rounded()), height = Int(size.height.rounded())
+        guard width > 0, height > 0 else { return nil }
+        let rounded = CGSize(width: width, height: height)
+        if pool == nil || poolSize != rounded {
+            pool = nil
+            let attrs: [String: Any] = [
+                kCVPixelBufferPixelFormatTypeKey as String: format,
+                kCVPixelBufferWidthKey as String: width,
+                kCVPixelBufferHeightKey as String: height,
+                kCVPixelBufferIOSurfacePropertiesKey as String: [String: Any](),
+            ]
+            CVPixelBufferPoolCreate(nil, nil, attrs as CFDictionary, &pool)
+            poolSize = rounded
+        }
+        guard let pool else { return nil }
+        var pb: CVPixelBuffer?
+        CVPixelBufferPoolCreatePixelBuffer(nil, pool, &pb)
+        return pb
+    }
 
     private func makeBuffer(size: CGSize) -> CVPixelBuffer? {
         let width = Int(size.width.rounded()), height = Int(size.height.rounded())

@@ -17,7 +17,7 @@
 "3 秒前の動きが見える" = "You see moves from 3 seconds ago";
 "小さな丸い窓だけがうろつく" = "Only a tiny roaming circle shows";
 "宇宙" = "Space";
-"海" = "Under the sea";
+"海" = "Sea";
 "教室" = "Classroom";
 "ステージ" = "Stage";
 "宇宙に浮かんで見える" = "You're floating in space";
@@ -58,7 +58,7 @@
 /* 山札 */
 "山札" = "Decks";
 "閉じる" = "Close";
-"%@ など %lld 枚" = "%@ and more · %lld cards";
+"%@ など %lld 枚" = "%@ · %lld";
 "お題帳をつくる" = "Make your own deck";
 "お題帳を編集" = "Edit your deck";
 "友だちの名前や内輪ネタで遊ぶ" = "Play with friends' names and inside jokes";

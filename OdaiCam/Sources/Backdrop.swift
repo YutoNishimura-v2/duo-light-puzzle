@@ -53,9 +53,9 @@ enum Backdrop {
             ctx.move(to: CGPoint(x: p.x, y: p.y - s)); ctx.addLine(to: CGPoint(x: p.x, y: p.y + s))
             ctx.strokePath()
         }
-        // 右上の輪のある星
-        let ringed = CGPoint(x: w * 0.8, y: h * 0.82)
-        let rr = 44 * u
+        // 左の輪のある星（上の端やファインダーの上のチップに隠れないよう、枠の内側に置く）
+        let ringed = CGPoint(x: w * 0.22, y: h * 0.62)
+        let rr = 36 * u
         ctx.saveGState()
         ctx.addEllipse(in: CGRect(x: ringed.x - rr, y: ringed.y - rr, width: rr * 2, height: rr * 2))
         ctx.clip()

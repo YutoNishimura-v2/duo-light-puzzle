@@ -35,6 +35,9 @@ final class FakeCamera: @unchecked Sendable {
     /// デモの部屋（一度だけ描いて使い回す）
     private var room: CGImage?
     private var count = 0
+    /// プレビューのコマを main に渡して、まだ受け取られていない（previewLock で守る）
+    private let previewLock = NSLock()
+    private var previewInFlight = false
     /// いま流しているコマの大きさ（録画の設定に使う）
     private(set) var size = FakeCamera.isDemo ? DemoActor.size : CGSize(width: 540, height: 960)
 
@@ -122,11 +125,21 @@ final class FakeCamera: @unchecked Sendable {
         deliver?(sample)
         // プレビューは 10 コマ/秒で足りる
         count += 1
-        if count % 3 == 0 {
+        // main がまだ前のコマを受け取っていなければ渡さない（main が詰まったとき、画素の箱を抱えた仕事が積み上がらないように）
+        if count % 3 == 0, previewLock.withLock({ () -> Bool in
+            if previewInFlight { return false }
+            previewInFlight = true
+            return true
+        }) {
             var cg: CGImage?
             VTCreateCGImageFromCVPixelBuffer(pb, options: nil, imageOut: &cg)
             if let cg {
-                DispatchQueue.main.async { [self] in previewLayer?.contents = cg }
+                DispatchQueue.main.async { [self] in
+                    previewLayer?.contents = cg
+                    previewLock.withLock { previewInFlight = false }
+                }
+            } else {
+                previewLock.withLock { previewInFlight = false }
             }
         }
     }
@@ -467,19 +480,24 @@ enum DemoActor {
         ]
     }
 
-    /// 人の形の型抜き（白が人）。size はしばりの処理の大きさ
-    static func mask(at t: Double, size out: CGSize) -> CIImage? {
-        let w = Int(out.width.rounded()), h = Int(out.height.rounded())
-        guard w > 0, h > 0,
-              let ctx = CGContext(data: nil, width: w, height: h, bitsPerComponent: 8, bytesPerRow: 0,
-                                  space: CGColorSpaceCreateDeviceGray(), bitmapInfo: CGImageAlphaInfo.none.rawValue)
-        else { return nil }
+    /// 人の形の型抜き（白が人）を、渡された 8 ビット 1 色（kCVPixelFormatType_OneComponent8）の画素の箱に描く。
+    /// 箱はしばりの処理が使い回す（毎コマ新しい CGImage を作ると、Core Image が絵を抱え込んでメモリが増え続ける）。
+    /// 描けたら true
+    static func mask(at t: Double, into pb: CVPixelBuffer) -> Bool {
+        let w = CVPixelBufferGetWidth(pb), h = CVPixelBufferGetHeight(pb)
+        guard w > 0, h > 0 else { return false }
+        CVPixelBufferLockBaseAddress(pb, [])
+        defer { CVPixelBufferUnlockBaseAddress(pb, []) }
+        guard let ctx = CGContext(data: CVPixelBufferGetBaseAddress(pb), width: w, height: h, bitsPerComponent: 8,
+                                  bytesPerRow: CVPixelBufferGetBytesPerRow(pb), space: CGColorSpaceCreateDeviceGray(),
+                                  bitmapInfo: CGImageAlphaInfo.none.rawValue)
+        else { return false }
         ctx.setFillColor(gray: 0, alpha: 1)
         ctx.fill(CGRect(x: 0, y: 0, width: w, height: h))
         ctx.scaleBy(x: CGFloat(w) / size.width, y: CGFloat(h) / size.height)
         draw(body(at: t), in: ctx, mask: true)
-        guard let cg = ctx.makeImage() else { return nil }
-        return CIImage(cgImage: cg)
+        ctx.flush()
+        return true
     }
 
     /// 人を描く。mask のときは全部白で、顔や影は描かない

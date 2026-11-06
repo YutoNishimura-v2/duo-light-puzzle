@@ -474,6 +474,14 @@ struct HomeView: View {
             case .none: String(localized: "しばりなし")
             }
         }
+
+        var symbol: String {
+            switch self {
+            case .random: "shuffle"
+            case .fixed(let e): e.symbol
+            case .none: "person.fill"
+            }
+        }
     }
 
     /// しばりなしが先頭（主役は人そのもの）。しばりはおまけで、背景 → 姿の順、おまかせは最後
@@ -619,10 +627,16 @@ struct HomeView: View {
                                 select(m)
                                 withAnimation(.snappy) { proxy.scrollTo(m, anchor: .center) }
                             } label: {
-                                Text(m.title)
-                                    .font(.system(size: 15, weight: .heavy))
-                                    .foregroundStyle(m == mode ? .white : Theme.secondary)
-                                    .fixedSize()
+                                // 名前の上に小さな絵を出し、押すと見え方が変わることを一目で分かるようにする
+                                VStack(spacing: 4) {
+                                    Image(systemName: m.symbol)
+                                        .font(.system(size: 15, weight: .semibold))
+                                        .frame(height: 18)
+                                    Text(m.title)
+                                        .font(.system(size: 15, weight: .heavy))
+                                        .fixedSize()
+                                }
+                                .foregroundStyle(m == mode ? .white : Theme.secondary)
                             }
                             .buttonStyle(.plain)
                             .id(m)
@@ -636,7 +650,7 @@ struct HomeView: View {
                 }
             }
         }
-        .frame(height: 24)
+        .frame(height: 46)
         // 端で途中まで見える項目は消えるまでぼかす（「モザイ」のように切れて見えないように）
         .mask(LinearGradient(stops: [.init(color: .clear, location: 0), .init(color: .clear, location: 0.08),
                                      .init(color: .black, location: 0.3), .init(color: .black, location: 0.7),
@@ -1255,8 +1269,8 @@ struct ResultsView: View {
                     .foregroundStyle(Theme.secondary)
                     .lineLimit(1)
             }
-            Spacer(minLength: 8)
-            // 点数の札。数え上げはせず、幅も固定（途中で字が欠けないように）
+            // 点数の札。数え上げはせず、幅も固定（途中で字が欠けないように）。
+            // 右端は外側の画面のカメラの穴に重なるので、名前のすぐ右に置く
             HStack(alignment: .firstTextBaseline, spacing: 2) {
                 Text("\(game.score)").font(.system(size: 22, weight: .heavy).monospacedDigit())
                 Text("点").font(.system(size: 13, weight: .bold))
@@ -1268,6 +1282,7 @@ struct ResultsView: View {
             .accessibilityElement(children: .ignore)
             .accessibilityLabel(String(localized: "\(game.score) 点") + (game.isNewBest ? String(localized: "、自己ベスト") : ""))
             .accessibilityIdentifier("score")
+            Spacer(minLength: 0)
         }
     }
 
