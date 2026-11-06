@@ -100,88 +100,7 @@ jobs:
           name: odaicam-shots
           path: OdaiCam/shots
 
-      - name: UI test
-        run: |
-          set -uo pipefail
-          mkdir -p uitest
-          # 外側の画面（アプリが出る方）を録画しておく
-          xcrun simctl io "$UDID" recordVideo --display=1 --codec=h264 --force uitest/run.mp4 &
-          REC=$!
-          sleep 2
-          # 固まっても後ろの手順（記録の回収・デモ）が動くよう、20 分で打ち切る。進み具合はログに流す
-          gtimeout 2400 xcodebuild test-without-building \
-            -project OdaiCam.xcodeproj -scheme OdaiCamUITests \
-            -destination "id=$UDID" -derivedDataPath build \
-            -skip-testing:OdaiCamUITests/OdaiCamUITests/test3Demo \
-            -resultBundlePath uitest/Result.xcresult 2>&1 | tee uitest/xcodebuild.log | grep --line-buffered -E "Test Case|error:|XCTAssert"
-          STATUS=${PIPESTATUS[0]}
-          tail -30 uitest/xcodebuild.log
-          kill -INT $REC || true
-          wait $REC || true
-          # 録画はそのままだと 500 MB ほどあるので、小さくしてから上げる
-          if command -v ffmpeg > /dev/null; then
-            ffmpeg -y -loglevel error -i uitest/run.mp4 -vf "scale=540:-2,fps=15" -c:v libx264 -crf 32 -an uitest/run-small.mp4               && mv uitest/run-small.mp4 uitest/run.mp4
-          else
-            avconvert --preset Preset960x540 --source uitest/run.mp4 --output uitest/run-small.mp4 --replace               && mv uitest/run-small.mp4 uitest/run.mp4
-          fi
-          ls -la uitest/run.mp4
-          echo "xcodebuild exit $STATUS"
-          echo "UITEST_STATUS=$STATUS" >> "$GITHUB_ENV"
-
-      - name: Summary
-        if: always()
-        run: |
-          set -uo pipefail
-          R=uitest/Result.xcresult
-          if [ -d "$R" ]; then
-            xcrun xcresulttool get test-results summary --path "$R" > uitest/summary.json || true
-            python3 - <<'PY' | tee -a "$GITHUB_STEP_SUMMARY"
-          import json
-          try:
-              s = json.load(open("uitest/summary.json"))
-          except Exception as e:
-              print("summary なし:", e); raise SystemExit
-          print(f"## OdaiCam UI テスト: {s.get('result')}")
-          print(f"成功 {s.get('passedTests')} / 失敗 {s.get('failedTests')} / 飛ばし {s.get('skippedTests')}  ({s.get('finishTime', 0) - s.get('startTime', 0):.0f} 秒)")
-          for f in s.get("testFailures", []):
-              print(f"- {f.get('testName')}: {f.get('failureText')}")
-          PY
-            mkdir -p uitest/raw uitest/attachments
-            xcrun xcresulttool export attachments --path "$R" --output-path uitest/raw || true
-            # 名前の付いた画面写真だけを、名前どおりのファイルにする
-            python3 - <<'PY'
-          import json, os, re, shutil
-          m = json.load(open("uitest/raw/manifest.json"))
-          for test in m:
-              for a in test["attachments"]:
-                  name = a.get("suggestedHumanReadableName", "")
-                  src = os.path.join("uitest/raw", a["exportedFileName"])
-                  if name.endswith(".png") and not name.startswith(("UI Snapshot", "Synthesized")):
-                      shutil.copy(src, os.path.join("uitest/attachments", re.sub(r"_0_[0-9A-F-]+\.png$", ".png", name)))
-                  elif name.endswith(".mp4"):
-                      shutil.copy(src, os.path.join("uitest/attachments", name.replace(" ", "_")))
-          print(sorted(os.listdir("uitest/attachments")))
-          PY
-          fi
-          # 落ちたときの記録（シミュレータのクラッシュレポート）
-          mkdir -p uitest/crashes
-          find ~/Library/Logs/DiagnosticReports -name 'OdaiCam*' -newer project.yml -exec cp {} uitest/crashes/ \; 2>/dev/null || true
-          ls uitest/crashes
-          # アプリのログ（直近の分）
-          xcrun simctl spawn "$UDID" log show --last 20m --style compact --predicate 'process == "OdaiCam"' > uitest/app.log 2>&1 || true
-
-      - uses: actions/upload-artifact@v4
-        if: always()
-        with:
-          name: odaicam-uitest
-          path: |
-            OdaiCam/uitest/attachments
-            OdaiCam/uitest/crashes
-            OdaiCam/uitest/run.mp4
-            OdaiCam/uitest/xcodebuild.log
-            OdaiCam/uitest/summary.json
-            OdaiCam/uitest/app.log
-
+      # デモ（種明かし動画のコマと CPU・メモリ）を先に回す。いちばん見たい成果物なので、UI テストが長引いても先に出る
       - name: Demo rounds
         if: always()
         run: |
@@ -276,6 +195,88 @@ jobs:
             OdaiCam/demo/ps-raw.txt
             OdaiCam/demo/xcodebuild.log
             OdaiCam/demo/app.log
+
+      - name: UI test
+        run: |
+          set -uo pipefail
+          mkdir -p uitest
+          # 外側の画面（アプリが出る方）を録画しておく
+          xcrun simctl io "$UDID" recordVideo --display=1 --codec=h264 --force uitest/run.mp4 &
+          REC=$!
+          sleep 2
+          # 固まっても後ろの手順（記録の回収・デモ）が動くよう、20 分で打ち切る。進み具合はログに流す
+          gtimeout 2400 xcodebuild test-without-building \
+            -project OdaiCam.xcodeproj -scheme OdaiCamUITests \
+            -destination "id=$UDID" -derivedDataPath build \
+            -skip-testing:OdaiCamUITests/OdaiCamUITests/test3Demo \
+            -resultBundlePath uitest/Result.xcresult 2>&1 | tee uitest/xcodebuild.log | grep --line-buffered -E "Test Case|error:|XCTAssert"
+          STATUS=${PIPESTATUS[0]}
+          tail -30 uitest/xcodebuild.log
+          kill -INT $REC || true
+          wait $REC || true
+          # 録画はそのままだと 500 MB ほどあるので、小さくしてから上げる
+          if command -v ffmpeg > /dev/null; then
+            ffmpeg -y -loglevel error -i uitest/run.mp4 -vf "scale=540:-2,fps=15" -c:v libx264 -crf 32 -an uitest/run-small.mp4               && mv uitest/run-small.mp4 uitest/run.mp4
+          else
+            avconvert --preset Preset960x540 --source uitest/run.mp4 --output uitest/run-small.mp4 --replace               && mv uitest/run-small.mp4 uitest/run.mp4
+          fi
+          ls -la uitest/run.mp4
+          echo "xcodebuild exit $STATUS"
+          echo "UITEST_STATUS=$STATUS" >> "$GITHUB_ENV"
+
+      - name: Summary
+        if: always()
+        run: |
+          set -uo pipefail
+          R=uitest/Result.xcresult
+          if [ -d "$R" ]; then
+            xcrun xcresulttool get test-results summary --path "$R" > uitest/summary.json || true
+            python3 - <<'PY' | tee -a "$GITHUB_STEP_SUMMARY"
+          import json
+          try:
+              s = json.load(open("uitest/summary.json"))
+          except Exception as e:
+              print("summary なし:", e); raise SystemExit
+          print(f"## OdaiCam UI テスト: {s.get('result')}")
+          print(f"成功 {s.get('passedTests')} / 失敗 {s.get('failedTests')} / 飛ばし {s.get('skippedTests')}  ({s.get('finishTime', 0) - s.get('startTime', 0):.0f} 秒)")
+          for f in s.get("testFailures", []):
+              print(f"- {f.get('testName')}: {f.get('failureText')}")
+          PY
+            mkdir -p uitest/raw uitest/attachments
+            xcrun xcresulttool export attachments --path "$R" --output-path uitest/raw || true
+            # 名前の付いた画面写真だけを、名前どおりのファイルにする
+            python3 - <<'PY'
+          import json, os, re, shutil
+          m = json.load(open("uitest/raw/manifest.json"))
+          for test in m:
+              for a in test["attachments"]:
+                  name = a.get("suggestedHumanReadableName", "")
+                  src = os.path.join("uitest/raw", a["exportedFileName"])
+                  if name.endswith(".png") and not name.startswith(("UI Snapshot", "Synthesized")):
+                      shutil.copy(src, os.path.join("uitest/attachments", re.sub(r"_0_[0-9A-F-]+\.png$", ".png", name)))
+                  elif name.endswith(".mp4"):
+                      shutil.copy(src, os.path.join("uitest/attachments", name.replace(" ", "_")))
+          print(sorted(os.listdir("uitest/attachments")))
+          PY
+          fi
+          # 落ちたときの記録（シミュレータのクラッシュレポート）
+          mkdir -p uitest/crashes
+          find ~/Library/Logs/DiagnosticReports -name 'OdaiCam*' -newer project.yml -exec cp {} uitest/crashes/ \; 2>/dev/null || true
+          ls uitest/crashes
+          # アプリのログ（直近の分）
+          xcrun simctl spawn "$UDID" log show --last 20m --style compact --predicate 'process == "OdaiCam"' > uitest/app.log 2>&1 || true
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: odaicam-uitest
+          path: |
+            OdaiCam/uitest/attachments
+            OdaiCam/uitest/crashes
+            OdaiCam/uitest/run.mp4
+            OdaiCam/uitest/xcodebuild.log
+            OdaiCam/uitest/summary.json
+            OdaiCam/uitest/app.log
 
       - name: Result
         if: always()
