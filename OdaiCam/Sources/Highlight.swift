@@ -504,7 +504,15 @@ enum Highlight {
         exporter.videoComposition = videoComposition
         exporter.audioMix = audioMix
         exporter.shouldOptimizeForNetworkUse = true
-        try await exporter.export(to: step1, as: .mp4)
+        // 前のラウンドの書き出しを消す（一時フォルダにたまらないように）
+        removeOldOutputs()
+        do {
+            try await exporter.export(to: step1, as: .mp4)
+        } catch {
+            // 書きかけのファイルを残さない（作り直しのたびに増えていた）
+            try? FileManager.default.removeItem(at: step1)
+            throw error
+        }
 
         // 2 回目：文字の帯・ロゴ・光・札を Core Image で重ねる。
         // CoreAnimation の重ね絵はシミュレータで落ちるので使わない（Core Image ならシミュレータでも実機でも同じ絵になる）
@@ -539,6 +547,20 @@ enum Highlight {
         withExtendedLifetime([rawSource.asset, seenSource?.asset, frontSource?.asset,
                               bgm?.asset, riser?.asset, hit?.asset, whoosh?.asset, fanfare?.asset]) {}
         return result
+    }
+
+    /// 一時フォルダの種明かし動画（highlight-*.mp4）のうち、いちばん新しい 1 本だけ残して消す。
+    /// 新しいラウンドを始めた時点で前の動画はもう画面に出ていないが、念のため直前の 1 本は残す
+    private static func removeOldOutputs() {
+        let fm = FileManager.default
+        guard let files = try? fm.contentsOfDirectory(at: fm.temporaryDirectory, includingPropertiesForKeys: [.contentModificationDateKey])
+        else { return }
+        let old = files
+            .filter { $0.lastPathComponent.hasPrefix("highlight-") && $0.pathExtension == "mp4" }
+            .map { url in (url, (try? url.resourceValues(forKeys: [.contentModificationDateKey]))?.contentModificationDate ?? .distantPast) }
+            .sorted { $0.1 > $1.1 }
+            .dropFirst()
+        for (url, _) in old { try? fm.removeItem(at: url) }
     }
 
     /// 失敗の文言は結果の画面に出るので、端末の言葉で書く

@@ -348,6 +348,7 @@ final class Camera: NSObject, @unchecked Sendable {
                 writer.cancelWriting()
                 effectWriter?.cancelWriting()
                 frontWriter?.cancelWriting()
+                releaseWriters()
                 finished(Recordings())
                 return
             }
@@ -356,6 +357,9 @@ final class Camera: NSObject, @unchecked Sendable {
                 .compactMap { w, key in w.map { ($0, key) } }
             if !effectStarted { effectWriter?.cancelWriting() }
             if !frontStarted { frontWriter?.cancelWriting() }
+            // 書き終わるまでは手元の writer と others が持つので、ここで手放してよい
+            // （次のラウンドまで 3 本の書き手と符号化の作業場を残さない）
+            releaseWriters()
             let group = DispatchGroup()
             let lock = NSLock()
             var result = Recordings()
@@ -375,7 +379,28 @@ final class Camera: NSObject, @unchecked Sendable {
         }
     }
 
+    /// 書き手を手放す（カメラのキューで呼ぶ。writing を false にしてから）
+    private func releaseWriters() {
+        writer = nil
+        videoInput = nil
+        audioInput = nil
+        effectWriter = nil
+        effectAdaptor = nil
+        frontWriter = nil
+        frontInput = nil
+    }
+
+    /// できた録画ファイル（ラウンドごと、新しいものが後ろ）。カメラのキューだけで触る
+    private var keptRecordings: [[URL]] = []
+
     private func finished(_ recordings: Recordings) {
+        // 一時フォルダに録画がたまらないよう、直近 2 ラウンドぶんだけ残して古いものは消す
+        // （いまのラウンドは種明かしを作る元。1 つ前は、まだ書き出しの途中かもしれないので残す）
+        let files = [recordings.raw, recordings.seen, recordings.front].compactMap { $0 }
+        if !files.isEmpty { keptRecordings.append(files) }
+        while keptRecordings.count > 2 {
+            for url in keptRecordings.removeFirst() { try? FileManager.default.removeItem(at: url) }
+        }
         Task { @MainActor [onRecordingFinished] in onRecordingFinished?(recordings) }
     }
 

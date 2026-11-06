@@ -266,20 +266,24 @@ final class Game {
 
     /// 画面の確認用（起動引数 -shot）。カメラなしで各画面の状態を作る
     func loadPreview(_ shot: String) {
+        // 画面写真用のお題。英語の端末では英語の見本にする
+        let en = Deck.deviceLanguage != "ja"
+        let names = en ? ["Gorilla", "Penguin", "Kangaroo", "Flamingo", "Sloth"]
+                       : ["ゴリラ", "ペンギン", "カンガルー", "フラミンゴ", "ナマケモノ"]
         let sample: [(String, Effect?, Outcome)] = [
-            ("ゴリラ", nil, .correct), ("ペンギン", .space, .correct), ("カンガルー", nil, .pass),
-            ("フラミンゴ", .stage, .correct), ("ナマケモノ", .silhouette, .correct),
+            (names[0], nil, .correct), (names[1], .space, .correct), (names[2], nil, .pass),
+            (names[3], .stage, .correct), (names[4], .silhouette, .correct),
         ]
         turns = sample.enumerated().map { i, t in
             Turn(prompt: t.0, effect: t.1, start: Double(i) * 8, end: Double(i) * 8 + 6, outcome: t.2)
         }
         remaining = 42
-        heard = "ごりら"
+        heard = en ? "gorilla" : "ごりら"
         switch shot {
         case "countdown": phase = .countdown(3)
         case "play":
             // 主役は人そのもの（しばりなし）
-            turns.append(Turn(prompt: "コアラ", effect: nil, start: 40))
+            turns.append(Turn(prompt: en ? "Koala" : "コアラ", effect: nil, start: 40))
             phase = .playing
         case "home-bg":
             // 背景を宇宙に変えたホーム
@@ -289,7 +293,7 @@ final class Game {
         case "play-bg":
             effectsOn = true
             fixedEffect = .space
-            turns.append(Turn(prompt: "コアラ", effect: .space, start: 40))
+            turns.append(Turn(prompt: en ? "Koala" : "コアラ", effect: .space, start: 40))
             phase = .playing
         case "results":
             cheatWarnings = 1

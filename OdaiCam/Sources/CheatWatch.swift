@@ -80,11 +80,14 @@ final class CheatWatch: @unchecked Sendable {
         guard go else { return }
         queue.async { [self] in
             defer { lock.withLock { busy = false } }
-            try? VNImageRequestHandler(cvPixelBuffer: buffer, orientation: .up, options: [:]).perform([request])
-            let size = CGSize(width: CVPixelBufferGetWidth(buffer), height: CVPixelBufferGetHeight(buffer))
-            let face = (request.results ?? []).max { $0.boundingBox.width < $1.boundingBox.width }
-            let pose = face.flatMap { Self.pose(of: $0, imageSize: size) }
-            let cheat: Bool = lock.withLock { judge(pose, now: now) }
+            // Vision の一時的な中身を、1 回ごとに手放す
+            let cheat: Bool = autoreleasepool {
+                try? VNImageRequestHandler(cvPixelBuffer: buffer, orientation: .up, options: [:]).perform([request])
+                let size = CGSize(width: CVPixelBufferGetWidth(buffer), height: CVPixelBufferGetHeight(buffer))
+                let face = (request.results ?? []).max { $0.boundingBox.width < $1.boundingBox.width }
+                let pose = face.flatMap { Self.pose(of: $0, imageSize: size) }
+                return lock.withLock { judge(pose, now: now) }
+            }
             if cheat { Task { @MainActor [onCheat] in onCheat?() } }
         }
     }

@@ -121,13 +121,18 @@ final class EffectEngine: @unchecked Sendable {
     /// 影絵・背景：人の形が画面のこの割合より多ければ映っていたことにする
     static let minCoverage = 0.02
 
+    /// アプリで 1 つだけ使う Core Image の描き手（小窓の縮小もこれを使う）。
+    /// 描き手ごとに GPU の作業場を持つので、増やさない。途中の絵は残さない
+    nonisolated(unsafe) static let sharedContext = CIContext(options: [.cacheIntermediates: false])
+
     private let queue = DispatchQueue(label: "effects", qos: .userInitiated)
     private let lock = NSLock()
-    private let context = CIContext(options: [.cacheIntermediates: false])
+    private let context = EffectEngine.sharedContext
     private var busy = false
     private var effect: Effect?
     private var promptStart: TimeInterval = 0
-    /// 3 秒遅れの絵。effects キューだけで触る
+    /// 3 秒遅れの絵。effects キューだけで触る。
+    /// 処理の大きさの 2/3（540x960 なら 360x640、約 0.9 MB）で、3 秒ぶん（約 46 枚）だけ持つ
     private var history: [(t: TimeInterval, image: CIImage)] = []
     /// しばりが変わったら、次の処理で history を空にする（lock で守る）
     private var clearHistory = false
@@ -135,13 +140,27 @@ final class EffectEngine: @unchecked Sendable {
     /// 背景の絵（一度描いたら使い回す）。effects キューだけで触る
     private var backgrounds: [Effect: (size: CGSize, image: CIImage)] = [:]
 
-    private let bodyRequest = VNDetectHumanBodyPoseRequest()
-    private let personRequest: VNGeneratePersonSegmentationRequest = {
+    /// Vision の読み取り。使うときに作る（メモリが足りないときは手放して、次に使うとき作り直す）。effects キューだけで触る
+    private var bodyRequestStore: VNDetectHumanBodyPoseRequest?
+    private var personRequestStore: VNGeneratePersonSegmentationRequest?
+    private var bodyRequest: VNDetectHumanBodyPoseRequest {
+        if let r = bodyRequestStore { return r }
+        let r = VNDetectHumanBodyPoseRequest()
+        bodyRequestStore = r
+        return r
+    }
+    private var personRequest: VNGeneratePersonSegmentationRequest {
+        if let r = personRequestStore { return r }
         let r = VNGeneratePersonSegmentationRequest()
         r.qualityLevel = .balanced
         r.outputPixelFormat = kCVPixelFormatType_OneComponent8
+        personRequestStore = r
         return r
-    }()
+    }
+
+    /// 3 秒遅れの絵を持つ大きさ（処理の大きさに対する割合）と、1 秒に残す枚数
+    static let historyScale: CGFloat = 2.0 / 3.0
+    static let historyFPS = 15.0
 
     /// しばりをかけた画面（main で呼ぶ）
     var onFrame: (@MainActor (CGImage) -> Void)?
@@ -153,10 +172,31 @@ final class EffectEngine: @unchecked Sendable {
     static let delaySeconds = 3.0
 
     func set(effect: Effect?, promptStart: TimeInterval) {
-        lock.withLock {
-            if self.effect != effect { clearHistory = true }
+        let changed: Bool = lock.withLock {
+            let changed = self.effect != effect
+            if changed { clearHistory = true }
             self.effect = effect
             self.promptStart = promptStart
+            return changed
+        }
+        // しばりなしになったら、持っている絵をすぐ手放す（なしの間は process が動かず、空にする機会がない）
+        if changed, effect == nil { purge(vision: false) }
+    }
+
+    /// 持っている絵と Core Image の作業場を手放す。vision なら Vision の読み取り（学習済みの型）も手放す。
+    /// ラウンドの終わり（種明かしを書き出す前）と、メモリが足りないと言われたときに呼ぶ。どのスレッドからでもよい
+    func purge(vision: Bool) {
+        queue.async { [self] in
+            history.removeAll()
+            lastHistory = 0
+            backgrounds.removeAll()
+            pool = nil
+            poolSize = .zero
+            if vision {
+                bodyRequestStore = nil
+                personRequestStore = nil
+            }
+            context.clearCaches()
         }
     }
 
@@ -172,19 +212,22 @@ final class EffectEngine: @unchecked Sendable {
         guard !skip, let effect else { return }
         queue.async { [self] in
             defer { lock.withLock { busy = false } }
-            if clear { history.removeAll() }
-            let now = ProcessInfo.processInfo.systemUptime
-            let input = Self.downscaled(CIImage(cvPixelBuffer: buffer))
-            let rendered = render(effect, input: input, source: buffer, now: now, elapsed: now - start, frameTime: time.seconds)
-            // 人が映っていたかを、録画と同じフレームの時刻で残す
-            Self.seenLog.add(time.seconds, visible: rendered.visible)
-            let output = rendered.image.cropped(to: input.extent)
-            guard let pb = makeBuffer(size: input.extent.size) else { return }
-            context.render(output, to: pb)
-            onPixelBuffer?(pb, time)
-            var cg: CGImage?
-            VTCreateCGImageFromCVPixelBuffer(pb, options: nil, imageOut: &cg)
-            if let cg { Task { @MainActor [onFrame] in onFrame?(cg) } }
+            // コマごとの一時的な絵（Vision・Core Image の中身）を、このコマの終わりで手放す
+            autoreleasepool {
+                if clear { history.removeAll() }
+                let now = ProcessInfo.processInfo.systemUptime
+                let input = Self.downscaled(CIImage(cvPixelBuffer: buffer))
+                let rendered = render(effect, input: input, source: buffer, now: now, elapsed: now - start, frameTime: time.seconds)
+                // 人が映っていたかを、録画と同じフレームの時刻で残す
+                Self.seenLog.add(time.seconds, visible: rendered.visible)
+                let output = rendered.image.cropped(to: input.extent)
+                guard let pb = makeBuffer(size: input.extent.size) else { return }
+                context.render(output, to: pb)
+                onPixelBuffer?(pb, time)
+                var cg: CGImage?
+                VTCreateCGImageFromCVPixelBuffer(pb, options: nil, imageOut: &cg)
+                if let cg { Task { @MainActor [onFrame] in onFrame?(cg) } }
+            }
         }
     }
 
@@ -246,13 +289,26 @@ final class EffectEngine: @unchecked Sendable {
     }
 
     private func delayed(_ input: CIImage, now: TimeInterval) -> CIImage? {
-        // 15 コマ/秒だけ残す（メモリを食いすぎないように、描き終えた絵として持つ）
-        if now - lastHistory >= 1.0 / 15, let cg = context.createCGImage(input, from: input.extent) {
-            history.append((now, CIImage(cgImage: cg)))
-            lastHistory = now
+        // 15 コマ/秒だけ、2/3 の大きさに縮めて残す（メモリを食いすぎないように、描き終えた絵として持つ）
+        let s = Self.historyScale
+        if now - lastHistory >= 1.0 / Self.historyFPS {
+            let small = input.transformed(by: CGAffineTransform(scaleX: s, y: s))
+            let rect = small.extent.integral
+            if let cg = context.createCGImage(small, from: rect) {
+                history.append((now, CIImage(cgImage: cg)))
+                lastHistory = now
+            }
         }
-        history.removeAll { now - $0.t > Self.delaySeconds + 0.5 }
-        return history.first { now - $0.t <= Self.delaySeconds }?.image
+        // 3 秒より古い絵はもう出さない（now は増えるだけなので）。いちばん新しい 1 枚は空にしないよう残す
+        while history.count > 1, now - history[0].t > Self.delaySeconds { history.removeFirst() }
+        // 念のため枚数にも上限（3 秒ぶん＋ゆとり）
+        let cap = Int(Self.delaySeconds * Self.historyFPS) + 4
+        if history.count > cap { history.removeFirst(history.count - cap) }
+        guard let first = history.first, now - first.t <= Self.delaySeconds else { return nil }
+        // 処理の大きさへ戻す
+        let back = first.image.transformed(by: CGAffineTransform(scaleX: 1 / s, y: 1 / s))
+        return back.transformed(by: CGAffineTransform(translationX: input.extent.minX - back.extent.minX,
+                                                      y: input.extent.minY - back.extent.minY))
     }
 
     /// 人の形の型抜き（白が人、input の大きさ）。found は人の形が画面に十分あったか

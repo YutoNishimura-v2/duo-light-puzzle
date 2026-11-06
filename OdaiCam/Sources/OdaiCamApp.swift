@@ -143,6 +143,13 @@ struct GuesserView: View {
             if phase == .menu { applyPreview(previewEffect) }
             if case .countdown = phase { onboarded = true }
             if phase == .results, let wipe { face = wipe }
+            // 種明かしの書き出しはメモリを多く使うので、その前にしばりの絵と Core Image の作業場を手放す
+            if phase == .results { effects.purge(vision: false) }
+        }
+        // メモリが足りないと言われたら、しばりの絵と Vision の読み取りも手放す（次に使うとき作り直す）
+        .onReceive(NotificationCenter.default.publisher(for: UIApplication.didReceiveMemoryWarningNotification)) { _ in
+            CrashLog.mark("メモリ不足の知らせ")
+            effects.purge(vision: true)
         }
         .task(id: cycling) {
             guard cycling else { return }
@@ -1400,8 +1407,13 @@ final class LoopPlayer {
         player.play()
     }
 
+    /// 止めて、繰り返しの部品と読み込んだ動画を手放す（結果の画面を出るとき。次は play で作り直す）
     func stop() {
         player.pause()
+        looper?.disableLooping()
+        looper = nil
+        player.removeAllItems()
+        url = nil
     }
 }
 

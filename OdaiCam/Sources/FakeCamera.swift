@@ -88,6 +88,11 @@ final class FakeCamera: @unchecked Sendable {
         timer = nil
         faceTimer?.cancel()
         faceTimer = nil
+        // 止めている間は、描き置きの部屋と画素の箱を手放す（次に動かすとき作り直す）
+        room = nil
+        pool = nil
+        actorPool = nil
+        facePool = nil
     }
 
     private static func sample(_ pb: CVPixelBuffer, at time: CMTime, fps: Int32) -> CMSampleBuffer? {
@@ -103,6 +108,11 @@ final class FakeCamera: @unchecked Sendable {
     }
 
     private func tick() {
+        // コマごとの一時的な絵を、このコマの終わりで手放す
+        autoreleasepool { tickBody() }
+    }
+
+    private func tickBody() {
         // 描く前に時刻を決める（デモの骨組みは、このコマの時刻で引き直す）
         let now = CMClockGetTime(CMClockGetHostTimeClock())
         let frame = Self.isDemo ? drawActor(t: now.seconds) : (readFrame() ?? drawFrame())
@@ -204,7 +214,14 @@ final class FakeCamera: @unchecked Sendable {
         defer { CVPixelBufferUnlockBaseAddress(pb, []) }
         guard let ctx = Self.context(pb) else { return nil }
         if room == nil { room = DemoActor.room() }
-        if let room { ctx.draw(room, in: CGRect(origin: .zero, size: size)) }
+        if let room {
+            // 部屋は画素の箱と同じ並び（BGRA）で描いてあるので、混ぜずにそのまま写す（毎コマの変換をしない）
+            ctx.saveGState()
+            ctx.setBlendMode(.copy)
+            ctx.interpolationQuality = .none
+            ctx.draw(room, in: CGRect(origin: .zero, size: size))
+            ctx.restoreGState()
+        }
         DemoActor.draw(DemoActor.body(at: t), in: ctx, mask: false)
         DemoActor.vignette(ctx)
         return pb
@@ -212,6 +229,10 @@ final class FakeCamera: @unchecked Sendable {
 
     /// デモ：当てる人の顔を、内側のカメラと同じ道に流す
     private func faceTick() {
+        autoreleasepool { faceTickBody() }
+    }
+
+    private func faceTickBody() {
         let now = CMClockGetTime(CMClockGetHostTimeClock())
         let size = DemoFace.size
         guard let pb = Self.makeBuffer(&facePool, width: Int(size.width), height: Int(size.height)) else { return }
@@ -573,12 +594,14 @@ enum DemoActor {
         }
     }
 
-    /// 部屋（窓・絵・鉢植え・木の床・ラグ）。一度だけ描く
+    /// 部屋（窓・絵・鉢植え・木の床・ラグ）。一度だけ描く。
+    /// 偽カメラの画素の箱と同じ並び（BGRA）にして、毎コマ写すときの変換をなくす
     static func room() -> CGImage? {
         let w = Int(size.width), h = Int(size.height)
         guard let ctx = CGContext(data: nil, width: w, height: h, bitsPerComponent: 8, bytesPerRow: 0,
                                   space: CGColorSpaceCreateDeviceRGB(),
-                                  bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue) else { return nil }
+                                  bitmapInfo: CGImageAlphaInfo.premultipliedFirst.rawValue | CGBitmapInfo.byteOrder32Little.rawValue)
+        else { return nil }
         let W = size.width, H = size.height
         let horizon: CGFloat = 430
         // 壁
