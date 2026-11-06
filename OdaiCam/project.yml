@@ -43,6 +43,8 @@ targets:
         CFBundleShortVersionString: $(MARKETING_VERSION)
         CFBundleVersion: $(CURRENT_PROJECT_VERSION)
         UILaunchScreen: {}
+        # ロゴ「OdaiCam.」と残り時間の数字の書体（Inter、SIL OFL 1.1。Resources/Fonts/Inter-OFL.txt）
+        UIAppFonts: [Inter-ExtraBold.ttf]
         UIStatusBarHidden: true
         UIViewControllerBasedStatusBarAppearance: false
         UISupportedInterfaceOrientations:

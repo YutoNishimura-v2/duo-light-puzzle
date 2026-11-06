@@ -202,6 +202,18 @@ final class Camera: NSObject, @unchecked Sendable {
         }
     }
 
+    /// 内側のカメラの向きを今の持ち方に合わせる（画面の小窓用。main から呼ぶ）
+    func alignInner() {
+        guard let innerDevice else { return }
+        if innerRotation == nil { innerRotation = AVCaptureDevice.RotationCoordinator(device: innerDevice, previewLayer: nil) }
+        guard let angle = innerRotation?.videoRotationAngleForHorizonLevelCapture else { return }
+        queue.async { [self] in
+            if let c = frontOutput.connection(with: .video), c.isVideoRotationAngleSupported(angle) {
+                c.videoRotationAngle = angle
+            }
+        }
+    }
+
     func stop() {
         queue.async { [self] in
             if let fake { fake.stop() } else { session.stopRunning() }

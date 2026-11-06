@@ -182,48 +182,59 @@ enum Highlight {
         parent.addSublayer(video)
 
         if let wipe {
+            // BeReal の自撮りの窓と同じ、黒い縁
             let border = CALayer()
-            border.frame = wipe
-            border.borderColor = UIColor.white.cgColor
-            border.borderWidth = max(4, size.width * 0.006)
-            border.cornerRadius = 0
+            border.frame = wipe.insetBy(dx: -size.width * 0.006, dy: -size.width * 0.006)
+            border.borderColor = UIColor.black.cgColor
+            border.borderWidth = size.width * 0.008
             parent.addSublayer(border)
         }
-        // 右下に小さくアプリ名（共有されたとき用）
+        // 上の中央にロゴ（BeReal の画面と同じ位置。共有されたとき用）
         let mark = CATextLayer()
-        mark.frame = CGRect(x: size.width * 0.55, y: size.height * 0.015, width: size.width * 0.42, height: size.height * 0.035)
-        mark.string = "お題カメラ"
-        mark.font = UIFont.systemFont(ofSize: 10, weight: .heavy)
-        mark.fontSize = size.height * 0.024
-        mark.foregroundColor = UIColor.white.withAlphaComponent(0.85).cgColor
-        mark.alignmentMode = .right
+        let markHeight = size.height * 0.045
+        mark.frame = CGRect(x: 0, y: size.height - markHeight - size.height * 0.025, width: size.width, height: markHeight)
+        mark.string = NSAttributedString(string: "OdaiCam.", attributes: [
+            .font: UIFont(name: "OdaiCamInter-ExtraBold", size: markHeight * 0.72)
+                ?? UIFont.systemFont(ofSize: markHeight * 0.72, weight: .heavy),
+            .foregroundColor: UIColor.white,
+            .kern: -markHeight * 0.025,
+        ])
+        mark.alignmentMode = .center
         mark.contentsScale = 2
+        mark.shadowOpacity = 0.35
+        mark.shadowRadius = 6
+        mark.shadowOffset = .zero
         parent.addSublayer(mark)
 
-        let bandHeight = size.height * 0.1
+        // 場面ごとの札（BeReal の丸い札。見えていた画面＝濃い灰色、本当の演技＝白）
+        let chipHeight = size.height * 0.055
         for piece in pieces {
-            let band = CATextLayer()
-            // この座標は左下が原点。下の方に帯を置く
-            band.frame = CGRect(x: 0, y: size.height * 0.06, width: size.width, height: bandHeight)
-            // アプリの色にそろえる（見えていた画面＝黒、本当の演技＝カメラの黄色）
-            band.backgroundColor = (piece.seen
-                ? UIColor(white: 0, alpha: 0.7)
-                : UIColor.systemYellow.withAlphaComponent(0.95)).cgColor
-            band.foregroundColor = (piece.seen ? UIColor.white : UIColor.black).cgColor
-            band.font = UIFont.systemFont(ofSize: 10, weight: .heavy)
-            band.fontSize = bandHeight * 0.45
-            band.alignmentMode = .center
-            band.contentsScale = 2
-            band.string = piece.caption
-            band.opacity = 0
+            let font = UIFont.systemFont(ofSize: chipHeight * 0.46, weight: .heavy)
+            let text = NSAttributedString(string: piece.caption, attributes: [
+                .font: font,
+                .foregroundColor: piece.seen ? UIColor.white : UIColor.black,
+            ])
+            let textWidth = min(size.width * 0.9, ceil(text.size().width) + chipHeight * 1.2)
+            let chip = CALayer()
+            chip.frame = CGRect(x: (size.width - textWidth) / 2, y: size.height * 0.07, width: textWidth, height: chipHeight)
+            chip.cornerRadius = chipHeight / 2
+            chip.backgroundColor = (piece.seen ? UIColor(white: 0.15, alpha: 0.85) : UIColor.white).cgColor
+            let label = CATextLayer()
+            let lineHeight = font.lineHeight
+            label.frame = CGRect(x: 0, y: (chipHeight - lineHeight) / 2, width: textWidth, height: lineHeight)
+            label.string = text
+            label.alignmentMode = .center
+            label.contentsScale = 2
+            chip.addSublayer(label)
+            chip.opacity = 0
             let show = CABasicAnimation(keyPath: "opacity")
             show.fromValue = 1
             show.toValue = 1
             show.beginTime = AVCoreAnimationBeginTimeAtZero + piece.at
             show.duration = piece.length
             show.isRemovedOnCompletion = true
-            band.add(show, forKey: "show")
-            parent.addSublayer(band)
+            chip.add(show, forKey: "show")
+            parent.addSublayer(chip)
         }
         return AVVideoCompositionCoreAnimationTool(postProcessingAsVideoLayer: video, in: parent)
     }
