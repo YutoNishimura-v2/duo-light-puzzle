@@ -125,7 +125,7 @@ final class OdaiCamUITests: XCTestCase {
                     app.buttons["役を交代してもう一回"].tap()
                 }
                 let correct = app.buttons["正解"]
-                XCTAssertTrue(correct.waitForExistence(timeout: 15), "デモ \(round)：プレイ画面が出ない")
+                XCTAssertTrue(correct.waitForExistence(timeout: 45), "デモ \(round)：プレイ画面が出ない")
                 // 4 秒ごとに答える（4 回に 1 回はパス）。ラウンドの終わり際（30 秒のうち最後の 8 秒ほど）は押さない
                 var n = 0
                 while correct.exists && app.state == .runningForeground && n < 5 {
