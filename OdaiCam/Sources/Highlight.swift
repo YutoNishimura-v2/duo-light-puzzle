@@ -1,4 +1,5 @@
 @preconcurrency import AVFoundation
+import CoreImage
 import UIKit
 
 /// ラウンドの録画から、SNS に載せる縦長の種明かし動画（15〜20 秒）を作る。
@@ -475,20 +476,9 @@ enum Highlight {
         videoComposition.frameDuration = CMTime(value: 1, timescale: 30)
         videoComposition.instructions = instructions
 
-        // シミュレータでは帯の重ね絵（CoreAnimation）の描画で落ちる（OpenGL ES の道で IOSurface を作れない）。
-        // 試験では帯なしで書き出す（上下の分割や顔の窓は上の指示で組むので、形はそのまま確かめられる）。実機はそのまま
-        #if targetEnvironment(simulator)
-        let drawOverlay = false
-        #else
-        let drawOverlay = overlay
-        #endif
-        if drawOverlay {
-            let points = score ?? clips.filter { $0.outcome == "○" }.count
-            videoComposition.animationTool = await overlayTool(size: renderSize, pieces: pieces,
-                                                               wipe: faceLane.used ? wipe : nil, score: points)
-        }
-
-        let out = FileManager.default.temporaryDirectory.appendingPathComponent("highlight-\(UUID().uuidString).mp4")
+        // 1 回目：映像の並べ方と音だけで書き出す（音はここで仕上げる。2 回目はそのまま写す）
+        let temp = FileManager.default.temporaryDirectory
+        let step1 = temp.appendingPathComponent("highlight-base-\(UUID().uuidString).mp4")
         // HighestQuality は H.264 で、renderSize の大きさのまま書き出す（大きさ指定のプリセットは縮むので使わない）
         guard let exporter = AVAssetExportSession(asset: composition, presetName: AVAssetExportPresetHighestQuality) else {
             throw failure("書き出せません")
@@ -496,11 +486,40 @@ enum Highlight {
         exporter.videoComposition = videoComposition
         exporter.audioMix = audioMix
         exporter.shouldOptimizeForNetworkUse = true
-        try await exporter.export(to: out, as: .mp4)
+        try await exporter.export(to: step1, as: .mp4)
+
+        // 2 回目：文字の帯・ロゴ・光・札を Core Image で重ねる。
+        // CoreAnimation の重ね絵はシミュレータで落ちるので使わない（Core Image ならシミュレータでも実機でも同じ絵になる）
+        var result = step1
+        if overlay {
+            let out = temp.appendingPathComponent("highlight-\(UUID().uuidString).mp4")
+            let base = AVURLAsset(url: step1)
+            do {
+                let points = score ?? clips.filter { $0.outcome == "○" }.count
+                let parts = await overlayParts(size: renderSize, pieces: pieces, wipe: faceLane.used ? wipe : nil, score: points)
+                let overlaid = try await AVMutableVideoComposition.videoComposition(with: base, applyingCIFiltersWithHandler: { request in
+                    request.finish(with: parts.frame(request.sourceImage, at: request.compositionTime.seconds), context: nil)
+                })
+                overlaid.frameDuration = CMTime(value: 1, timescale: 30)
+                guard let second = AVAssetExportSession(asset: base, presetName: AVAssetExportPresetHighestQuality) else {
+                    throw failure("帯を重ねて書き出せません")
+                }
+                second.videoComposition = overlaid
+                second.shouldOptimizeForNetworkUse = true
+                try await second.export(to: out, as: .mp4)
+                result = out
+            } catch {
+                // 帯だけの失敗で動画ごと失くさない。帯なしの 1 回目をそのまま渡す
+                CrashLog.mark("ハイライト：帯の重ね書きに失敗、帯なしで出す：\((error as NSError).domain) \((error as NSError).code) \(error.localizedDescription)")
+                try? FileManager.default.removeItem(at: out)
+            }
+            withExtendedLifetime(base) {}
+            if result != step1 { try? FileManager.default.removeItem(at: step1) }
+        }
         // 元の動画と音を書き出しの終わりまで手放さない
         withExtendedLifetime([rawSource.asset, seenSource?.asset, frontSource?.asset,
                               bgm?.asset, riser?.asset, hit?.asset, whoosh?.asset, fanfare?.asset]) {}
-        return out
+        return result
     }
 
     private static func failure(_ message: String) -> NSError {
@@ -528,41 +547,131 @@ enum Highlight {
         return (crop, transform)
     }
 
-    /// 文字と札を重ねる。重ねる層は左下が原点
+    /// base に top を amount（0〜1）の濃さで重ねる。ただの割合の混ぜ合わせなので、透明度の持ち方に左右されない
+    private static func mix(_ top: CIImage, over base: CIImage, _ amount: Double) -> CIImage {
+        let full = top.composited(over: base)
+        guard amount < 1 else { return full }
+        return base.applyingFilter("CIDissolveTransition", parameters: [
+            kCIInputTargetImageKey: full,
+            kCIInputTimeKey: max(amount, 0),
+        ])
+    }
+
+    /// ぽんと出る大きさ：0.22 秒で from → 1.08 → 1.0（前の CoreAnimation と同じ動き）
+    private static func popScale(_ elapsed: Double, from: Double) -> Double {
+        let length = 0.22, peak = 0.22 * 0.6
+        if elapsed <= 0 { return from }
+        if elapsed >= length { return 1 }
+        if elapsed < peak { return from + (1.08 - from) * elapsed / peak }
+        return 1.08 + (1.0 - 1.08) * (elapsed - peak) / (length - peak)
+    }
+
+    /// center を中心に大きさを変える
+    private static func scaled(_ image: CIImage, _ scale: Double, about center: CGPoint) -> CIImage {
+        guard scale != 1 else { return image }
+        return image.transformed(by: CGAffineTransform(translationX: -center.x, y: -center.y)
+            .concatenating(CGAffineTransform(scaleX: scale, y: scale))
+            .concatenating(CGAffineTransform(translationX: center.x, y: center.y)))
+    }
+
+    /// 重ね絵の部品。書き出す前に 1 回だけ描いておき、コマごとには出すかどうか・濃さ・大きさだけ変える
+    /// 位置は Core Image の座標（左下が原点）。作り終えたら読むだけなので、別のスレッドから使ってよい
+    private final class Overlay: @unchecked Sendable {
+        struct Span {
+            let from: Double
+            let to: Double
+            init(_ piece: Piece) { from = piece.at; to = piece.at + piece.length }
+            func has(_ t: Double) -> Bool { t >= from && t < to }
+        }
+        struct Chip {
+            let image: CIImage
+            /// ぽんと出るときの中心
+            let center: CGPoint
+            let span: Span
+        }
+        let extent: CGRect
+        /// 上下の分け目の黒線
+        var seam: CIImage?
+        var seamSpans: [Span] = []
+        /// 顔の小窓の黒い縁
+        var border: CIImage?
+        var borderSpans: [Span] = []
+        /// 種明かしの瞬間（白く光らせる始まりの秒）
+        var flashes: [Double] = []
+        let white: CIImage
+        var chips: [Chip] = []
+        /// 上の中央のロゴ。markUntil から先は消す
+        var mark: CIImage?
+        var markUntil = Double.infinity
+        /// 最後の札：黒地とロゴ、その上にぽんと出る点数
+        var card: CIImage?
+        var number: CIImage?
+        var cardAt = Double.infinity
+        var cardFade = 0.25
+
+        init(size: CGSize) {
+            extent = CGRect(origin: .zero, size: size)
+            white = CIImage(color: CIColor(red: 1, green: 1, blue: 1)).cropped(to: extent)
+        }
+
+        /// t 秒のコマに重ねる。重ねる順は前と同じ（分け目 → 縁 → 光 → 帯 → ロゴ → 札）
+        func frame(_ source: CIImage, at t: Double) -> CIImage {
+            var out = source
+            func put(_ image: CIImage?, _ alpha: Double = 1) {
+                guard let image, alpha > 0 else { return }
+                out = Highlight.mix(image, over: out, alpha)
+            }
+            if seamSpans.contains(where: { $0.has(t) }) { put(seam) }
+            if borderSpans.contains(where: { $0.has(t) }) { put(border) }
+            for at in flashes where t >= at && t < at + 0.2 {
+                put(white, 0.7 * (1 - (t - at) / 0.2))
+            }
+            for chip in chips where chip.span.has(t) {
+                put(Highlight.scaled(chip.image, Highlight.popScale(t - chip.span.from, from: 0.6), about: chip.center))
+            }
+            if t < markUntil { put(mark) }
+            if t >= cardAt, let card {
+                var face = card
+                if let number {
+                    let center = CGPoint(x: extent.midX, y: extent.midY)
+                    face = Highlight.scaled(number, Highlight.popScale(t - cardAt, from: 0.85), about: center).composited(over: card)
+                }
+                put(face, min(1, (t - cardAt) / cardFade))
+            }
+            return out.cropped(to: source.extent)
+        }
+    }
+
+    /// 文字と札の絵を描いておく。描くときは UIKit の座標（左上が原点）、置くときに Core Image の座標へ直す
     @MainActor
-    private static func overlayTool(size: CGSize, pieces: [Piece], wipe: CGRect?, score: Int) -> AVVideoCompositionCoreAnimationTool {
+    private static func overlayParts(size: CGSize, pieces: [Piece], wipe: CGRect?, score: Int) -> Overlay {
         let w = size.width, h = size.height
+        let parts = Overlay(size: size)
         // 色は棒人間の黄色ひとつだけ。種明かしの瞬間にだけ使う
         let yellow = UIColor(red: 1, green: 0.87, blue: 0.43, alpha: 1)
-        let parent = CALayer()
-        parent.frame = CGRect(origin: .zero, size: size)
-        let video = CALayer()
-        video.frame = parent.frame
-        parent.addSublayer(video)
+        // CALayer の shadowRadius 12 と同じくらいのぼかし（Core Graphics のぼかしは倍の数で同じくらい）
+        let shadowBlur: CGFloat = 24
+        // 影がはみ出す分の余白
+        let pad: CGFloat = 32
 
         func markFont(_ size: CGFloat) -> UIFont {
             UIFont(name: "OdaiCamInter-ExtraBold", size: size) ?? UIFont.systemFont(ofSize: size, weight: .heavy)
         }
-        /// 区間のあいだだけ見せる（ふだんは不透明度 0 にしておく）
-        func show(_ layer: CALayer, _ at: Double, _ length: Double, key: String) {
-            let a = CABasicAnimation(keyPath: "opacity")
-            a.fromValue = 1
-            a.toValue = 1
-            a.beginTime = AVCoreAnimationBeginTimeAtZero + at
-            a.duration = length
-            a.isRemovedOnCompletion = true
-            layer.add(a, forKey: key)
-        }
-        /// ぽんと出る
-        func pop(_ layer: CALayer, _ at: Double, from: Double = 0.6) {
-            let a = CAKeyframeAnimation(keyPath: "transform.scale")
-            a.values = [from, 1.08, 1.0]
-            a.keyTimes = [0, 0.6, 1]
-            a.beginTime = AVCoreAnimationBeginTimeAtZero + at
-            a.duration = 0.22
-            a.fillMode = .both
-            a.isRemovedOnCompletion = false
-            layer.add(a, forKey: "pop")
+        /// rect（UIKit の座標）の中に描いて、動画の同じ場所に置く絵にする。body の中は rect の左上が原点
+        func draw(_ rect: CGRect, _ body: (CGContext) -> Void) -> CIImage? {
+            let r = rect.integral
+            guard r.width > 0, r.height > 0 else { return nil }
+            let format = UIGraphicsImageRendererFormat()
+            format.scale = 1
+            format.opaque = false
+            format.preferredRange = .standard
+            let image = UIGraphicsImageRenderer(size: r.size, format: format).image { context in
+                let cg = context.cgContext
+                cg.translateBy(x: rect.minX - r.minX, y: rect.minY - r.minY)
+                body(cg)
+            }
+            guard let cgImage = image.cgImage else { return nil }
+            return CIImage(cgImage: cgImage).transformed(by: CGAffineTransform(translationX: r.minX, y: h - r.maxY))
         }
         /// 丸い札。centerY は上からの位置
         func pill(_ text: String, yellow isYellow: Bool, centerY: CGFloat, piece: Piece) {
@@ -577,114 +686,91 @@ enum Highlight {
                 textWidth = ceil((text as NSString).size(withAttributes: [.font: font]).width)
             }
             let width = textWidth + height
-            let chip = CALayer()
-            chip.frame = CGRect(x: (w - width) / 2, y: h - centerY - height / 2, width: width, height: height)
-            chip.cornerRadius = height / 2
-            chip.backgroundColor = (isYellow ? yellow : UIColor(white: 0.08, alpha: 0.85)).cgColor
-            chip.shadowColor = UIColor.black.cgColor
-            chip.shadowOpacity = 0.35
-            chip.shadowRadius = 12
-            chip.shadowOffset = .zero
-            let label = CATextLayer()
-            label.frame = CGRect(x: 0, y: (height - font.lineHeight) / 2, width: width, height: font.lineHeight)
-            label.string = NSAttributedString(string: text, attributes: [.font: font, .foregroundColor: color])
-            label.alignmentMode = .center
-            label.contentsScale = 2
-            chip.addSublayer(label)
-            chip.opacity = 0
-            show(chip, piece.at, piece.length, key: "show")
-            pop(chip, piece.at)
-            parent.addSublayer(chip)
+            let label = NSAttributedString(string: text, attributes: [.font: font, .foregroundColor: color])
+            let lineHeight = font.lineHeight
+            let rect = CGRect(x: (w - width) / 2 - pad, y: centerY - height / 2 - pad, width: width + pad * 2, height: height + pad * 2)
+            let image = draw(rect) { cg in
+                let chip = CGRect(x: pad, y: pad, width: width, height: height)
+                cg.saveGState()
+                cg.setShadow(offset: .zero, blur: shadowBlur, color: UIColor(white: 0, alpha: 0.35).cgColor)
+                cg.setFillColor((isYellow ? yellow : UIColor(white: 0.08, alpha: 0.85)).cgColor)
+                cg.addPath(UIBezierPath(roundedRect: chip, cornerRadius: height / 2).cgPath)
+                cg.fillPath()
+                cg.restoreGState()
+                label.draw(at: CGPoint(x: chip.minX + height / 2, y: chip.minY + (height - lineHeight) / 2))
+            }
+            if let image {
+                parts.chips.append(Overlay.Chip(image: image, center: CGPoint(x: w / 2, y: h - centerY), span: Overlay.Span(piece)))
+            }
         }
 
         // 上下の分け目の細い黒線
-        let seam = CALayer()
-        seam.frame = CGRect(x: 0, y: h / 2 - h * 0.002, width: w, height: h * 0.004)
-        seam.backgroundColor = UIColor.black.cgColor
-        seam.opacity = 0
-        parent.addSublayer(seam)
-        // 顔の小窓の黒い縁（BeReal の自撮りの窓と同じ）
-        let border = CALayer()
+        parts.seam = CIImage(color: CIColor(red: 0, green: 0, blue: 0))
+            .cropped(to: CGRect(x: 0, y: h / 2 - h * 0.002, width: w, height: h * 0.004))
+        // 顔の小窓の黒い縁（BeReal の自撮りの窓と同じ）。縁の太さは内側へ
         if let wipe {
-            let flipped = CGRect(x: wipe.minX, y: h - wipe.maxY, width: wipe.width, height: wipe.height)
-            border.frame = flipped.insetBy(dx: -w * 0.006, dy: -w * 0.006)
-            border.borderColor = UIColor.black.cgColor
-            border.borderWidth = w * 0.008
-            border.opacity = 0
-            parent.addSublayer(border)
+            let frame = wipe.insetBy(dx: -w * 0.006, dy: -w * 0.006)
+            let line = w * 0.008
+            parts.border = draw(frame) { cg in
+                let box = CGRect(origin: .zero, size: frame.size)
+                cg.setFillColor(UIColor.black.cgColor)
+                cg.fill(box)
+                cg.clear(box.insetBy(dx: line, dy: line))
+            }
         }
-        // 種明かしの瞬間に白く光らせる
-        let flash = CALayer()
-        flash.frame = parent.frame
-        flash.backgroundColor = UIColor.white.cgColor
-        flash.opacity = 0
-        parent.addSublayer(flash)
 
-        for (i, piece) in pieces.enumerated() {
-            if piece.split { show(seam, piece.at, piece.length, key: "show\(i)") }
+        for piece in pieces {
+            if piece.split { parts.seamSpans.append(Overlay.Span(piece)) }
             switch piece.kind {
             case .hook:
                 pill(piece.caption, yellow: piece.topIsSeen, centerY: h / 2, piece: piece)
             case .seen:
-                if piece.face, wipe != nil { show(border, piece.at, piece.length, key: "show\(i)") }
+                if piece.face, wipe != nil { parts.borderSpans.append(Overlay.Span(piece)) }
                 pill(piece.caption, yellow: false, centerY: h * 0.8, piece: piece)
             case .real:
                 pill(piece.caption, yellow: true, centerY: piece.split ? h / 2 : h * 0.8, piece: piece)
-                if piece.reveal {
-                    let a = CABasicAnimation(keyPath: "opacity")
-                    a.fromValue = 0.7
-                    a.toValue = 0
-                    a.beginTime = AVCoreAnimationBeginTimeAtZero + piece.at
-                    a.duration = 0.2
-                    a.isRemovedOnCompletion = true
-                    flash.add(a, forKey: "flash\(i)")
-                }
+                // 種明かしの瞬間に白く光らせる（0.7 から 0.2 秒で消える）
+                if piece.reveal { parts.flashes.append(piece.at) }
             case .end:
                 break
             }
         }
 
         // 上の中央にロゴ。大きさは前のまま、どんな背景でも読めるよう柔らかい影をつける
-        let mark = CATextLayer()
         let markHeight = h * 0.045
-        mark.frame = CGRect(x: 0, y: h - markHeight - h * 0.025, width: w, height: markHeight)
-        mark.string = NSAttributedString(string: "OdaiCam.", attributes: [
+        let markText = NSAttributedString(string: "OdaiCam.", attributes: [
             .font: markFont(markHeight * 0.72),
             .foregroundColor: UIColor.white,
             .kern: -markHeight * 0.025,
         ])
-        mark.alignmentMode = .center
-        mark.contentsScale = 2
-        mark.shadowColor = UIColor.black.cgColor
-        mark.shadowOpacity = 0.7
-        mark.shadowRadius = 12
-        mark.shadowOffset = .zero
-        parent.addSublayer(mark)
+        parts.mark = draw(CGRect(x: 0, y: h * 0.025 - pad, width: w, height: markHeight + pad * 2)) { cg in
+            cg.setShadow(offset: .zero, blur: shadowBlur, color: UIColor(white: 0, alpha: 0.7).cgColor)
+            let textSize = markText.size()
+            markText.draw(at: CGPoint(x: (w - textSize.width) / 2, y: pad))
+        }
 
         // 最後の札：黒地に大きな点数と「点」、その下に控えめにロゴ
         if let end = pieces.last(where: { $0.kind == .end }) {
             // 札の間は上のロゴを消す（札のロゴと二重にしない）
-            let hide = CABasicAnimation(keyPath: "opacity")
-            hide.fromValue = 0
-            hide.toValue = 0
-            hide.beginTime = AVCoreAnimationBeginTimeAtZero + end.at
-            hide.duration = end.length + 1
-            hide.fillMode = .forwards
-            hide.isRemovedOnCompletion = false
-            mark.add(hide, forKey: "hide")
+            parts.markUntil = end.at
+            parts.cardAt = end.at
+            // 黒地が出てくる速さは前の CoreAnimation と同じ（end.length + 1 秒のうちの割合で決めていた。いまは約 0.42 秒）
+            parts.cardFade = max(min(0.25 / end.length, 0.5) * (end.length + 1), 0.01)
+            let full = CGRect(origin: .zero, size: size)
 
-            let card = CALayer()
-            card.frame = parent.frame
-            card.backgroundColor = UIColor.black.cgColor
-            card.opacity = 0
-            let fadeIn = CAKeyframeAnimation(keyPath: "opacity")
-            fadeIn.values = [0, 1, 1]
-            fadeIn.keyTimes = [0, NSNumber(value: min(0.25 / end.length, 0.5)), 1]
-            fadeIn.beginTime = AVCoreAnimationBeginTimeAtZero + end.at
-            fadeIn.duration = end.length + 1
-            fadeIn.fillMode = .forwards
-            fadeIn.isRemovedOnCompletion = false
-            card.add(fadeIn, forKey: "show")
+            let logoHeight = h * 0.04
+            let logo = NSAttributedString(string: "OdaiCam.", attributes: [
+                .font: markFont(logoHeight * 0.72),
+                .foregroundColor: UIColor(white: 1, alpha: 0.6),
+                .kern: -logoHeight * 0.025,
+            ])
+            parts.card = draw(full) { cg in
+                cg.setFillColor(UIColor.black.cgColor)
+                cg.fill(full)
+                let logoSize = logo.size()
+                // 下から 3 割の高さ（上から数えると 1 - 0.3 - 0.04）
+                logo.draw(at: CGPoint(x: (w - logoSize.width) / 2, y: h - h * 0.3 - logoHeight))
+            }
 
             let numberFont = markFont(h * 0.17)
             let unitFont = UIFont.systemFont(ofSize: h * 0.06, weight: .heavy)
@@ -696,38 +782,13 @@ enum Highlight {
             let unitWidth = ceil(unit.size().width)
             let gap = w * 0.02
             let left = (w - numberWidth - gap - unitWidth) / 2
-            // 数字と「点」の下端（文字の並ぶ線）をそろえる
-            let baseline = h * 0.47
-            let group = CALayer()
-            group.frame = parent.frame
-            let numberLayer = CATextLayer()
-            numberLayer.frame = CGRect(x: left, y: baseline + numberFont.ascender - numberFont.lineHeight,
-                                       width: numberWidth + w * 0.02, height: numberFont.lineHeight)
-            numberLayer.string = number
-            numberLayer.contentsScale = 2
-            group.addSublayer(numberLayer)
-            let unitLayer = CATextLayer()
-            unitLayer.frame = CGRect(x: left + numberWidth + gap, y: baseline + unitFont.ascender - unitFont.lineHeight,
-                                     width: unitWidth + w * 0.02, height: unitFont.lineHeight)
-            unitLayer.string = unit
-            unitLayer.contentsScale = 2
-            group.addSublayer(unitLayer)
-            pop(group, end.at, from: 0.85)
-            card.addSublayer(group)
-
-            let logoHeight = h * 0.04
-            let logo = CATextLayer()
-            logo.frame = CGRect(x: 0, y: h * 0.3, width: w, height: logoHeight)
-            logo.string = NSAttributedString(string: "OdaiCam.", attributes: [
-                .font: markFont(logoHeight * 0.72),
-                .foregroundColor: UIColor(white: 1, alpha: 0.6),
-                .kern: -logoHeight * 0.025,
-            ])
-            logo.alignmentMode = .center
-            logo.contentsScale = 2
-            card.addSublayer(logo)
-            parent.addSublayer(card)
+            // 数字と「点」の下端（文字の並ぶ線）をそろえる。下から 47% の高さ
+            let baseline = h - h * 0.47
+            parts.number = draw(full) { _ in
+                number.draw(at: CGPoint(x: left, y: baseline - numberFont.ascender))
+                unit.draw(at: CGPoint(x: left + numberWidth + gap, y: baseline - unitFont.ascender))
+            }
         }
-        return AVVideoCompositionCoreAnimationTool(postProcessingAsVideoLayer: video, in: parent)
+        return parts
     }
 }

@@ -90,6 +90,49 @@ final class OdaiCamUITests: XCTestCase {
         }
     }
 
+    /// デモモード（人形の演技と当てる人の顔を合成で流す）で 3 ラウンド遊び、種明かし動画を作る。
+    /// CI はこのあとアプリの中に残った動画を取り出して、コマ画像にする。
+    /// 普段のテストでは動かさない（CI の demo ジョブだけが -only-testing で呼ぶ）
+    @MainActor
+    func test3Demo() {
+        app = XCUIApplication()
+        app.launchArguments = ["-demo", "YES", "-onboarded", "YES", "-testRoundSeconds", "30"]
+        app.launch()
+        XCTAssertTrue(app.buttons["あそぶ"].waitForExistence(timeout: 20), "ホームが出ない")
+        sleep(3)
+        shot("demo-home")
+        for round in 1...3 {
+            XCTContext.runActivity(named: "デモ \(round) ラウンド目") { _ in
+                if round == 1 {
+                    app.buttons["あそぶ"].tap()
+                } else {
+                    app.buttons["役を交代してもう一回"].tap()
+                }
+                let correct = app.buttons["正解"]
+                XCTAssertTrue(correct.waitForExistence(timeout: 15), "デモ \(round)：プレイ画面が出ない")
+                // 4 秒ごとに答える（4 回に 1 回はパス）
+                var n = 0
+                while correct.exists && app.state == .runningForeground {
+                    sleep(4)
+                    guard correct.exists else { break }
+                    n += 1
+                    if n == 2 { shot("demo-\(round)-play") }
+                    if n % 4 == 0 { app.buttons["パス"].tap() } else { correct.tap() }
+                }
+                XCTAssertEqual(app.state, .runningForeground, "デモ \(round)：遊んでいる間に落ちた")
+                XCTAssertTrue(app.buttons["ホームへ"].waitForExistence(timeout: 20), "デモ \(round)：結果が出ない")
+                let deadline = Date().addingTimeInterval(120)
+                while Date() < deadline {
+                    if app.buttons["共有"].exists { break }
+                    sleep(1)
+                }
+                XCTAssertTrue(app.buttons["共有"].exists, "デモ \(round)：種明かし動画ができない")
+                sleep(3)
+                shot("demo-\(round)-results")
+            }
+        }
+    }
+
     // MARK: 下ごしらえ
 
     /// カウントダウン → プレイ（正解とパス）→ 結果 → 動画ができるまで

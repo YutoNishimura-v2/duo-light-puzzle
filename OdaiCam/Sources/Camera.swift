@@ -64,6 +64,8 @@ final class Camera: NSObject, @unchecked Sendable {
         fake = FakeCamera.isOn ? FakeCamera(queue: queue) : nil
         // 偽カメラのコマも、本物の背面カメラと同じ処理に流す
         fake?.deliver = { [weak self] in self?.handle($0, isAudio: false) }
+        // デモの顔は、内側のカメラと同じ処理に流す
+        fake?.deliverFront = { [weak self] in self?.handleFront($0) }
     }
 
     private static var innerCamera: AVCaptureDevice? {
@@ -85,7 +87,9 @@ final class Camera: NSObject, @unchecked Sendable {
         if let fake {
             queue.async { [self] in
                 fake.start()
-                Task { @MainActor [onReady] in onReady?(false) }
+                // デモでは描いた顔を内側のカメラの代わりに流すので、ワイプを出す
+                let inner = FakeCamera.isDemo
+                Task { @MainActor [onReady] in onReady?(inner) }
             }
             return
         }
@@ -269,6 +273,8 @@ final class Camera: NSObject, @unchecked Sendable {
                     c.videoRotationAngle = innerAngle
                 }
                 makeFrontWriter()
+            } else if fake != nil, FakeCamera.isDemo {
+                makeFrontWriter()
             }
             writing = true
         }
@@ -311,8 +317,10 @@ final class Camera: NSObject, @unchecked Sendable {
     private func makeFrontWriter() {
         let url = FileManager.default.temporaryDirectory.appendingPathComponent("front-\(UUID().uuidString).mov")
         guard let w = try? AVAssetWriter(outputURL: url, fileType: .mov) else { return }
+        // デモではカメラの出力が動いていないので、偽カメラの設定を使う
         let input = AVAssetWriterInput(mediaType: .video,
-                                       outputSettings: frontOutput.recommendedVideoSettingsForAssetWriter(writingTo: .mov))
+                                       outputSettings: frontOutput.recommendedVideoSettingsForAssetWriter(writingTo: .mov)
+                                           ?? fake?.frontVideoSettings)
         input.expectsMediaDataInRealTime = true
         guard w.canAdd(input) else { return }
         w.add(input)
@@ -390,18 +398,23 @@ final class Camera: NSObject, @unchecked Sendable {
 
 extension Camera: AVCaptureVideoDataOutputSampleBufferDelegate, AVCaptureAudioDataOutputSampleBufferDelegate {
     func captureOutput(_ output: AVCaptureOutput, didOutput sampleBuffer: CMSampleBuffer, from connection: AVCaptureConnection) {
-        let pts = CMSampleBufferGetPresentationTimeStamp(sampleBuffer)
         if output === frontOutput {
-            if let pb = CMSampleBufferGetImageBuffer(sampleBuffer) { onFront?(pb) }
-            guard writing, let startTime, pts >= startTime, let frontWriter, let frontInput else { return }
-            if !frontStarted {
-                frontWriter.startSession(atSourceTime: startTime)
-                frontStarted = true
-            }
-            if frontInput.isReadyForMoreMediaData { frontInput.append(sampleBuffer) }
+            handleFront(sampleBuffer)
             return
         }
         handle(sampleBuffer, isAudio: output === audioOutput)
+    }
+
+    /// 内側のカメラの 1 コマ（カメラのキューで呼ぶ）。デモの描いた顔もここに流す
+    func handleFront(_ sampleBuffer: CMSampleBuffer) {
+        let pts = CMSampleBufferGetPresentationTimeStamp(sampleBuffer)
+        if let pb = CMSampleBufferGetImageBuffer(sampleBuffer) { onFront?(pb) }
+        guard writing, let startTime, pts >= startTime, let frontWriter, let frontInput else { return }
+        if !frontStarted {
+            frontWriter.startSession(atSourceTime: startTime)
+            frontStarted = true
+        }
+        if frontInput.isReadyForMoreMediaData { frontInput.append(sampleBuffer) }
     }
 
     /// 背面カメラとマイクの 1 コマ（カメラのキューで呼ぶ）。試験用の偽カメラもここに流す

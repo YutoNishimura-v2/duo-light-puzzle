@@ -190,8 +190,10 @@ struct GuesserView: View {
             CrashLog.mark("カメラ準備（内側 \(inner ? "あり" : "なし")）")
             applyPreview(previewEffect)
         }
+        // デモの合成の顔はカンニングの見張りに通さない（誤って減点しないように）
+        let watchesFace = !FakeCamera.isDemo
         camera.onFront = { [watch, wipeFeed] in
-            watch.process($0)
+            if watchesFace { watch.process($0) }
             wipeFeed.process($0)
         }
         wipeFeed.onImage = { wipe = $0 }

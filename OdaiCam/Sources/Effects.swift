@@ -152,7 +152,7 @@ final class EffectEngine: @unchecked Sendable {
             if clear { history.removeAll() }
             let now = ProcessInfo.processInfo.systemUptime
             let input = Self.downscaled(CIImage(cvPixelBuffer: buffer))
-            let rendered = render(effect, input: input, source: buffer, now: now, elapsed: now - start)
+            let rendered = render(effect, input: input, source: buffer, now: now, elapsed: now - start, frameTime: time.seconds)
             // 人が映っていたかを、録画と同じフレームの時刻で残す
             Self.seenLog.add(time.seconds, visible: rendered.visible)
             let output = rendered.image.cropped(to: input.extent)
@@ -168,14 +168,16 @@ final class EffectEngine: @unchecked Sendable {
     // MARK: しばりごとの絵
 
     /// visible は人が映っていたか（棒人間と影絵だけ見分ける。ほかはいつも映っている）
-    private func render(_ effect: Effect, input: CIImage, source: CVPixelBuffer, now: TimeInterval, elapsed: TimeInterval) -> (image: CIImage, visible: Bool) {
+    /// frameTime はフレームの時刻（デモでは、この時刻の役者の骨組み・型抜きを使う）
+    private func render(_ effect: Effect, input: CIImage, source: CVPixelBuffer, now: TimeInterval, elapsed: TimeInterval,
+                        frameTime: TimeInterval) -> (image: CIImage, visible: Bool) {
         let black = CIImage(color: .black).cropped(to: input.extent)
         switch effect {
         case .stick:
-            let stick = stickFigure(source: source, size: input.extent.size)
+            let stick = stickFigure(source: source, size: input.extent.size, frameTime: frameTime)
             return (stick.image ?? black, stick.found)
         case .silhouette:
-            let shadow = silhouette(source: source, input: input)
+            let shadow = silhouette(source: source, input: input, frameTime: frameTime)
             return (shadow.image ?? black, shadow.found)
         default:
             return (plain(effect, input: input, now: now, elapsed: elapsed, black: black), true)
@@ -228,14 +230,23 @@ final class EffectEngine: @unchecked Sendable {
     }
 
     /// found は人の形が画面に十分あったか
-    private func silhouette(source: CVPixelBuffer, input: CIImage) -> (image: CIImage?, found: Bool) {
+    private func silhouette(source: CVPixelBuffer, input: CIImage, frameTime: TimeInterval) -> (image: CIImage?, found: Bool) {
         let handler = VNImageRequestHandler(cvPixelBuffer: source)
         try? handler.perform([personRequest])
-        guard let maskBuffer = personRequest.results?.first?.pixelBuffer else { return (nil, false) }
-        let found = Self.coverage(maskBuffer) > Self.minCoverage
-        var mask = CIImage(cvPixelBuffer: maskBuffer)
-        mask = mask.transformed(by: CGAffineTransform(scaleX: input.extent.width / mask.extent.width,
-                                                      y: input.extent.height / mask.extent.height))
+        var mask: CIImage?
+        var found = false
+        if let maskBuffer = personRequest.results?.first?.pixelBuffer {
+            found = Self.coverage(maskBuffer) > Self.minCoverage
+            let m = CIImage(cvPixelBuffer: maskBuffer)
+            mask = m.transformed(by: CGAffineTransform(scaleX: input.extent.width / m.extent.width,
+                                                       y: input.extent.height / m.extent.height))
+        }
+        // デモ：Vision が人を見つけられないときは、偽カメラの役者の型抜きを使う
+        if !found, FakeCamera.isDemo, let demo = DemoActor.mask(at: frameTime, size: input.extent.size) {
+            mask = demo
+            found = true
+        }
+        guard let mask else { return (nil, false) }
         let blend = CIFilter.blendWithMask()
         blend.inputImage = CIImage(color: CIColor(red: 0.05, green: 0.05, blue: 0.08)).cropped(to: input.extent)
         blend.backgroundImage = CIImage(color: CIColor(red: 0.96, green: 0.93, blue: 0.85)).cropped(to: input.extent)
@@ -262,7 +273,7 @@ final class EffectEngine: @unchecked Sendable {
     }
 
     /// 骨組みだけを描く。found は関節が十分に見つかったか
-    private func stickFigure(source: CVPixelBuffer, size: CGSize) -> (image: CIImage?, found: Bool) {
+    private func stickFigure(source: CVPixelBuffer, size: CGSize, frameTime: TimeInterval) -> (image: CIImage?, found: Bool) {
         let handler = VNImageRequestHandler(cvPixelBuffer: source)
         try? handler.perform([bodyRequest])
         let w = Int(size.width), h = Int(size.height)
@@ -270,18 +281,30 @@ final class EffectEngine: @unchecked Sendable {
                                   space: CGColorSpaceCreateDeviceRGB(),
                                   bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue) else { return (nil, false) }
         var found = false
+        // 人ごとの関節（確かなものだけ。0〜1、左下が原点）
+        var bodies: [[VNHumanBodyPoseObservation.JointName: CGPoint]] = []
+        for body in bodyRequest.results ?? [] {
+            guard let points = try? body.recognizedPoints(.all) else { continue }
+            var sure: [VNHumanBodyPoseObservation.JointName: CGPoint] = [:]
+            for (name, pt) in points where pt.confidence > 0.2 { sure[name] = pt.location }
+            if sure.count >= Self.minJoints { found = true }
+            bodies.append(sure)
+        }
+        // デモ：Vision が人を見つけられないときは、偽カメラの役者の骨組みを使う
+        if !found, FakeCamera.isDemo {
+            bodies = [DemoActor.joints(at: frameTime)]
+            found = true
+        }
         ctx.setFillColor(UIColor(red: 0.06, green: 0.07, blue: 0.12, alpha: 1).cgColor)
         ctx.fill(CGRect(x: 0, y: 0, width: w, height: h))
         ctx.setLineCap(.round)
         ctx.setLineJoin(.round)
         let line = max(CGFloat(w) / 45, 6)
-        for body in bodyRequest.results ?? [] {
-            guard let points = try? body.recognizedPoints(.all) else { continue }
-            if points.values.filter({ $0.confidence > 0.2 }).count >= Self.minJoints { found = true }
+        for points in bodies {
             // Vision の座標は左下が原点の 0〜1。CGContext も左下が原点なのでそのまま掛ける
             func p(_ name: VNHumanBodyPoseObservation.JointName) -> CGPoint? {
-                guard let pt = points[name], pt.confidence > 0.2 else { return nil }
-                return CGPoint(x: pt.location.x * CGFloat(w), y: pt.location.y * CGFloat(h))
+                guard let pt = points[name] else { return nil }
+                return CGPoint(x: pt.x * CGFloat(w), y: pt.y * CGFloat(h))
             }
             let bones: [(VNHumanBodyPoseObservation.JointName, VNHumanBodyPoseObservation.JointName)] = [
                 (.neck, .root),

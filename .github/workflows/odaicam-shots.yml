@@ -138,6 +138,7 @@ jobs:
           xcodebuild test-without-building \
             -project OdaiCam.xcodeproj -scheme OdaiCamUITests \
             -destination "id=$UDID" -derivedDataPath build \
+            -skip-testing:OdaiCamUITests/OdaiCamUITests/test3Demo \
             -resultBundlePath uitest/Result.xcresult > uitest/xcodebuild.log 2>&1
           STATUS=$?
           grep -E "Test (Case|Suite)|error:|XCTAssert|failed|passed" uitest/xcodebuild.log || tail -50 uitest/xcodebuild.log
@@ -206,6 +207,142 @@ jobs:
             OdaiCam/uitest/xcodebuild.log
             OdaiCam/uitest/summary.json
             OdaiCam/uitest/app.log
+
+      - name: Result
+        run: |
+          echo "xcodebuild exit $STATUS"
+          test "$STATUS" = 0
+
+  # デモモード（合成の演技と顔）で 30 秒×3 ラウンド遊び、できた種明かし動画をコマ画像にする。
+  # あわせて、アプリの CPU とメモリを 2 秒ごとに記録する（実機の代わりの重さの目安）
+  demo:
+    runs-on: xcode-27
+    timeout-minutes: 40
+    defaults:
+      run:
+        working-directory: OdaiCam
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Toolchain
+        run: |
+          set -euo pipefail
+          sudo xcode-select -s /Applications/Xcode_27.1.app
+          brew install xcodegen ffmpeg
+
+      - name: Boot simulator
+        run: |
+          set -euo pipefail
+          UDID=$(xcrun simctl list devices available -j | python3 -c '
+          import json, sys
+          d = json.load(sys.stdin)["devices"]
+          devs = [x for k, v in d.items() if "iOS" in k for x in v]
+          pick = [x for x in devs if "Duo" in x["name"]] or [x for x in devs if "Pro" in x["name"] and "Max" not in x["name"]] or devs
+          print(pick[-1]["udid"]); print(pick[-1]["name"], file=sys.stderr)')
+          echo "UDID=$UDID" >> "$GITHUB_ENV"
+          xcrun simctl boot "$UDID" || true
+          xcrun simctl bootstatus "$UDID" -b
+          xcrun simctl ui "$UDID" appearance dark
+
+      - name: Build for testing
+        run: |
+          set -euo pipefail
+          xcodegen generate
+          xcodebuild build-for-testing -quiet \
+            -project OdaiCam.xcodeproj -scheme OdaiCamUITests \
+            -configuration Debug -destination "id=$UDID" \
+            -derivedDataPath build \
+            CODE_SIGNING_ALLOWED=YES CODE_SIGN_IDENTITY=- CODE_SIGN_STYLE=Manual
+
+      - name: Demo rounds
+        run: |
+          set -uo pipefail
+          mkdir -p demo
+          # アプリの CPU とメモリ（RSS、MB）を 2 秒ごとに記録
+          ( echo "sec,cpu_percent,rss_mb" > demo/usage.csv
+            T=0
+            while true; do
+              L=$(ps -A -o rss=,%cpu=,comm= | grep '/OdaiCam.app/OdaiCam$' | head -1)
+              if [ -n "$L" ]; then echo "$L" | awk -v t=$T '{printf "%d,%s,%.1f\n", t, $2, $1/1024}' >> demo/usage.csv; fi
+              sleep 2; T=$((T+2))
+            done ) &
+          MON=$!
+          xcodebuild test-without-building \
+            -project OdaiCam.xcodeproj -scheme OdaiCamUITests \
+            -destination "id=$UDID" -derivedDataPath build \
+            -only-testing:OdaiCamUITests/OdaiCamUITests/test3Demo \
+            -resultBundlePath demo/Result.xcresult > demo/xcodebuild.log 2>&1
+          STATUS=$?
+          kill $MON || true
+          grep -E "Test (Case|Suite)|error:|XCTAssert|failed|passed" demo/xcodebuild.log || tail -50 demo/xcodebuild.log
+          echo "STATUS=$STATUS" >> "$GITHUB_ENV"
+          python3 - <<'PY' | tee -a "$GITHUB_STEP_SUMMARY"
+          import csv
+          rows = list(csv.DictReader(open("demo/usage.csv")))
+          if rows:
+              cpu = [float(r["cpu_percent"]) for r in rows]; mem = [float(r["rss_mb"]) for r in rows]
+              print(f"## デモ 3 ラウンドの重さ（{len(rows)} 点、2 秒ごと）")
+              print(f"CPU 平均 {sum(cpu)/len(cpu):.0f}% / 最大 {max(cpu):.0f}%　メモリ 最初 {mem[0]:.0f} MB / 最大 {max(mem):.0f} MB / 最後 {mem[-1]:.0f} MB")
+          PY
+
+      - name: Reveal video frames
+        if: always()
+        run: |
+          set -uo pipefail
+          DATA=$(xcrun simctl get_app_container "$UDID" io.github.yutonishimura-v2.odaicam data)
+          mkdir -p demo/videos demo/frames
+          find "$DATA" -name 'highlight-*.mp4' -exec cp {} demo/videos/ \;
+          ls -la demo/videos
+          i=0
+          for v in $(ls -tr demo/videos/highlight-*.mp4); do
+            i=$((i+1))
+            D=$(ffprobe -v error -show_entries format=duration -of csv=p=0 "$v")
+            echo "round$i: ${D}s"
+            # 1 秒ごとのコマと、つかみ（0.5 秒）、最後（点数の札）、一覧
+            ffmpeg -y -loglevel error -i "$v" -vf "fps=1,scale=540:-2" "demo/frames/round${i}_%02ds.png"
+            ffmpeg -y -loglevel error -ss 0.5 -i "$v" -frames:v 1 -vf "scale=540:-2" "demo/frames/round${i}_hook.png"
+            ffmpeg -y -loglevel error -sseof -0.7 -i "$v" -frames:v 1 -vf "scale=540:-2" "demo/frames/round${i}_end.png"
+            ffmpeg -y -loglevel error -i "$v" -vf "fps=1,scale=270:-2,tile=6x4:padding=6:color=white" -frames:v 1 "demo/frames/round${i}_sheet.png"
+            mv "$v" "demo/videos/round$i.mp4"
+          done
+          ls demo/frames | head -100
+
+      - name: Screenshots
+        if: always()
+        run: |
+          set -uo pipefail
+          mkdir -p demo/raw demo/attachments
+          xcrun xcresulttool export attachments --path demo/Result.xcresult --output-path demo/raw || true
+          python3 - <<'PY'
+          import json, os, re, shutil
+          try:
+              m = json.load(open("demo/raw/manifest.json"))
+          except Exception as e:
+              print(e); raise SystemExit
+          for test in m:
+              for a in test["attachments"]:
+                  name = a.get("suggestedHumanReadableName", "")
+                  if name.endswith(".png") and not name.startswith(("UI Snapshot", "Synthesized")):
+                      shutil.copy(os.path.join("demo/raw", a["exportedFileName"]),
+                                  os.path.join("demo/attachments", re.sub(r"_0_[0-9A-F-]+\.png$", ".png", name)))
+          print(sorted(os.listdir("demo/attachments")))
+          PY
+          mkdir -p demo/crashes
+          find ~/Library/Logs/DiagnosticReports -name 'OdaiCam*' -newer project.yml -exec cp {} demo/crashes/ \; 2>/dev/null || true
+          xcrun simctl spawn "$UDID" log show --last 20m --style compact --predicate 'process == "OdaiCam"' > demo/app.log 2>&1 || true
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: odaicam-demo
+          path: |
+            OdaiCam/demo/videos
+            OdaiCam/demo/frames
+            OdaiCam/demo/attachments
+            OdaiCam/demo/crashes
+            OdaiCam/demo/usage.csv
+            OdaiCam/demo/xcodebuild.log
+            OdaiCam/demo/app.log
 
       - name: Result
         run: |
