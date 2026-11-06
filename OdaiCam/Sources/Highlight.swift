@@ -310,12 +310,23 @@ enum Highlight {
         }
         guard pieces.contains(where: { $0.kind == .real }) else { throw failure("使える場面がありません") }
 
-        // 点数の札。映像は見せない（不透明度 0）が、動画の長さを確保するため生の映像を入れておく
+        // 点数の札。札の絵は 2 回目で上から不透明に重ねる。1 回目はここに「毎コマ変わる」映像を入れておく。
+        // （変わらない映像・不透明度 0 の映像だと、1 回目の書き出しが札の 1.5 秒を 1 コマにまとめてしまい、
+        //   2 回目の重ね書きがそのコマ（札の始まりの瞬間）に 1 回しか呼ばれず、真っ黒のまま残る）
+        // 生の映像が札の長さに足りなければ、あるだけ入れて札の長さまで引きのばす
         let endD = cm(endLength)
         let endStart = cursor
         var endHasRaw = false
-        if rawEnd >= endLength {
-            endHasRaw = (try? rawLane.put(range(rawEnd - endLength, endD), of: rawSource.track, at: endStart)) ?? false
+        let endAvail = min(endLength, rawEnd)
+        if endAvail >= 0.1 {
+            let d = cm(endAvail)
+            if (try? rawLane.put(range(rawEnd - endAvail, d), of: rawSource.track, at: endStart)) == true {
+                if d < endD {
+                    rawLane.track.scaleTimeRange(CMTimeRange(start: endStart, duration: d), toDuration: endD)
+                    rawLane.end = endStart + endD
+                }
+                endHasRaw = true
+            }
         }
         pieces.append(Piece(kind: .end, caption: "", time: CMTimeRange(start: endStart, duration: endD)))
         let total = endStart + endD
@@ -468,8 +479,10 @@ enum Highlight {
                 }
             case .end:
                 if endHasRaw {
-                    let l = AVMutableVideoCompositionLayerInstruction(assetTrack: rawLane.track)
-                    l.setOpacity(0, at: start)
+                    // 不透明度を毎コマ変えて、1 回目でも 30 fps で 1 コマずつ描かせる。
+                    // 2 回目の札（不透明な黒地）で全部隠れる。帯の重ね書きに失敗したときは暗く消えていく終わり方になる
+                    let l = layer(rawLane, rawSource, full, focus: 0.5, at: start)
+                    l.setOpacityRamp(fromStartOpacity: 0.5, toEndOpacity: 0, timeRange: timeRange)
                     layers.append(l)
                 }
             }
@@ -614,7 +627,8 @@ enum Highlight {
         var card: CIImage?
         var number: CIImage?
         var cardAt = Double.infinity
-        var cardFade = 0.25
+        /// 札の出はじめを判定するときのゆとり（半コマ）
+        static let slack = 1.0 / 60
 
         init(size: CGSize) {
             extent = CGRect(origin: .zero, size: size)
@@ -636,14 +650,19 @@ enum Highlight {
             for chip in chips where chip.span.has(t) {
                 put(Highlight.scaled(chip.image, Highlight.popScale(t - chip.span.from, from: 0.6), about: chip.center))
             }
-            if t < markUntil { put(mark) }
-            if t >= cardAt, let card {
+            // コマの時刻は秒の丸めで札の始まりのわずかに手前になることがあるので、半コマ分ゆるくする
+            let showCard = card != nil && t + Self.slack >= cardAt
+            if t + Self.slack < markUntil || card == nil { put(mark) }
+            if showCard, let card {
+                // 札は黒地の不透明な絵なので、薄く混ぜずにすぱっと切り替える（最初のコマから点数が見える）。
+                // 点数だけ小さくぽんと出す
                 var face = card
                 if let number {
                     let center = CGPoint(x: extent.midX, y: extent.midY)
-                    face = Highlight.scaled(number, Highlight.popScale(t - cardAt, from: 0.85), about: center).composited(over: card)
+                    let elapsed = max(t - cardAt, 0)
+                    face = Highlight.scaled(number, Highlight.popScale(elapsed, from: 0.85), about: center).composited(over: card)
                 }
-                put(face, min(1, (t - cardAt) / cardFade))
+                out = face.composited(over: out)
             }
             return out.cropped(to: source.extent)
         }
@@ -761,8 +780,6 @@ enum Highlight {
             // 札の間は上のロゴを消す（札のロゴと二重にしない）
             parts.markUntil = end.at
             parts.cardAt = end.at
-            // 黒地が出てくる速さは前の CoreAnimation と同じ（end.length + 1 秒のうちの割合で決めていた。いまは約 0.42 秒）
-            parts.cardFade = max(min(0.25 / end.length, 0.5) * (end.length + 1), 0.01)
             let full = CGRect(origin: .zero, size: size)
 
             let logoHeight = h * 0.04
