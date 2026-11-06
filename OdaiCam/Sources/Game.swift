@@ -209,6 +209,20 @@ final class Game {
                                   start: t.start, end: end,
                                   seenQuality: seen, hookQuality: hook)
         }
+        rebuild = { [weak self] in self?.buildHighlight(url: url, recordings: recordings, clips: clips, language: language) }
+        buildHighlight(url: url, recordings: recordings, clips: clips, language: language)
+    }
+
+    /// 種明かし動画を作り直す（結果の画面の「作り直す」から）
+    func rebuildHighlight() {
+        guard !building else { return }
+        highlightError = nil
+        rebuild?()
+    }
+
+    @ObservationIgnored private var rebuild: (() -> Void)?
+
+    private func buildHighlight(url: URL, recordings: Camera.Recordings, clips: [Highlight.Clip], language: String) {
         building = true
         Task {
             do {

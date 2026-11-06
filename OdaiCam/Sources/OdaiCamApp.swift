@@ -510,7 +510,7 @@ struct HomeView: View {
             }
             .background(Color.black.ignoresSafeArea(edges: .top))
 
-            Viewfinder(wipe: wipe, showWipe: innerReady) {
+            Viewfinder(wipe: wipe, showWipe: innerReady && !(game.effectsOn && game.fixedEffect == .peephole)) {
                 ZStack {
                     // 選んだしばりをその場でかけて見せる（しばりなしは下に敷いたカメラがそのまま見える）
                     if let seenFrame, game.effectsOn {
@@ -1072,7 +1072,7 @@ struct PlayView: View {
             }
             .background(Color.black.ignoresSafeArea(edges: .top))
 
-            Viewfinder(wipe: wipe, showWipe: wipe != nil) {
+            Viewfinder(wipe: wipe, showWipe: wipe != nil && game.current?.effect != .peephole) {
                 ZStack {
                     // しばりがあるときは、しばった画面で覆う（本人の映像は見せない）
                     if game.current?.effect != nil {
@@ -1320,6 +1320,14 @@ struct ResultsView: View {
                     Image(systemName: "exclamationmark.triangle").font(.system(size: 34, weight: .semibold))
                     Text("動画を作れませんでした").font(Theme.bold(17))
                     Text(error).font(.system(size: 13)).foregroundStyle(Theme.secondary).multilineTextAlignment(.center)
+                        .lineLimit(4)
+                    // いつまでも待たせず、その場で作り直せるようにする
+                    Button { game.rebuildHighlight() } label: {
+                        Label("作り直す", systemImage: "arrow.clockwise")
+                    }
+                    .buttonStyle(PillButtonStyle(height: 44, fontSize: 15))
+                    .frame(width: 180)
+                    .padding(.top, 6)
                 }
                 .padding(24)
             } else {

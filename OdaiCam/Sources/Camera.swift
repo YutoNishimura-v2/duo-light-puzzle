@@ -303,6 +303,8 @@ final class Camera: NSObject, @unchecked Sendable {
             AVVideoCodecKey: AVVideoCodecType.h264,
             AVVideoWidthKey: width,
             AVVideoHeightKey: height,
+            // B フレームを使わない（符号化が前後のコマを抱えておく分のメモリが要らない）
+            AVVideoCompressionPropertiesKey: [AVVideoAllowFrameReorderingKey: false],
         ])
         input.expectsMediaDataInRealTime = true
         guard w.canAdd(input) else { return }

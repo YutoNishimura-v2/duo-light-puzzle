@@ -11,6 +11,12 @@ enum Backdrop {
               let ctx = CGContext(data: nil, width: w, height: h, bitsPerComponent: 8, bytesPerRow: 0,
                                   space: CGColorSpaceCreateDeviceRGB(),
                                   bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue) else { return nil }
+        draw(effect, in: ctx, width: w, height: h)
+        return ctx.makeImage()
+    }
+
+    /// 渡された CGContext（左下が原点、w x h 画素）に描く。しばりの処理は画素の箱へ直接描く（CGImage を作らない）
+    static func draw(_ effect: Effect, in ctx: CGContext, width w: Int, height h: Int) {
         let rect = CGRect(x: 0, y: 0, width: CGFloat(w), height: CGFloat(h))
         switch effect {
         case .space: space(ctx, rect)
@@ -21,7 +27,6 @@ enum Backdrop {
             ctx.setFillColor(rgb(0, 0, 0))
             ctx.fill(rect)
         }
-        return ctx.makeImage()
     }
 
     // MARK: 宇宙：濃い紺から紫へ、星雲のもや、星、下に大きな惑星、右上に輪のある星

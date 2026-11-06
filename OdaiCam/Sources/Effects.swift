@@ -122,8 +122,23 @@ final class EffectEngine: @unchecked Sendable {
     static let minCoverage = 0.02
 
     /// アプリで 1 つだけ使う Core Image の描き手（小窓の縮小もこれを使う）。
-    /// 描き手ごとに GPU の作業場を持つので、増やさない。途中の絵は残さない
-    nonisolated(unsafe) static let sharedContext = CIContext(options: [.cacheIntermediates: false])
+    /// 描き手ごとに GPU の作業場を持つので、増やさない。途中の絵は残さない。
+    /// 途中の絵は 8 ビットで持つ（標準の 16 ビット浮動小数の半分のメモリ）。暗い色に段がつかないよう sRGB のまま混ぜる
+    nonisolated(unsafe) static let sharedContext = CIContext(options: [
+        .cacheIntermediates: false,
+        .workingFormat: CIFormat.RGBA8.rawValue,
+        .workingColorSpace: CGColorSpace(name: CGColorSpace.sRGB)!,
+        .useSoftwareRenderer: false,
+    ])
+
+    /// シミュレータのデモでは Vision を回さず、役者の骨組み・型抜きだけを使う。
+    /// シミュレータの Vision は人を見つけられないことが多く、CPU で動くので重い（読み取りの作業場で数百 MB 使う）。
+    /// 実機では、デモでも本物の Vision を回す
+    #if targetEnvironment(simulator)
+    static let usesVision = !FakeCamera.isDemo
+    #else
+    static let usesVision = true
+    #endif
 
     private let queue = DispatchQueue(label: "effects", qos: .userInitiated)
     private let lock = NSLock()
@@ -132,13 +147,15 @@ final class EffectEngine: @unchecked Sendable {
     private var effect: Effect?
     private var promptStart: TimeInterval = 0
     /// 3 秒遅れの絵。effects キューだけで触る。
-    /// 処理の大きさの 2/3（540x960 なら 360x640、約 0.9 MB）で、3 秒ぶん（約 46 枚）だけ持つ
-    private var history: [(t: TimeInterval, image: CIImage)] = []
+    /// 処理の大きさの 2/3（540x960 なら 360x640）を YUV の画素の箱（1 画素 1.5 バイト、約 0.35 MB）で、3 秒ぶん（約 46 枚）だけ持つ
+    private var history: [(t: TimeInterval, buffer: CVPixelBuffer)] = []
+    private var historyPool: CVPixelBufferPool?
+    private var historyPoolSize: CGSize = .zero
     /// しばりが変わったら、次の処理で history を空にする（lock で守る）
     private var clearHistory = false
     private var lastHistory: TimeInterval = 0
-    /// 背景の絵（一度描いたら使い回す）。effects キューだけで触る
-    private var backgrounds: [Effect: (size: CGSize, image: CIImage)] = [:]
+    /// 背景の絵（一度描いたら使い回す）。いまのしばりの 1 枚だけ持つ。effects キューだけで触る
+    private var background: (effect: Effect, size: CGSize, image: CIImage)?
     /// main に渡したしばりの画面がまだ受け取られていない（lock で守る）。
     /// main が追いつかないときは新しい画面を渡さない（Task と画素の箱が積み上がってメモリが増え続けないように）
     private var frameInFlight = false
@@ -207,22 +224,29 @@ final class EffectEngine: @unchecked Sendable {
     /// ラウンドの終わり（種明かしを書き出す前）と、メモリが足りないと言われたときに呼ぶ。どのスレッドからでもよい
     func purge(vision: Bool) {
         queue.async { [self] in
-            history.removeAll()
-            lastHistory = 0
-            backgrounds.removeAll()
+            dropEffectState()
             pool = nil
             poolSize = .zero
-            stickPool = nil
-            stickPoolSize = .zero
-            maskPool = nil
-            maskPoolSize = .zero
-            lastPersonMask = nil
             if vision {
                 bodyRequestStore = nil
                 personRequestStore = nil
             }
             context.clearCaches()
         }
+    }
+
+    /// しばりごとに持つもの（3 秒遅れの絵・背景・棒人間と型抜きの箱）を手放す。effects キューで呼ぶ
+    private func dropEffectState() {
+        history.removeAll()
+        lastHistory = 0
+        historyPool = nil
+        historyPoolSize = .zero
+        background = nil
+        stickPool = nil
+        stickPoolSize = .zero
+        maskPool = nil
+        maskPoolSize = .zero
+        lastPersonMask = nil
     }
 
     /// カメラのキューから呼ぶ
@@ -240,9 +264,9 @@ final class EffectEngine: @unchecked Sendable {
             // コマごとの一時的な絵（Vision・Core Image の中身）を、このコマの終わりで手放す
             autoreleasepool {
                 if clear {
-                    history.removeAll()
-                    lastPersonMask = nil
-                    // しばりが変わったら、前のしばりで Core Image が持っていた絵を手放す（2 秒ごとの切り替えでも軽い）
+                    // しばりが変わったら、前のしばりの絵と箱、Core Image が持っていた絵を手放す（2 秒ごとの切り替えでも軽い）
+                    dropEffectState()
+                    if let pool { CVPixelBufferPoolFlush(pool, .excessBuffers) }
                     context.clearCaches()
                 }
                 let now = ProcessInfo.processInfo.systemUptime
@@ -251,7 +275,9 @@ final class EffectEngine: @unchecked Sendable {
                 // 人が映っていたかを、録画と同じフレームの時刻で残す
                 Self.seenLog.add(time.seconds, visible: rendered.visible)
                 let output = rendered.image.cropped(to: input.extent)
-                guard let pb = makeBuffer(size: input.extent.size) else { return }
+                // 出口の箱は、録画の符号化と画面が持っている分だけ（6 枚まで）。足りなければこのコマは捨てる
+                guard let pb = Self.pooledBuffer(&pool, &poolSize, size: input.extent.size,
+                                                 format: kCVPixelFormatType_32BGRA, limit: 6) else { return }
                 context.render(output, to: pb)
                 onPixelBuffer?(pb, time)
                 // 前の画面を main がまだ受け取っていなければ、この画面は見せない（録画には上で書いてある）
@@ -338,13 +364,19 @@ final class EffectEngine: @unchecked Sendable {
     }
 
     private func delayed(_ input: CIImage, now: TimeInterval) -> CIImage? {
-        // 15 コマ/秒だけ、2/3 の大きさに縮めて残す（メモリを食いすぎないように、描き終えた絵として持つ）
+        // 15 コマ/秒だけ、2/3 の大きさに縮めて残す（メモリを食いすぎないように、描き終えた絵として持つ）。
+        // YUV の画素の箱に描く：BGRA の CGImage より小さく（1.5 バイト/画素）、Core Image が GPU に写し直す分も要らない
         let s = Self.historyScale
         if now - lastHistory >= 1.0 / Self.historyFPS {
             let small = input.transformed(by: CGAffineTransform(scaleX: s, y: s))
             let rect = small.extent.integral
-            if let cg = context.createCGImage(small, from: rect) {
-                history.append((now, CIImage(cgImage: cg)))
+            // YUV 4:2:0 は幅と高さを偶数にする
+            let size = CGSize(width: (rect.width / 2).rounded(.down) * 2, height: (rect.height / 2).rounded(.down) * 2)
+            let most = Int(Self.delaySeconds * Self.historyFPS) + 6
+            if let pb = Self.pooledBuffer(&historyPool, &historyPoolSize, size: size,
+                                          format: kCVPixelFormatType_420YpCbCr8BiPlanarFullRange, limit: most) {
+                context.render(small.transformed(by: CGAffineTransform(translationX: -rect.minX, y: -rect.minY)), to: pb)
+                history.append((now, pb))
                 lastHistory = now
             }
         }
@@ -355,7 +387,7 @@ final class EffectEngine: @unchecked Sendable {
         if history.count > cap { history.removeFirst(history.count - cap) }
         guard let first = history.first, now - first.t <= Self.delaySeconds else { return nil }
         // 処理の大きさへ戻す
-        let back = first.image.transformed(by: CGAffineTransform(scaleX: 1 / s, y: 1 / s))
+        let back = CIImage(cvPixelBuffer: first.buffer).transformed(by: CGAffineTransform(scaleX: 1 / s, y: 1 / s))
         return back.transformed(by: CGAffineTransform(translationX: input.extent.minX - back.extent.minX,
                                                       y: input.extent.minY - back.extent.minY))
     }
@@ -368,7 +400,9 @@ final class EffectEngine: @unchecked Sendable {
         let demo = FakeCamera.isDemo
         var maskBuffer: CVPixelBuffer?
         var found = false
-        if demo, now < personRetryAt {
+        if !Self.usesVision {
+            // シミュレータのデモ：Vision は使わない（下で役者の型抜きを使う）
+        } else if demo, now < personRetryAt {
             // Vision は休み（下で役者の型抜きを使う）
         } else if demo, let last = lastPersonMask, now - lastPersonTime < Self.demoVisionInterval {
             maskBuffer = last
@@ -400,7 +434,8 @@ final class EffectEngine: @unchecked Sendable {
         // 型抜きは使い回しの画素の箱に半分の大きさで描く（毎コマ新しい CGImage を作ると Core Image が抱え込む）
         if !found, demo {
             let size = CGSize(width: (input.extent.width / 2).rounded(), height: (input.extent.height / 2).rounded())
-            if let pb = Self.pooledBuffer(&maskPool, &maskPoolSize, size: size, format: kCVPixelFormatType_OneComponent8),
+            if let pb = Self.pooledBuffer(&maskPool, &maskPoolSize, size: size, format: kCVPixelFormatType_OneComponent8,
+                                             limit: 3),
                DemoActor.mask(at: frameTime, into: pb) {
                 let m = CIImage(cvPixelBuffer: pb)
                 mask = m.transformed(by: CGAffineTransform(scaleX: input.extent.width / m.extent.width,
@@ -427,24 +462,47 @@ final class EffectEngine: @unchecked Sendable {
     /// 人が見つからないときは背景だけ（visible は false）
     private func backdrop(_ effect: Effect, source: CVPixelBuffer, input: CIImage, now: TimeInterval, frameTime: TimeInterval,
                           black: CIImage) -> (image: CIImage, visible: Bool) {
-        // 大きさは整数に丸めて比べる（小数のぶれで描き直さない）。しばりごとに 1 枚だけ持つ（最大 4 枚）
+        // 大きさは整数に丸めて比べる（小数のぶれで描き直さない）。いまのしばりの 1 枚だけ持つ
         let size = CGSize(width: input.extent.width.rounded(), height: input.extent.height.rounded())
-        var background = black
-        if let cached = backgrounds[effect], cached.size == size {
-            background = cached.image
-        } else if let cg = Backdrop.image(effect, size: size) {
-            background = CIImage(cgImage: cg)
-            backgrounds[effect] = (size, background)
+        var scene = black
+        if let cached = background, cached.effect == effect, cached.size == size {
+            scene = cached.image
+        } else {
+            // 前の背景を先に手放してから描く（2 枚を同時に持たない）
+            background = nil
+            if let pb = Self.backdropBuffer(effect, size: size) {
+                scene = CIImage(cvPixelBuffer: pb)
+                background = (effect, size, scene)
+            }
         }
         let person = personMask(source: source, input: input, now: now, frameTime: frameTime)
-        guard let mask = person.mask else { return (background, false) }
+        guard let mask = person.mask else { return (scene, false) }
         // 縁を少しだけぼかして、切り抜きのギザギザを目立たなくする
         let soft = mask.clampedToExtent().applyingGaussianBlur(sigma: 1.5).cropped(to: input.extent)
         let blend = CIFilter.blendWithMask()
         blend.inputImage = input
-        blend.backgroundImage = background
+        blend.backgroundImage = scene
         blend.maskImage = soft
-        return (blend.outputImage ?? background, person.found)
+        return (blend.outputImage ?? scene, person.found)
+    }
+
+    /// 背景を画素の箱（BGRA）に直接描く。CGImage を作らず、Core Image も GPU に写し直さずに読める
+    private static func backdropBuffer(_ effect: Effect, size: CGSize) -> CVPixelBuffer? {
+        let w = Int(size.width), h = Int(size.height)
+        guard w > 0, h > 0 else { return nil }
+        let attrs: [String: Any] = [kCVPixelBufferIOSurfacePropertiesKey as String: [String: Any]()]
+        var buffer: CVPixelBuffer?
+        CVPixelBufferCreate(nil, w, h, kCVPixelFormatType_32BGRA, attrs as CFDictionary, &buffer)
+        guard let pb = buffer else { return nil }
+        CVPixelBufferLockBaseAddress(pb, [])
+        defer { CVPixelBufferUnlockBaseAddress(pb, []) }
+        guard let ctx = CGContext(data: CVPixelBufferGetBaseAddress(pb), width: w, height: h, bitsPerComponent: 8,
+                                  bytesPerRow: CVPixelBufferGetBytesPerRow(pb), space: CGColorSpaceCreateDeviceRGB(),
+                                  bitmapInfo: CGImageAlphaInfo.premultipliedFirst.rawValue | CGBitmapInfo.byteOrder32Little.rawValue)
+        else { return nil }
+        Backdrop.draw(effect, in: ctx, width: w, height: h)
+        ctx.flush()
+        return pb
     }
 
     /// 人の形の割合（0〜1）。8 ビットの型抜きを 4 画素おきに数える
@@ -473,7 +531,7 @@ final class EffectEngine: @unchecked Sendable {
         // 人ごとの関節（確かなものだけ。0〜1、左下が原点）
         var bodies: [[VNHumanBodyPoseObservation.JointName: CGPoint]] = []
         // デモで Vision が人を見つけられなかった直後は、しばらく Vision を回さない
-        if !(demo && now < bodyRetryAt) {
+        if Self.usesVision, !(demo && now < bodyRetryAt) {
             let handler = VNImageRequestHandler(cvPixelBuffer: source)
             try? handler.perform([bodyRequest])
             for body in bodyRequest.results ?? [] {
@@ -494,7 +552,7 @@ final class EffectEngine: @unchecked Sendable {
         let w = Int(size.width.rounded()), h = Int(size.height.rounded())
         guard w > 0, h > 0,
               let pb = Self.pooledBuffer(&stickPool, &stickPoolSize, size: CGSize(width: w, height: h),
-                                         format: kCVPixelFormatType_32BGRA) else { return (nil, found) }
+                                         format: kCVPixelFormatType_32BGRA, limit: 3) else { return (nil, found) }
         CVPixelBufferLockBaseAddress(pb, [])
         defer { CVPixelBufferUnlockBaseAddress(pb, []) }
         guard let ctx = CGContext(data: CVPixelBufferGetBaseAddress(pb), width: w, height: h, bitsPerComponent: 8,
@@ -551,44 +609,53 @@ final class EffectEngine: @unchecked Sendable {
     private var pool: CVPixelBufferPool?
     private var poolSize: CGSize = .zero
 
-    /// 大きさと並びを決めた箱を、使い回しの置き場から 1 つ取る（大きさが変わったら置き場を作り直す）
+    /// 大きさと並びを決めた箱を、使い回しの置き場から 1 つ取る（大きさが変わったら置き場を作り直す）。
+    /// limit 枚より多くは作らない（足りなければ nil。そのコマは捨てる）
     private static func pooledBuffer(_ pool: inout CVPixelBufferPool?, _ poolSize: inout CGSize, size: CGSize,
-                                     format: OSType) -> CVPixelBuffer? {
+                                     format: OSType, limit: Int) -> CVPixelBuffer? {
         let width = Int(size.width.rounded()), height = Int(size.height.rounded())
         guard width > 0, height > 0 else { return nil }
         let rounded = CGSize(width: width, height: height)
         if pool == nil || poolSize != rounded {
-            pool = nil
-            let attrs: [String: Any] = [
-                kCVPixelBufferPixelFormatTypeKey as String: format,
-                kCVPixelBufferWidthKey as String: width,
-                kCVPixelBufferHeightKey as String: height,
-                kCVPixelBufferIOSurfacePropertiesKey as String: [String: Any](),
-            ]
-            CVPixelBufferPoolCreate(nil, nil, attrs as CFDictionary, &pool)
+            pool = PixelPool.make(width: width, height: height, format: format)
             poolSize = rounded
         }
         guard let pool else { return nil }
-        var pb: CVPixelBuffer?
-        CVPixelBufferPoolCreatePixelBuffer(nil, pool, &pb)
-        return pb
+        return PixelPool.buffer(from: pool, limit: limit)
+    }
+}
+
+/// 画素の箱の置き場。置いておく数を少なくし（使わない箱は 0.5 秒で手放す）、作る数にも上限をつける
+enum PixelPool {
+    static func make(width: Int, height: Int, format: OSType) -> CVPixelBufferPool? {
+        let poolAttrs: [String: Any] = [
+            kCVPixelBufferPoolMinimumBufferCountKey as String: 1,
+            kCVPixelBufferPoolMaximumBufferAgeKey as String: 0.5,
+        ]
+        var attrs: [String: Any] = [
+            kCVPixelBufferPixelFormatTypeKey as String: format,
+            kCVPixelBufferWidthKey as String: width,
+            kCVPixelBufferHeightKey as String: height,
+            kCVPixelBufferIOSurfacePropertiesKey as String: [String: Any](),
+        ]
+        // YUV の箱は色の決まりを付けておく（描くときと読むときで同じ変換になるように）
+        if format == kCVPixelFormatType_420YpCbCr8BiPlanarFullRange {
+            attrs[kCVBufferPropagatedAttachmentsKey as String] = [
+                kCVImageBufferYCbCrMatrixKey as String: kCVImageBufferYCbCrMatrix_ITU_R_709_2,
+                kCVImageBufferColorPrimariesKey as String: kCVImageBufferColorPrimaries_ITU_R_709_2,
+                kCVImageBufferTransferFunctionKey as String: kCVImageBufferTransferFunction_ITU_R_709_2,
+            ]
+        }
+        var pool: CVPixelBufferPool?
+        CVPixelBufferPoolCreate(nil, poolAttrs as CFDictionary, attrs as CFDictionary, &pool)
+        return pool
     }
 
-    private func makeBuffer(size: CGSize) -> CVPixelBuffer? {
-        let width = Int(size.width.rounded()), height = Int(size.height.rounded())
-        if pool == nil || poolSize != CGSize(width: width, height: height) {
-            let attrs: [String: Any] = [
-                kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_32BGRA,
-                kCVPixelBufferWidthKey as String: width,
-                kCVPixelBufferHeightKey as String: height,
-                kCVPixelBufferIOSurfacePropertiesKey as String: [:],
-            ]
-            CVPixelBufferPoolCreate(nil, nil, attrs as CFDictionary, &pool)
-            poolSize = CGSize(width: width, height: height)
-        }
-        guard let pool else { return nil }
+    /// 置き場の箱が limit 枚に達していたら、新しく作らず nil を返す
+    static func buffer(from pool: CVPixelBufferPool, limit: Int) -> CVPixelBuffer? {
+        let aux: [String: Any] = [kCVPixelBufferPoolAllocationThresholdKey as String: limit]
         var pb: CVPixelBuffer?
-        CVPixelBufferPoolCreatePixelBuffer(nil, pool, &pb)
+        CVPixelBufferPoolCreatePixelBufferWithAuxAttributes(nil, pool, aux as CFDictionary, &pb)
         return pb
     }
 }

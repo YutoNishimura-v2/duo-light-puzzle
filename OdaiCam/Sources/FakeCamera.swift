@@ -39,7 +39,7 @@ final class FakeCamera: @unchecked Sendable {
     private let previewLock = NSLock()
     private var previewInFlight = false
     /// いま流しているコマの大きさ（録画の設定に使う）
-    private(set) var size = FakeCamera.isDemo ? DemoActor.size : CGSize(width: 540, height: 960)
+    private(set) var size = FakeCamera.isDemo ? DemoActor.pixelSize : CGSize(width: 540, height: 960)
 
     init(queue: DispatchQueue) {
         self.queue = queue
@@ -47,12 +47,14 @@ final class FakeCamera: @unchecked Sendable {
 
     /// 録画の設定（本物ではカメラの出力が勧める値を使う）。カメラのキューで呼ぶ
     var videoSettings: [String: Any] {
-        [AVVideoCodecKey: AVVideoCodecType.h264, AVVideoWidthKey: Int(size.width), AVVideoHeightKey: Int(size.height)]
+        // B フレームを使わない（符号化が前後のコマを抱えておく分のメモリが要らない）
+        [AVVideoCodecKey: AVVideoCodecType.h264, AVVideoWidthKey: Int(size.width), AVVideoHeightKey: Int(size.height),
+         AVVideoCompressionPropertiesKey: [AVVideoAllowFrameReorderingKey: false]]
     }
 
     /// デモの顔の録画の設定
     var frontVideoSettings: [String: Any] {
-        [AVVideoCodecKey: AVVideoCodecType.h264, AVVideoWidthKey: Int(DemoFace.size.width), AVVideoHeightKey: Int(DemoFace.size.height)]
+        [AVVideoCodecKey: AVVideoCodecType.h264, AVVideoWidthKey: Int(DemoFace.pixelSize.width), AVVideoHeightKey: Int(DemoFace.pixelSize.height)]
     }
 
     /// カメラのキューで呼ぶ
@@ -171,19 +173,7 @@ final class FakeCamera: @unchecked Sendable {
     /// 動画がないときの代わり：腕と脚を振る人形
     private func drawFrame() -> CVPixelBuffer? {
         let w = 540, h = 960
-        if pool == nil {
-            let attrs: [String: Any] = [
-                kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_32BGRA,
-                kCVPixelBufferWidthKey as String: w,
-                kCVPixelBufferHeightKey as String: h,
-                kCVPixelBufferIOSurfacePropertiesKey as String: [String: Any](),
-            ]
-            CVPixelBufferPoolCreate(nil, nil, attrs as CFDictionary, &pool)
-        }
-        guard let pool else { return nil }
-        var buffer: CVPixelBuffer?
-        CVPixelBufferPoolCreatePixelBuffer(nil, pool, &buffer)
-        guard let pb = buffer else { return nil }
+        guard let pb = Self.makeBuffer(&pool, width: w, height: h) else { return nil }
         CVPixelBufferLockBaseAddress(pb, [])
         defer { CVPixelBufferUnlockBaseAddress(pb, []) }
         guard let ctx = CGContext(data: CVPixelBufferGetBaseAddress(pb), width: w, height: h, bitsPerComponent: 8,
@@ -221,7 +211,8 @@ final class FakeCamera: @unchecked Sendable {
 
     /// デモ：部屋で演じる人の 1 コマ（時刻 t の姿勢）
     private func drawActor(t: TimeInterval) -> CVPixelBuffer? {
-        let size = DemoActor.size
+        // 画素は 540x960 で持つ（720x1280 の約半分のメモリ）。役者は 720x1280 の座標のまま、縮めて描く
+        let size = DemoActor.pixelSize
         guard let pb = Self.makeBuffer(&actorPool, width: Int(size.width), height: Int(size.height)) else { return nil }
         CVPixelBufferLockBaseAddress(pb, [])
         defer { CVPixelBufferUnlockBaseAddress(pb, []) }
@@ -235,6 +226,7 @@ final class FakeCamera: @unchecked Sendable {
             ctx.draw(room, in: CGRect(origin: .zero, size: size))
             ctx.restoreGState()
         }
+        ctx.scaleBy(x: DemoActor.pixelScale, y: DemoActor.pixelScale)
         DemoActor.draw(DemoActor.body(at: t), in: ctx, mask: false)
         DemoActor.vignette(ctx)
         return pb
@@ -247,29 +239,24 @@ final class FakeCamera: @unchecked Sendable {
 
     private func faceTickBody() {
         let now = CMClockGetTime(CMClockGetHostTimeClock())
-        let size = DemoFace.size
+        // 画素は 360x480 で持つ（小窓とハイライトの小窓には十分）。顔は 480x640 の座標のまま、縮めて描く
+        let size = DemoFace.pixelSize
         guard let pb = Self.makeBuffer(&facePool, width: Int(size.width), height: Int(size.height)) else { return }
         CVPixelBufferLockBaseAddress(pb, [])
-        if let ctx = Self.context(pb) { DemoFace.draw(at: now.seconds, in: ctx) }
+        if let ctx = Self.context(pb) {
+            ctx.scaleBy(x: size.width / DemoFace.size.width, y: size.height / DemoFace.size.height)
+            DemoFace.draw(at: now.seconds, in: ctx)
+        }
         CVPixelBufferUnlockBaseAddress(pb, [])
         guard let sample = Self.sample(pb, at: now, fps: 15) else { return }
         deliverFront?(sample)
     }
 
+    /// 箱は 6 枚まで（録画の符号化・しばりの処理・プレビューが持つ分）。足りなければこのコマは流さない
     private static func makeBuffer(_ pool: inout CVPixelBufferPool?, width: Int, height: Int) -> CVPixelBuffer? {
-        if pool == nil {
-            let attrs: [String: Any] = [
-                kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_32BGRA,
-                kCVPixelBufferWidthKey as String: width,
-                kCVPixelBufferHeightKey as String: height,
-                kCVPixelBufferIOSurfacePropertiesKey as String: [String: Any](),
-            ]
-            CVPixelBufferPoolCreate(nil, nil, attrs as CFDictionary, &pool)
-        }
+        if pool == nil { pool = PixelPool.make(width: width, height: height, format: kCVPixelFormatType_32BGRA) }
         guard let pool else { return nil }
-        var buffer: CVPixelBuffer?
-        CVPixelBufferPoolCreatePixelBuffer(nil, pool, &buffer)
-        return buffer
+        return PixelPool.buffer(from: pool, limit: 6)
     }
 
     /// 鍵をかけた画素の箱に描く（左下が原点）
@@ -303,6 +290,9 @@ private func smooth(_ x: Double) -> Double {
 /// 座標は 720x1280 の画素で、左下が原点（Vision と CGContext に合わせる）
 enum DemoActor {
     static let size = CGSize(width: 720, height: 1280)
+    /// 実際の画素の大きさ（座標は size のまま、これだけ縮めて描く）
+    static let pixelSize = CGSize(width: 540, height: 960)
+    static let pixelScale: CGFloat = 0.75
     /// 靴の底が着く高さ
     static let floorY: CGFloat = 330
     /// 1 つの動きの長さ（秒）と、次の動きへのつなぎ
@@ -615,11 +605,13 @@ enum DemoActor {
     /// 部屋（窓・絵・鉢植え・木の床・ラグ）。一度だけ描く。
     /// 偽カメラの画素の箱と同じ並び（BGRA）にして、毎コマ写すときの変換をなくす
     static func room() -> CGImage? {
-        let w = Int(size.width), h = Int(size.height)
+        // 画素の大きさで 1 枚だけ持つ（座標は size のまま縮めて描く）
+        let w = Int(pixelSize.width), h = Int(pixelSize.height)
         guard let ctx = CGContext(data: nil, width: w, height: h, bitsPerComponent: 8, bytesPerRow: 0,
                                   space: CGColorSpaceCreateDeviceRGB(),
                                   bitmapInfo: CGImageAlphaInfo.premultipliedFirst.rawValue | CGBitmapInfo.byteOrder32Little.rawValue)
         else { return nil }
+        ctx.scaleBy(x: pixelScale, y: pixelScale)
         let W = size.width, H = size.height
         let horizon: CGFloat = 430
         // 壁
@@ -719,7 +711,10 @@ enum DemoActor {
 /// デモの当てる人の顔（内側のカメラの代わり）。画面を見たまま、目だけ動き、叫んだり驚いたり笑ったりする。
 /// 顔は上を向かない（鼻・目・口の上下の並びが変わらない）ので、カンニングの見張りは鳴らない
 enum DemoFace {
+    /// 描く座標の大きさ
     static let size = CGSize(width: 480, height: 640)
+    /// 実際の画素の大きさ
+    static let pixelSize = CGSize(width: 360, height: 480)
 
     private enum Mood { case shout, think, surprised, laugh }
 

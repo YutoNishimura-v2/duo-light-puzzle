@@ -292,7 +292,8 @@ enum Highlight {
             if p.seenLength > 0, let seenSource, let effect = p.clip.effect {
                 let d = cm(p.seenLength)
                 if try seenLane.put(range(p.from, d), of: seenSource.track, at: cursor) {
-                    let face = putFace(p.from, d, at: cursor)
+                    // のぞき穴は小さな穴が見どころなので、顔の小窓で隠さない
+                    let face = effect == word("のぞき穴") ? false : putFace(p.from, d, at: cursor)
                     pieces.append(Piece(kind: .seen, caption: String(format: word("見えていたのは…（%@）"), effect),
                                         time: CMTimeRange(start: cursor, duration: d), face: face))
                     cursor = cursor + d
@@ -506,6 +507,12 @@ enum Highlight {
         exporter.shouldOptimizeForNetworkUse = true
         // 前のラウンドの書き出しを消す（一時フォルダにたまらないように）
         removeOldOutputs()
+        // 書き出しが止まったまま待たせない（シミュレータでは 1 回目が 2 分かかることがあるので長めに）
+        let watchdog1 = Task {
+            try? await Task.sleep(for: .seconds(150))
+            if !Task.isCancelled { exporter.cancelExport() }
+        }
+        defer { watchdog1.cancel() }
         do {
             try await exporter.export(to: step1, as: .mp4)
         } catch {
@@ -533,6 +540,15 @@ enum Highlight {
                 }
                 second.videoComposition = overlaid
                 second.shouldOptimizeForNetworkUse = true
+                // 帯の重ね書きが 25 秒で終わらなければ打ち切り、帯なしの動画を出す（0 バイトのまま待ち続けたことがある）
+                let watchdog2 = Task {
+                    try? await Task.sleep(for: .seconds(25))
+                    if !Task.isCancelled {
+                        CrashLog.mark("ハイライト：帯の重ね書きが 25 秒で終わらず打ち切り")
+                        second.cancelExport()
+                    }
+                }
+                defer { watchdog2.cancel() }
                 try await second.export(to: out, as: .mp4)
                 result = out
             } catch {
