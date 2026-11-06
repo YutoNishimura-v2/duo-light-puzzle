@@ -5,7 +5,8 @@ import Foundation
 /// 当てる人の声を聞き取り、いまのお題を言ったら知らせる。
 /// iPhone の音声認識（Speech）を端末の中だけで使う。お題が変わるたびに聞き直す
 final class Listener: @unchecked Sendable {
-    private let recognizer = SFSpeechRecognizer(locale: Locale(identifier: "ja-JP"))
+    /// 言葉ごとの聞き取り（山札の言葉に合わせる。一度作ったら使い回す）。lock で守る
+    private var recognizers: [String: SFSpeechRecognizer] = [:]
     private let lock = NSLock()
     private var request: SFSpeechAudioBufferRecognitionRequest?
     private var task: SFSpeechRecognitionTask?
@@ -23,24 +24,37 @@ final class Listener: @unchecked Sendable {
         }
     }
 
-    /// 端末の中だけで聞き取れるか。できないときは声の判定を使わない（声を外に送らない）
-    var isAvailable: Bool { recognizer?.isAvailable == true && recognizer?.supportsOnDeviceRecognition == true }
+    /// 山札の言葉（"ja" か "en"）の聞き取り。"ja" 以外はすべて英語（アメリカ）で聞く
+    private func recognizer(for language: String) -> SFSpeechRecognizer? {
+        lock.withLock { () -> SFSpeechRecognizer? in
+            if let cached = recognizers[language] { return cached }
+            let made = SFSpeechRecognizer(locale: Locale(identifier: language == "ja" ? "ja-JP" : "en-US"))
+            if let made { recognizers[language] = made }
+            return made
+        }
+    }
 
-    /// 新しいお題で聞き直す。hints は山札の言葉（聞き取りやすくする）
-    func listen(for prompt: String, hints: [String]) {
+    /// その言葉を端末の中だけで聞き取れるか。できないときは声の判定を使わない（声を外に送らない）
+    func isAvailable(language: String) -> Bool {
+        guard let r = recognizer(for: language) else { return false }
+        return r.isAvailable && r.supportsOnDeviceRecognition
+    }
+
+    /// 新しいお題で聞き直す。hints は山札の言葉（聞き取りやすくする）。language は山札の言葉
+    func listen(for prompt: String, hints: [String], language: String = "ja") {
         stop()
-        guard let recognizer, isAvailable else { return }
+        guard let engine = self.recognizer(for: language), isAvailable(language: language) else { return }
         let request = SFSpeechAudioBufferRecognitionRequest()
         request.shouldReportPartialResults = true
         request.contextualStrings = Array(Set(hints + [prompt]))
         request.requiresOnDeviceRecognition = true
-        let keys = AnswerMatcher.keys(for: prompt)
+        let keys = AnswerMatcher.keys(for: prompt, language: language)
         lock.withLock {
             self.request = request
             self.target = keys
             self.matched = false
         }
-        task = recognizer.recognitionTask(with: request) { [weak self] result, _ in
+        task = engine.recognitionTask(with: request) { [weak self] result, _ in
             guard let self, let result else { return }
             let heard = result.bestTranscription.formattedString
             Task { @MainActor [onHeard] in onHeard?(heard) }
@@ -95,12 +109,19 @@ final class Listener: @unchecked Sendable {
 /// - お題「傘をさす」（長い：かさをさす、助詞を落とした かささす も受ける）
 ///   - 「傘をさす」「傘さす」正解 ／「日傘をさす」→ [ひがさ][を][さす] 不正解（単語の途中から）
 /// - お題「DJ」（英字はそのまま dj、短い）→「DJ」正解 ／「DJだ」→ [dj][だ] 正解
+///
+/// 英語の山札は別の比べ方（englishWords・matchesEnglish）。
+/// 小文字にして記号で単語に分け、a・an・the を落とす。単語ごとに比べ、複数形（s・es・ies）の違いは気にしない。
+/// お題の単語が、聞き取りの中に同じ順で続いて出てくれば正解（単語の途中に含まれているだけでは正解にしない）。
+/// 短いお題（3 文字以下。Cat、Bee、DJ）は単語がぴったり同じときだけ（Cats も Catalog も不正解）
 enum AnswerMatcher {
     struct Key: Hashable {
-        /// ならした読み
+        /// ならした読み（英語は、ならした単語を空白でつないだもの）
         let reading: String
         /// 短いお題。単語のまとまりがぴったり同じときだけ正解
         let short: Bool
+        /// 英語のお題（英語の比べ方を使う）
+        var english = false
     }
 
     /// これ以下の長さの読みは「短いお題」
@@ -109,7 +130,9 @@ enum AnswerMatcher {
     /// 落としても意味が通る助詞（「傘をさす」→「傘さす」）
     private static let particles: Set<String> = ["を", "の", "が", "に", "で", "へ", "と", "は"]
 
-    static func keys(for prompt: String) -> [Key] {
+    /// language は山札の言葉（"ja" 以外は英語として比べる）
+    static func keys(for prompt: String, language: String = "ja") -> [Key] {
+        if language != "ja" { return englishKeys(for: prompt) }
         let tokens = words(prompt)
         guard !tokens.isEmpty else { return [] }
         let full = tokens.map(\.reading).joined()
@@ -126,9 +149,81 @@ enum AnswerMatcher {
 
     /// candidates は聞き取りの候補ごとの区切り（認識の segments）。区切りの中もさらに単語に分ける
     static func matches(_ candidates: [[String]], keys: [Key]) -> Bool {
+        let hasJapanese = keys.contains { !$0.english }
+        let hasEnglish = keys.contains { $0.english }
         for pieces in candidates {
-            let tokens = pieces.flatMap { words($0).map(\.reading) }
-            if keys.contains(where: { matches(tokens, key: $0) }) { return true }
+            if hasJapanese {
+                let tokens = pieces.flatMap { words($0).map(\.reading) }
+                if keys.contains(where: { !$0.english && matches(tokens, key: $0) }) { return true }
+            }
+            if hasEnglish {
+                let tokens = pieces.flatMap { englishWords($0) }
+                if keys.contains(where: { $0.english && matchesEnglish(tokens, key: $0) }) { return true }
+            }
+        }
+        return false
+    }
+
+    // MARK: 英語
+
+    /// 落とす冠詞
+    private static let articles: Set<String> = ["a", "an", "the"]
+
+    static func englishKeys(for prompt: String) -> [Key] {
+        var tokens = englishWords(prompt)
+        // 冠詞だけのお題はない想定だが、念のため落とす前の単語で比べる
+        if tokens.isEmpty { tokens = englishWords(prompt, keepArticles: true) }
+        guard !tokens.isEmpty else { return [] }
+        let short = tokens.joined().count <= shortLength
+        return [Key(reading: tokens.joined(separator: " "), short: short, english: true)]
+    }
+
+    /// 小文字にし、アクセント記号（Piñata の ñ）とアポストロフィ（Year's）を落として、英数字のまとまりごとに分ける。
+    /// T-Rex → [t, rex]、Wi-Fi → [wi, fi]、Phone at 1% → [phone, at, 1]。冠詞（a・an・the）は落とす
+    static func englishWords(_ s: String, keepArticles: Bool = false) -> [String] {
+        let folded = s.folding(options: [.caseInsensitive, .diacriticInsensitive], locale: Locale(identifier: "en_US"))
+            .lowercased()
+            .replacingOccurrences(of: "'", with: "")
+            .replacingOccurrences(of: "\u{2019}", with: "")
+        return folded.components(separatedBy: CharacterSet.alphanumerics.inverted)
+            .filter { !$0.isEmpty && (keepArticles || !articles.contains($0)) }
+    }
+
+    /// 同じ単語か。複数形の違い（cat・cats、box・boxes、puppy・puppies）は同じとみなす
+    static func sameWord(_ a: String, _ b: String) -> Bool {
+        if a == b { return true }
+        let (short, long) = a.count < b.count ? (a, b) : (b, a)
+        if long == short + "s" || long == short + "es" { return true }
+        if short.hasSuffix("y"), long == String(short.dropLast()) + "ies" { return true }
+        return false
+    }
+
+    /// tokens は聞き取りの単語（englishWords でならしたもの）
+    static func matchesEnglish(_ tokens: [String], key: Key) -> Bool {
+        let target = key.reading.split(separator: " ").map(String.init)
+        guard !target.isEmpty else { return false }
+        let joined = target.joined()
+        for i in tokens.indices {
+            if key.short {
+                // 単語 1 つか、続いた 3 つまでのまとまりがぴったり同じ（D.J. → [d][j] も dj）
+                var run = ""
+                for j in i..<min(tokens.count, i + 3) {
+                    run += tokens[j]
+                    if run == joined { return true }
+                }
+                continue
+            }
+            // お題の単語が同じ順で続いている
+            if i + target.count <= tokens.count,
+               zip(target, tokens[i..<(i + target.count)]).allSatisfy({ sameWord($0, $1) }) {
+                return true
+            }
+            // 区切り方の違い（Wi-Fi と WiFi、Push-ups と pushups）は、つなげて比べる
+            var run = ""
+            for j in i..<min(tokens.count, i + target.count + 2) {
+                run += tokens[j]
+                if sameWord(run, joined) { return true }
+            }
         }
         return false
     }
@@ -267,9 +362,20 @@ enum AnswerMatcher {
             ("傘をさす", "傘さす", true), ("傘をさす", "傘をさす", true),
             ("寿司職人", "すし職人", true), ("DJ", "DJ", true), ("カニ", "カニカマ", false),
         ]
-        return cases.compactMap { c in
+        let english: [(prompt: String, said: String, expect: Bool)] = [
+            ("Cat", "cat", true), ("Cat", "a cat!", true), ("Cat", "catalog", false), ("Cat", "cats", false),
+            ("DJ", "D.J.", true), ("Gorilla", "the gorillas", true), ("Sea otter", "sea otters", true),
+            ("Seal", "sea lion", false), ("T-Rex", "t rex", true), ("Wi-Fi signal", "WiFi signal", true),
+            ("Push-ups", "pushups", true), ("New Year's resolution", "new years resolution", true),
+            ("Brushing teeth", "brushing", false), ("Piñata", "pinata", true),
+        ]
+        let ja = cases.compactMap { c in
             matches(texts: [c.said], keys: keys(for: c.prompt)) == c.expect ? nil : "\(c.prompt) ← \(c.said)"
         }
+        let en = english.compactMap { c in
+            matches(texts: [c.said], keys: keys(for: c.prompt, language: "en")) == c.expect ? nil : "\(c.prompt) ← \(c.said)"
+        }
+        return ja + en
     }
     #endif
 }

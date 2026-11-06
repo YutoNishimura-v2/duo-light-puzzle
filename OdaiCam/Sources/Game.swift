@@ -187,9 +187,11 @@ final class Game {
     func recordingFinished(_ recordings: Camera.Recordings) {
         guard phase == .results else { return }
         guard let url = recordings.raw else {
-            highlightError = "録画できませんでした"
+            highlightError = String(localized: "録画できませんでした")
             return
         }
+        // 種明かし動画の文字は山札の言葉で書く
+        let language = deck.language
         // しばりの画面に人が映っていたか。録画の秒を、記録と同じ時計の秒に直して聞く（しばりなしは全部映っていたことに）
         let base = recordingStart
         func quality(_ t: Turn, _ from: TimeInterval, _ to: TimeInterval) -> SeenQuality {
@@ -203,7 +205,8 @@ final class Game {
             let from = max(t.start, to - Highlight.realLength)
             let seen = quality(t, from, min(from + Highlight.seenLength, to))
             let hook = quality(t, max(t.start, end - Highlight.hookLength), end)
-            return Highlight.Clip(prompt: t.prompt, outcome: outcome.rawValue, effect: t.effect?.label, start: t.start, end: end,
+            return Highlight.Clip(prompt: t.prompt, outcome: outcome.rawValue, effect: t.effect?.label(language: language),
+                                  start: t.start, end: end,
                                   seenQuality: seen, hookQuality: hook)
         }
         building = true
@@ -211,15 +214,15 @@ final class Game {
             do {
                 highlightURL = try await Self.makeWithRetry {
                     try await Highlight.make(raw: url, seen: recordings.seen, front: recordings.front, clips: clips, score: score,
-                                             overlay: !Self.fastExport)
+                                             overlay: !Self.fastExport, language: language)
                 }
             } catch {
-                var message = "ハイライトを作れませんでした: \(Self.describe(error))"
+                var message = String(localized: "ハイライトを作れませんでした: \(Self.describe(error))")
                 // 試験用：どこで失敗するかを絞るため、部品を外して作り直してみる
                 if FakeCamera.isOn {
                     for (name, overlay, useSeen) in [("帯なし", false, true), ("見えていた画面なし", true, false), ("両方なし", false, false)] {
                         let ok = (try? await Highlight.make(raw: url, seen: recordings.seen, front: recordings.front, clips: clips,
-                                                            overlay: overlay, useSeen: useSeen)) != nil
+                                                            overlay: overlay, useSeen: useSeen, language: language)) != nil
                         message += "／\(name)：\(ok ? "成功" : "失敗")"
                     }
                     message += "／" + (await ExportProbe.run(raw: url, seen: recordings.seen, clips: clips))

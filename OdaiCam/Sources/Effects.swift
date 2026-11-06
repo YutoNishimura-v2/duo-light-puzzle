@@ -11,7 +11,8 @@ enum Effect: String, CaseIterable, Identifiable, Sendable {
 
     var id: String { rawValue }
 
-    var label: String {
+    /// 日本語の名前。訳の表（Localizable.strings）の鍵にもなる
+    var name: String {
         switch self {
         case .stick: "棒人間"
         case .silhouette: "影絵"
@@ -20,6 +21,12 @@ enum Effect: String, CaseIterable, Identifiable, Sendable {
         case .peephole: "のぞき穴"
         }
     }
+
+    /// 画面に出す名前（端末の言葉）
+    var label: String { NSLocalizedString(name, comment: "しばりの名前") }
+
+    /// 決めた言葉での名前（種明かし動画は山札の言葉で書く）
+    func label(language: String) -> String { Words.text(name, language: language) }
 }
 
 /// しばりの画面に人が映っていたかのまとめ（ハイライトでお題を選ぶのに使う）

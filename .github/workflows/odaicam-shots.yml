@@ -80,12 +80,16 @@ jobs:
           # シミュレータの Duo は閉じた状態で起動し、アプリは外側の画面に出る（内側は黒のまま。開く命令は simctl にない）
           xcrun simctl install "$UDID" build/Build/Products/Debug-iphonesimulator/OdaiCam.app
           mkdir -p shots
-          for s in welcome home play countdown results settings decks howto; do
-            xcrun simctl launch --terminate-running-process "$UDID" io.github.yutonishimura-v2.odaicam -shot "$s"
-            sleep 6
-            # Duo は画面が 2 つ（内側と外側）。両方撮る
-            xcrun simctl io "$UDID" screenshot --display=3 "shots/$s-inner.png" || xcrun simctl io "$UDID" screenshot "shots/$s-inner.png"
-            xcrun simctl io "$UDID" screenshot --display=1 "shots/$s-outer.png" || true
+          # 日本語と英語の両方で撮る（英語は名前の後ろに -en）
+          for lang in ja en; do
+            suffix=""; [ "$lang" = en ] && suffix="-en"
+            for s in welcome home play countdown results settings decks howto; do
+              xcrun simctl launch --terminate-running-process "$UDID" io.github.yutonishimura-v2.odaicam \
+                -AppleLanguages "($lang)" -shot "$s"
+              sleep 6
+              # Duo は画面が 2 つ（内側と外側）。アプリが出るのは外側
+              xcrun simctl io "$UDID" screenshot --display=1 "shots/$s$suffix-outer.png" || xcrun simctl io "$UDID" screenshot "shots/$s$suffix-outer.png"
+            done
           done
           xcrun simctl terminate "$UDID" io.github.yutonishimura-v2.odaicam || true
           ls -la shots
@@ -187,8 +191,9 @@ jobs:
           ( echo "sec,cpu_percent,rss_mb" > demo/usage.csv
             T=0
             while true; do
-              P=$(pgrep -f 'OdaiCam.app/OdaiCam' | head -1)
-              L=""; if [ -n "$P" ]; then L=$(ps -o rss=,%cpu= -p "$P"); fi
+              # シミュレータのアプリもこの Mac の 1 つの処理として見える（中身の確認用に生の行も残す）
+              L=$(ps -axo rss=,%cpu=,command= | grep '[O]daiCam\.app/OdaiCam' | grep -v Runner | head -1 || true)
+              [ $T -le 10 ] && ps -axo pid=,command= | grep -i '[o]daicam' >> demo/ps-raw.txt || true
               if [ -n "$L" ]; then echo "$L" | awk -v t=$T '{printf "%d,%s,%.1f\n", t, $2, $1/1024}' >> demo/usage.csv; fi
               sleep 2; T=$((T+2))
             done ) &
@@ -268,6 +273,7 @@ jobs:
             OdaiCam/demo/attachments
             OdaiCam/demo/crashes
             OdaiCam/demo/usage.csv
+            OdaiCam/demo/ps-raw.txt
             OdaiCam/demo/xcodebuild.log
             OdaiCam/demo/app.log
 

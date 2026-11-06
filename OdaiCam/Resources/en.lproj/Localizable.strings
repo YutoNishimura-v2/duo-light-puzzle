@@ -1,0 +1,135 @@
+/*
+  英語の訳。鍵はコードに書いた日本語そのもの（SwiftUI の Text と String(localized:) が引く）。
+  数字は %lld、文字は %@（SwiftUI が作る鍵と同じ形でないと引けない）。
+  ja.lproj/Localizable.strings には同じ鍵を日本語のまま並べる（無いと英語に落ちるため）。
+  種明かし動画の帯は Words.text で山札の言葉の表を引く。
+*/
+
+/* しばりの名前と説明 */
+"棒人間" = "Stick figure";
+"影絵" = "Silhouette";
+"モザイク" = "Mosaic";
+"3秒遅れ" = "3s delay";
+"のぞき穴" = "Peephole";
+"骨組みの線だけが見える" = "Only the skeleton lines show";
+"真っ黒な影だけが見える" = "Only a black shadow shows";
+"粗いモザイクが少しずつ晴れる" = "Chunky pixels slowly clear up";
+"3 秒前の動きが見える" = "You see moves from 3 seconds ago";
+"小さな丸い窓だけがうろつく" = "Only a tiny roaming circle shows";
+"おまかせ" = "Random";
+"しばりなし" = "No filter";
+"毎回ちがう姿で見える" = "A different look every time";
+"そのままの映像で当てる" = "Guess from the plain camera";
+
+/* ホーム */
+"設定" = "Settings";
+"%lld秒で何問いける？" = "How many in %lld seconds?";
+"設定アプリでカメラを許可してください" = "Allow camera access in the Settings app";
+"これが相手に見えるあなた。スタートで 3・2・1" = "This is how they'll see you. Tap Start for 3, 2, 1";
+"山札をえらぶ" = "Choose deck";
+"秒" = "sec";
+"%lld秒" = "%lld seconds";
+"スタート" = "Start";
+"あそぶ" = "Play";
+"お題カメラ" = "OdaiCam";
+
+/* 遊び方 */
+"遊び方" = "How to play";
+"お題は外側の画面に" = "The prompt is on the outer screen";
+"Duo を開いて持つ人が当てる役。外側の画面の前に立つ人だけがお題を見て、声を出さずに演じます。" = "Whoever holds the open Duo is the guesser. Only the person in front of the outer screen sees the prompt and acts it out without a sound.";
+"見えるのは画面越しだけ" = "You only see them through the screen";
+"当てる人には、棒人間や影絵に変わった姿しか見えません。顔を上げて直接見るとカンニング。1 回目は注意、2 回目から −1 点。" = "The guesser only sees a stick figure, a silhouette, or another filter. Looking up at the actor is peeking: a warning the first time, then −1 point.";
+"答えは声に出すだけ" = "Just say your answer";
+"合っていれば自動で次のお題へ。" = "Get it right and the next prompt comes up on its own.";
+"最後に種明かし" = "The big reveal";
+"見えていた画面と本当の演技を並べた動画ができます。そのまま TikTok やストーリーズに。" = "You get a video of what the guesser saw next to the real acting. Post it straight to TikTok or Stories.";
+"とじる" = "Close";
+
+/* 山札 */
+"山札" = "Decks";
+"閉じる" = "Close";
+"%@ など %lld 枚" = "%@ and more · %lld cards";
+"お題帳をつくる" = "Make your own deck";
+"お題帳を編集" = "Edit your deck";
+"友だちの名前や内輪ネタで遊ぶ" = "Play with friends' names and inside jokes";
+"1 行に 1 つ書きます。友だちの名前、職場のネタ、思い出の場面など。" = "One per line: friends' names, work jokes, favorite memories, anything.";
+"お題帳" = "My Deck";
+"キャンセル" = "Cancel";
+"保存" = "Save";
+
+/* 設定 */
+"前回うまく終われませんでした。ごめんなさい" = "The app didn't close properly last time. Sorry about that.";
+"声で自動判定" = "Voice judging";
+"カンニング禁止" = "No peeking";
+"自己ベスト" = "Personal best";
+"%lld 点" = "%lld pts";
+"お題カメラ　%@" = "OdaiCam %@";
+"答えを声に出すと、合っていれば自動で正解になります。" = "Say your answer out loud. If it's right, it counts automatically.";
+"この iPhone では声の判定を使えません。" = "Voice judging isn't available on this iPhone.";
+"顔を上げて演じる人を直接見ると、1 回目は注意、2 回目から −1 点。" = "Looking up at the actor: a warning the first time, then −1 point.";
+"この iPhone では 2 つのカメラを同時に使えないため、カンニング禁止は使えません。" = "This iPhone can't use two cameras at once, so No peeking isn't available.";
+"診断" = "Diagnostics";
+"この記録を送る" = "Send this log";
+"消す" = "Delete";
+"対応" = "supported";
+"非対応" = "not supported";
+"可" = "yes";
+"不可" = "no";
+"MultiCam: %@／背面＋内側: %@" = "MultiCam: %@ / Back + inner: %@";
+"前回は途中で終了しました。直前の操作:" = "The app quit unexpectedly last time. Last actions:";
+"直前の操作:" = "Last actions:";
+
+/* カウントダウン・プレイ中 */
+"演じる人は外側の画面の前へ" = "Actor, step in front of the outer screen";
+"%@ ・ %@" = "%@ · %@";
+"答えを声に出して" = "Say your answer out loud";
+"「%@」" = "“%@”";
+"パス" = "Pass";
+"正解" = "Correct";
+"正解！" = "Correct!";
+"⚠️ 顔を上げないで ⚠️" = "⚠️ Don't look up ⚠️";
+"次からは −1 点です" = "Next time it's −1 point";
+"⚠️ カンニング ⚠️" = "⚠️ Peeking ⚠️";
+"画面から目を離しました" = "You looked away from the screen";
+
+/* 結果 */
+"ホームへ" = "Home";
+"%@ ・ %lld秒" = "%@ · %lld s";
+"正解 %lld ・ パス %lld" = "Correct %lld · Pass %lld";
+" ・ カンニング −%lld" = " · Peeking −%lld";
+"点" = "pts";
+"、自己ベスト" = ", personal best";
+"動画を作れませんでした" = "Couldn't make the video";
+"種明かしをつくっています" = "Making your reveal";
+"見えていた画面と、本当の演技を並べています" = "Putting what they saw next to the real acting";
+"ストーリーズ" = "Stories";
+"その他" = "More";
+"共有" = "Share";
+"保存しました" = "Saved";
+"写真への保存が許可されていません" = "No permission to save to Photos";
+"保存に失敗しました" = "Couldn't save";
+"保存しました（アプリが見つかりません）" = "Saved (app not found)";
+"役を交代してもう一回" = "Switch roles and play again";
+"録画できませんでした" = "Couldn't record";
+"ハイライトを作れませんでした: %@" = "Couldn't make the highlight: %@";
+"映像がありません" = "No video";
+"使える場面がありません" = "No usable scenes";
+"合成できません" = "Couldn't combine the clips";
+"書き出せません" = "Couldn't export";
+"帯を重ねて書き出せません" = "Couldn't export with captions";
+
+/* 外側の画面（演じる人） */
+"お題はここに出ます" = "Prompts show up here";
+"声は出さずに、体だけで演じてください。" = "No talking. Act it out with your body only.";
+"画面の前に立って" = "Stand in front of the screen";
+"おつかれさま" = "Nice work";
+"次は役を交代しよう" = "Now switch roles";
+"声は出さない" = "No talking";
+
+/* 種明かし動画の帯（山札の言葉で引く） */
+"当てる人の顔↑　正解はコレ↓" = "Guesser's face ↑  The real thing ↓";
+"見えてたのはコレ（%@）↑　正解はコレ↓" = "What they saw (%@) ↑  What it really was ↓";
+"見えてたのはコレ↑　正解はコレ↓" = "What they saw ↑  What it really was ↓";
+"見えていたのは…（%@）" = "They saw… (%@)";
+"お題：%@　%@" = "Prompt: %@ %@";
+"○" = "✓";

@@ -122,9 +122,12 @@ enum Highlight {
 
     private static func cm(_ seconds: Double) -> CMTime { CMTime(seconds: seconds, preferredTimescale: 600) }
 
-    /// score が nil なら正解の数を点数にする。overlay・useSeen は、試験で失敗の場所を絞るときだけ切る
+    /// score が nil なら正解の数を点数にする。overlay・useSeen は、試験で失敗の場所を絞るときだけ切る。
+    /// language は帯の文字の言葉（山札の言葉。"ja" か "en"）。Clip.effect は呼ぶ側でこの言葉にしておく
     static func make(raw: URL, seen: URL?, front: URL?, clips: [Clip], score: Int? = nil,
-                     overlay: Bool = true, useSeen: Bool = true) async throws -> URL {
+                     overlay: Bool = true, useSeen: Bool = true, language: String = "ja") async throws -> URL {
+        /// 帯の文字を language で引く（鍵は日本語）
+        func word(_ key: String) -> String { Words.text(key, language: language) }
         guard let rawLoaded = try await load(raw) else { throw failure("映像がありません") }
         let (rawSource, audioTrack) = rawLoaded
         var seenSource: Source?
@@ -275,9 +278,10 @@ enum Highlight {
             if ok {
                 try rawLane.put(range(hook.from, d), of: rawSource.track, at: cursor)
                 pieces.append(Piece(kind: .hook,
-                                    caption: hook.topIsSeen
-                                        ? "見えてたのはコレ" + (hook.effect.map { "（\($0)）" } ?? "") + "↑　正解はコレ↓"
-                                        : "当てる人の顔↑　正解はコレ↓",
+                                    caption: !hook.topIsSeen
+                                        ? word("当てる人の顔↑　正解はコレ↓")
+                                        : hook.effect.map { String(format: word("見えてたのはコレ（%@）↑　正解はコレ↓"), $0) }
+                                            ?? word("見えてたのはコレ↑　正解はコレ↓"),
                                     time: CMTimeRange(start: cursor, duration: d),
                                     face: !hook.topIsSeen, split: true, topIsSeen: hook.topIsSeen))
                 cursor = cursor + d
@@ -289,7 +293,7 @@ enum Highlight {
                 let d = cm(p.seenLength)
                 if try seenLane.put(range(p.from, d), of: seenSource.track, at: cursor) {
                     let face = putFace(p.from, d, at: cursor)
-                    pieces.append(Piece(kind: .seen, caption: "見えていたのは…（\(effect)）",
+                    pieces.append(Piece(kind: .seen, caption: String(format: word("見えていたのは…（%@）"), effect),
                                         time: CMTimeRange(start: cursor, duration: d), face: face))
                     cursor = cursor + d
                     reveal = true
@@ -299,7 +303,8 @@ enum Highlight {
             try rawLane.put(range(p.from, d), of: rawSource.track, at: cursor)
             putVoice(p.from, d, at: cursor)
             let face = putFace(p.from, d, at: cursor)
-            pieces.append(Piece(kind: .real, caption: "お題：\(p.clip.prompt)　\(p.clip.outcome)",
+            // 結果の印（○・パス）は帯に出すときだけ訳す。並べ替えは日本語の印のまま比べる
+            pieces.append(Piece(kind: .real, caption: String(format: word("お題：%@　%@"), p.clip.prompt, word(p.clip.outcome)),
                                 time: CMTimeRange(start: cursor, duration: d), face: face, split: face, reveal: reveal))
             cursor = cursor + d
         }
@@ -496,7 +501,8 @@ enum Highlight {
             let base = AVURLAsset(url: step1)
             do {
                 let points = score ?? clips.filter { $0.outcome == "○" }.count
-                let parts = await overlayParts(size: renderSize, pieces: pieces, wipe: faceLane.used ? wipe : nil, score: points)
+                let parts = await overlayParts(size: renderSize, pieces: pieces, wipe: faceLane.used ? wipe : nil, score: points,
+                                               unit: word("点"))
                 let overlaid = try await AVMutableVideoComposition.videoComposition(with: base, applyingCIFiltersWithHandler: { request in
                     request.finish(with: parts.frame(request.sourceImage, at: request.compositionTime.seconds), context: nil)
                 })
@@ -522,8 +528,9 @@ enum Highlight {
         return result
     }
 
-    private static func failure(_ message: String) -> NSError {
-        NSError(domain: "Highlight", code: 1, userInfo: [NSLocalizedDescriptionKey: message])
+    /// 失敗の文言は結果の画面に出るので、端末の言葉で書く
+    private static func failure(_ message: String.LocalizationValue) -> NSError {
+        NSError(domain: "Highlight", code: 1, userInfo: [NSLocalizedDescriptionKey: String(localized: message)])
     }
 
     /// 元の映像を region いっぱいに敷く（はみ出す分は切り抜く）。切り抜きは元の映像の座標、変形は合成の座標（左上が原点）
@@ -644,7 +651,7 @@ enum Highlight {
 
     /// 文字と札の絵を描いておく。描くときは UIKit の座標（左上が原点）、置くときに Core Image の座標へ直す
     @MainActor
-    private static func overlayParts(size: CGSize, pieces: [Piece], wipe: CGRect?, score: Int) -> Overlay {
+    private static func overlayParts(size: CGSize, pieces: [Piece], wipe: CGRect?, score: Int, unit unitText: String) -> Overlay {
         let w = size.width, h = size.height
         let parts = Overlay(size: size)
         // 色は棒人間の黄色ひとつだけ。種明かしの瞬間にだけ使う
@@ -777,7 +784,7 @@ enum Highlight {
             let number = NSAttributedString(string: "\(score)", attributes: [
                 .font: numberFont, .foregroundColor: UIColor.white, .kern: -h * 0.004,
             ])
-            let unit = NSAttributedString(string: "点", attributes: [.font: unitFont, .foregroundColor: UIColor.white])
+            let unit = NSAttributedString(string: unitText, attributes: [.font: unitFont, .foregroundColor: UIColor.white])
             let numberWidth = ceil(number.size().width)
             let unitWidth = ceil(unit.size().width)
             let gap = w * 0.02

@@ -381,17 +381,20 @@ final class Camera: NSObject, @unchecked Sendable {
 
     var currentDevice: AVCaptureDevice? { device }
 
+    /// 保存できたときの文言（結果の画面はこれと比べて、保存できたかを見る）
+    static var savedMessage: String { String(localized: "保存しました") }
+
     /// 動画を写真ライブラリに保存する。結果の文言を返す
     static func saveVideo(_ url: URL) async -> String {
         let status = await PHPhotoLibrary.requestAuthorization(for: .addOnly)
-        guard status == .authorized || status == .limited else { return "写真への保存が許可されていません" }
+        guard status == .authorized || status == .limited else { return String(localized: "写真への保存が許可されていません") }
         do {
             try await PHPhotoLibrary.shared().performChanges {
                 PHAssetCreationRequest.forAsset().addResource(with: .video, fileURL: url, options: nil)
             }
-            return "保存しました"
+            return savedMessage
         } catch {
-            return "保存に失敗しました"
+            return String(localized: "保存に失敗しました")
         }
     }
 }

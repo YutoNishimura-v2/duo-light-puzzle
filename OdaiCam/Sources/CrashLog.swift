@@ -15,14 +15,15 @@ enum CrashLog {
     static func start() {
         let last = defaults.stringArray(forKey: trailKey) ?? []
         if defaults.bool(forKey: runningKey), !last.isEmpty, defaults.string(forKey: reportKey) == nil {
-            defaults.set("前回は途中で終了しました。直前の操作:\n" + last.joined(separator: "\n"), forKey: reportKey)
+            defaults.set(String(localized: "前回は途中で終了しました。直前の操作:") + "\n" + last.joined(separator: "\n"), forKey: reportKey)
         }
         defaults.set(true, forKey: runningKey)
         defaults.set([String](), forKey: trailKey)
         NSSetUncaughtExceptionHandler { e in
             let stack = e.callStackSymbols.prefix(25).joined(separator: "\n")
             let trail = CrashLog.lock.withLock { CrashLog.trail }
-            UserDefaults.standard.set("\(e.name.rawValue): \(e.reason ?? "")\n\n直前の操作:\n\(trail.joined(separator: "\n"))\n\n\(stack)",
+            let header = String(localized: "直前の操作:")
+            UserDefaults.standard.set("\(e.name.rawValue): \(e.reason ?? "")\n\n\(header)\n\(trail.joined(separator: "\n"))\n\n\(stack)",
                                       forKey: "crash.report")
             UserDefaults.standard.synchronize()
         }

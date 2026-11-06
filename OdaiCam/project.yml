@@ -51,10 +51,11 @@ targets:
           - UIInterfaceOrientationPortrait
           - UIInterfaceOrientationLandscapeLeft
           - UIInterfaceOrientationLandscapeRight
-        NSCameraUsageDescription: 背面カメラで、お題を演じる人を撮るために使います。
-        NSMicrophoneUsageDescription: ハイライト動画に、遊んでいるときの声や笑い声を残すために使います。
-        NSSpeechRecognitionUsageDescription: 当てる人が声に出した答えを端末の中で聞き取り、お題と合っているかを判定します。
-        NSPhotoLibraryAddUsageDescription: ハイライト動画を写真ライブラリに保存します。
+        # 許可を求める文言は英語。日本語は ja.lproj/InfoPlist.strings の訳で出す
+        NSCameraUsageDescription: OdaiCam uses the back camera to film the person acting out the prompt.
+        NSMicrophoneUsageDescription: OdaiCam records your voices and laughter for the highlight video.
+        NSSpeechRecognitionUsageDescription: OdaiCam listens on your device for the guesser's answer to check if it matches the prompt.
+        NSPhotoLibraryAddUsageDescription: OdaiCam saves highlight videos to your photo library.
         ITSAppUsesNonExemptEncryption: false
   # シミュレータで偽カメラを使ってひととおり遊ぶ UI テスト（odaicam-shots ワークフローで動かす）
   OdaiCamUITests:

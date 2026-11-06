@@ -91,12 +91,23 @@ extension Effect {
 
     var hint: String {
         switch self {
-        case .stick: "骨組みの線だけが見える"
-        case .silhouette: "真っ黒な影だけが見える"
-        case .mosaic: "粗いモザイクが少しずつ晴れる"
-        case .delay: "3 秒前の動きが見える"
-        case .peephole: "小さな丸い窓だけがうろつく"
+        case .stick: String(localized: "骨組みの線だけが見える")
+        case .silhouette: String(localized: "真っ黒な影だけが見える")
+        case .mosaic: String(localized: "粗いモザイクが少しずつ晴れる")
+        case .delay: String(localized: "3 秒前の動きが見える")
+        case .peephole: String(localized: "小さな丸い窓だけがうろつく")
         }
+    }
+}
+
+/// 端末の言葉とは別に、決めた言葉で訳を引く（種明かし動画は山札の言葉で書く）。
+/// 訳は Localizable.strings と同じ表を使う。日本語は鍵そのもの
+enum Words {
+    static func text(_ key: String, language: String) -> String {
+        guard language != "ja",
+              let path = Bundle.main.path(forResource: language, ofType: "lproj"),
+              let bundle = Bundle(path: path) else { return key }
+        return bundle.localizedString(forKey: key, value: key, table: nil)
     }
 }
 
@@ -206,7 +217,8 @@ struct ShutterButton: View {
 /// 上の列の白い記号だけのボタン（BeReal の「∨」「👥」「📅」）
 struct BarButton: View {
     let symbol: String
-    let label: String
+    /// 読み上げの名前（訳の鍵。UI テストもこの日本語で探す）
+    let label: LocalizedStringKey
     let action: () -> Void
 
     var body: some View {

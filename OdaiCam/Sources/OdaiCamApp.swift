@@ -212,7 +212,12 @@ struct GuesserView: View {
         listener.onHeard = { game.updateHeard($0) }
         listener.onMatch = { game.heardAnswer(for: $0) }
         game.onPrompt = { [listener, game] prompt in
-            if let prompt { listener.listen(for: prompt, hints: game.deck.prompts) } else { listener.stop() }
+            // 山札の言葉で聞く（英語の山札なら英語で聞き取る）
+            if let prompt {
+                listener.listen(for: prompt, hints: game.deck.prompts, language: game.deck.language)
+            } else {
+                listener.stop()
+            }
         }
         if FakeCamera.isOn {
             // 試験用：許可を求めず、偽のカメラだけ動かす（声の判定は使わない）
@@ -226,7 +231,8 @@ struct GuesserView: View {
         if granted {
             _ = await AVCaptureDevice.requestAccess(for: .audio)
             camera.start()
-            voiceReady = await Listener.requestPermission() && listener.isAvailable
+            // 山札はどれも端末の言葉なので、いまの山札の言葉で聞けるかを見ておけばよい
+            voiceReady = await Listener.requestPermission() && listener.isAvailable(language: game.deck.language)
             if !voiceReady { game.voiceJudge = false }
         }
     }
@@ -400,7 +406,7 @@ struct HowToView: View {
         .background(Color.black.ignoresSafeArea())
     }
 
-    private func row(_ symbol: String, _ title: String, _ text: String) -> some View {
+    private func row(_ symbol: String, _ title: LocalizedStringKey, _ text: LocalizedStringKey) -> some View {
         HStack(alignment: .top, spacing: 16) {
             Image(systemName: symbol)
                 .font(.system(size: 24, weight: .semibold))
@@ -435,9 +441,9 @@ struct HomeView: View {
 
         var title: String {
             switch self {
-            case .random: "おまかせ"
+            case .random: String(localized: "おまかせ")
             case .fixed(let e): e.label
-            case .none: "しばりなし"
+            case .none: String(localized: "しばりなし")
             }
         }
     }
@@ -505,9 +511,9 @@ struct HomeView: View {
     @ViewBuilder
     private var hint: some View {
         if cameraDenied {
-            Chip(symbol: "exclamationmark.triangle.fill", text: "設定アプリでカメラを許可してください")
+            Chip(symbol: "exclamationmark.triangle.fill", text: String(localized: "設定アプリでカメラを許可してください"))
         } else if firstRun {
-            Chip(symbol: "hand.wave.fill", text: "これが相手に見えるあなた。スタートで 3・2・1")
+            Chip(symbol: "hand.wave.fill", text: String(localized: "これが相手に見えるあなた。スタートで 3・2・1"))
         } else {
             Chip(symbol: modeSymbol, text: modeHint)
                 .contentTransition(.opacity)
@@ -525,9 +531,9 @@ struct HomeView: View {
 
     private var modeHint: String {
         switch mode {
-        case .random: "毎回ちがう姿で見える"
+        case .random: String(localized: "毎回ちがう姿で見える")
         case .fixed(let e): e.hint
-        case .none: "そのままの映像で当てる"
+        case .none: String(localized: "そのままの映像で当てる")
         }
     }
 
@@ -659,9 +665,7 @@ struct DeckSheet: View {
                             game.deck = deck
                             dismiss()
                         } label: {
-                            card(symbol: deck.symbol, title: deck.title,
-                                 text: deck.prompts.prefix(3).joined(separator: "、") + " など \(deck.prompts.count) 枚",
-                                 selected: selected)
+                            card(symbol: deck.symbol, title: deck.title, text: summary(deck), selected: selected)
                         }
                         .buttonStyle(PressStyle())
                         .accessibilityAddTraits(selected ? .isSelected : [])
@@ -671,8 +675,8 @@ struct DeckSheet: View {
                         editingDeck = true
                     } label: {
                         card(symbol: CustomDeck.deck == nil ? "plus" : "square.and.pencil",
-                             title: CustomDeck.deck == nil ? "お題帳をつくる" : "お題帳を編集",
-                             text: "友だちの名前や内輪ネタで遊ぶ", selected: false)
+                             title: CustomDeck.deck == nil ? String(localized: "お題帳をつくる") : String(localized: "お題帳を編集"),
+                             text: String(localized: "友だちの名前や内輪ネタで遊ぶ"), selected: false)
                     }
                     .buttonStyle(PressStyle())
                 }
@@ -681,6 +685,12 @@ struct DeckSheet: View {
             }
         }
         .foregroundStyle(.white)
+    }
+
+    /// 山札のカードの 2 行目（「ゴリラ、ペンギン、カンガルー など 50 枚」）。お題の区切りは山札の言葉に合わせる
+    private func summary(_ deck: Deck) -> String {
+        let sample = deck.prompts.prefix(3).joined(separator: deck.language == "ja" ? "、" : ", ")
+        return String(localized: "\(sample) など \(deck.prompts.count) 枚")
     }
 
     private func card(symbol: String, title: String, text: String, selected: Bool) -> some View {
@@ -773,8 +783,10 @@ struct SettingsSheet: View {
 
     private var footer: String {
         var lines: [String] = []
-        lines.append(voiceReady ? "答えを声に出すと、合っていれば自動で正解になります。" : "この iPhone では声の判定を使えません。")
-        lines.append(innerReady ? "顔を上げて演じる人を直接見ると、1 回目は注意、2 回目から −1 点。" : "この iPhone では 2 つのカメラを同時に使えないため、カンニング禁止は使えません。")
+        lines.append(voiceReady ? String(localized: "答えを声に出すと、合っていれば自動で正解になります。")
+                                : String(localized: "この iPhone では声の判定を使えません。"))
+        lines.append(innerReady ? String(localized: "顔を上げて演じる人を直接見ると、1 回目は注意、2 回目から −1 点。")
+                                : String(localized: "この iPhone では 2 つのカメラを同時に使えないため、カンニング禁止は使えません。"))
         return lines.joined(separator: "\n")
     }
 
@@ -841,7 +853,7 @@ struct SettingsSheet: View {
             .frame(width: 26)
     }
 
-    private func toggleRow(_ symbol: String, _ title: String, isOn: Binding<Bool>, enabled: Bool) -> some View {
+    private func toggleRow(_ symbol: String, _ title: LocalizedStringKey, isOn: Binding<Bool>, enabled: Bool) -> some View {
         Toggle(isOn: isOn) {
             HStack(spacing: 14) {
                 icon(symbol)
@@ -853,7 +865,7 @@ struct SettingsSheet: View {
         .frame(minHeight: 52)
     }
 
-    private func linkRow(_ symbol: String, _ title: String, action: @escaping () -> Void) -> some View {
+    private func linkRow(_ symbol: String, _ title: LocalizedStringKey, action: @escaping () -> Void) -> some View {
         Button(action: action) {
             HStack(spacing: 14) {
                 icon(symbol)
@@ -871,7 +883,7 @@ struct SettingsSheet: View {
 
 /// シートの頭：中央の題と、右上の丸い「×」
 struct SheetHeader: View {
-    let title: String
+    let title: LocalizedStringKey
     let close: () -> Void
 
     var body: some View {
@@ -965,7 +977,7 @@ struct CountdownView: View {
                         .transition(.asymmetric(insertion: .scale(scale: 1.3).combined(with: .opacity), removal: .opacity))
                     VStack {
                         Spacer()
-                        Chip(symbol: "theatermasks", text: "演じる人は外側の画面の前へ")
+                        Chip(symbol: "theatermasks", text: String(localized: "演じる人は外側の画面の前へ"))
                     }
                     .padding(14)
                 }
@@ -981,7 +993,7 @@ struct CountdownView: View {
                 }
                 .frame(width: 78, height: 78)
                 .animation(.easeInOut(duration: 0.8), value: n)
-                Text("\(game.deck.title) ・ \(game.effectsOn ? (game.fixedEffect?.label ?? "おまかせ") : "しばりなし")")
+                Text("\(game.deck.title) ・ \(modeName)")
                     .font(.system(size: 15, weight: .heavy))
                     .foregroundStyle(.white)
                     .frame(height: 24)
@@ -992,6 +1004,12 @@ struct CountdownView: View {
             .background(Color.black.ignoresSafeArea(edges: .bottom))
         }
         .animation(.smooth(duration: 0.3), value: n)
+    }
+
+    /// いまのしばりの名前（端末の言葉）
+    private var modeName: String {
+        guard game.effectsOn else { return String(localized: "しばりなし") }
+        return game.fixedEffect?.label ?? String(localized: "おまかせ")
     }
 }
 
@@ -1042,7 +1060,7 @@ struct PlayView: View {
                             HStack(spacing: 8) {
                                 Image(systemName: "waveform")
                                     .symbolEffect(.variableColor.iterative, options: .repeating)
-                                Text(game.heard.isEmpty ? "答えを声に出して" : "「\(game.heard)」")
+                                Text(game.heard.isEmpty ? "答えを声に出して" as LocalizedStringKey : "「\(game.heard)」")
                                     .lineLimit(1)
                             }
                             .font(.system(size: 15, weight: .bold))
@@ -1110,14 +1128,16 @@ struct PlayView: View {
             VStack {
                 if cheat {
                     if game.lastCheatWasWarning {
-                        NoticeBanner(title: "⚠️ 顔を上げないで ⚠️", message: "次からは −1 点です", tint: Theme.warning)
+                        NoticeBanner(title: String(localized: "⚠️ 顔を上げないで ⚠️"), message: String(localized: "次からは −1 点です"),
+                                     tint: Theme.warning)
                             .transition(.move(edge: .top).combined(with: .opacity))
                     } else {
-                        NoticeBanner(title: "⚠️ カンニング ⚠️", message: "画面から目を離しました", trailing: "−1", tint: Theme.warning)
+                        NoticeBanner(title: String(localized: "⚠️ カンニング ⚠️"), message: String(localized: "画面から目を離しました"),
+                                     trailing: "−1", tint: Theme.warning)
                             .transition(.move(edge: .top).combined(with: .opacity))
                     }
                 } else if pass, let last = game.lastAnswer {
-                    NoticeBanner(title: "パス", message: last.prompt)
+                    NoticeBanner(title: String(localized: "パス"), message: last.prompt)
                         .id(game.lastAnswerAt)
                         .transition(.move(edge: .top).combined(with: .opacity))
                 }
@@ -1201,8 +1221,7 @@ struct ResultsView: View {
             .overlay(Circle().strokeBorder(.white.opacity(0.15), lineWidth: 1))
             VStack(alignment: .leading, spacing: 1) {
                 Text("\(game.deck.title) ・ \(Int(game.roundLength))秒").font(Theme.bold(15))
-                Text("正解 \(game.correct) ・ パス \(game.turns.filter { $0.outcome == .pass }.count)"
-                     + (game.cheats > 0 ? " ・ カンニング −\(game.cheats)" : ""))
+                Text(verbatim: tally)
                     .font(.system(size: 13, weight: .medium))
                     .foregroundStyle(Theme.secondary)
                     .lineLimit(1)
@@ -1218,9 +1237,17 @@ struct ResultsView: View {
             .background(game.isNewBest ? Theme.accent : Theme.surface, in: Capsule())
             .foregroundStyle(game.isNewBest ? .black : .white)
             .accessibilityElement(children: .ignore)
-            .accessibilityLabel("\(game.score) 点" + (game.isNewBest ? "、自己ベスト" : ""))
+            .accessibilityLabel(String(localized: "\(game.score) 点") + (game.isNewBest ? String(localized: "、自己ベスト") : ""))
             .accessibilityIdentifier("score")
         }
+    }
+
+    /// 頭の 2 行目（「正解 4 ・ パス 1 ・ カンニング −1」）
+    private var tally: String {
+        let passes = game.turns.filter { $0.outcome == .pass }.count
+        var line = String(localized: "正解 \(game.correct) ・ パス \(passes)")
+        if game.cheats > 0 { line += String(localized: " ・ カンニング −\(game.cheats)") }
+        return line
     }
 
     /// 種明かしの動画。画面の主役として、自動で繰り返し流す（押すと消音）
@@ -1276,7 +1303,7 @@ struct ResultsView: View {
             }
             shareButton("music.note", "TikTok") { await post(open: "tiktok://") }
             shareButton("circle.dashed.inset.filled", "ストーリーズ") { await post(open: "instagram://story-camera") }
-            shareButton(message == "保存しました" ? "checkmark" : "arrow.down.to.line", "保存") { await post(open: nil) }
+            shareButton(message == Camera.savedMessage ? "checkmark" : "arrow.down.to.line", "保存") { await post(open: nil) }
             if let url = game.highlightURL {
                 ShareLink(item: url) {
                     tile("square.and.arrow.up", "その他")
@@ -1291,7 +1318,7 @@ struct ResultsView: View {
         .animation(.smooth, value: message)
     }
 
-    private func shareButton(_ symbol: String, _ title: String, action: @escaping () async -> Void) -> some View {
+    private func shareButton(_ symbol: String, _ title: LocalizedStringKey, action: @escaping () async -> Void) -> some View {
         Button { Task { await action() } } label: { tile(symbol, title) }
             .buttonStyle(PressStyle())
             .disabled(game.highlightURL == nil)
@@ -1299,7 +1326,7 @@ struct ResultsView: View {
             .accessibilityLabel(title)
     }
 
-    private func tile(_ symbol: String, _ title: String) -> some View {
+    private func tile(_ symbol: String, _ title: LocalizedStringKey) -> some View {
         VStack(spacing: 6) {
             Image(systemName: symbol)
                 .font(.system(size: 22, weight: .bold))
@@ -1317,9 +1344,9 @@ struct ResultsView: View {
         guard let url = game.highlightURL else { return }
         let result = await Camera.saveVideo(url)
         message = result
-        guard result == "保存しました", let app, let target = URL(string: app) else { return }
+        guard result == Camera.savedMessage, let app, let target = URL(string: app) else { return }
         if !(await UIApplication.shared.open(target)) {
-            message = "保存しました（アプリが見つかりません）"
+            message = String(localized: "保存しました（アプリが見つかりません）")
         }
     }
 
@@ -1449,7 +1476,7 @@ struct ActorView: View {
             }
             Spacer()
             HStack {
-                Chip(symbol: "speaker.slash.fill", text: "声は出さない")
+                Chip(symbol: "speaker.slash.fill", text: String(localized: "声は出さない"))
                 Spacer()
                 Chip(symbol: "checkmark", text: "\(game.score)")
             }
@@ -1464,7 +1491,7 @@ struct ActorView: View {
                     let correct = last.outcome == .correct
                     ZStack {
                         (correct ? Theme.accent : Color.black).opacity(correct ? 1 : 0.8)
-                        Text(correct ? "正解！" : "パス")
+                        Text(correct ? "正解！" as LocalizedStringKey : "パス")
                             .font(.system(size: 110, weight: .heavy))
                             .foregroundStyle(correct ? .black : .white)
                     }
@@ -1492,6 +1519,8 @@ enum MultiCamProbe {
         let wanted = discovery.supportedMultiCamDeviceSets.contains { set in
             set.contains { $0.deviceType == .builtInInnerUltraWideCamera } && set.contains { $0.position == .back }
         }
-        return "MultiCam: \(supported ? "対応" : "非対応")／背面＋内側: \(wanted ? "可" : "不可")\n" + sets.joined(separator: "\n")
+        let support = supported ? String(localized: "対応") : String(localized: "非対応")
+        let pair = wanted ? String(localized: "可") : String(localized: "不可")
+        return String(localized: "MultiCam: \(support)／背面＋内側: \(pair)") + "\n" + sets.joined(separator: "\n")
     }()
 }

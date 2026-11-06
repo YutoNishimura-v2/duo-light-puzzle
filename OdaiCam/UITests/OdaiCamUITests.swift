@@ -7,6 +7,8 @@ final class OdaiCamUITests: XCTestCase {
     static let modes = ["おまかせ", "棒人間", "影絵", "モザイク", "3秒遅れ", "のぞき穴", "しばりなし"]
     /// 1 ラウンドの秒数（起動引数で短くする）
     static let roundSeconds = 8
+    /// シミュレータの言葉に関係なく、アプリを日本語で動かす（ボタンは日本語の名前で探すため。山札も日本語になる）
+    static let japanese = ["-AppleLanguages", "(ja)", "-AppleLocale", "ja_JP"]
 
     var app: XCUIApplication!
 
@@ -18,7 +20,7 @@ final class OdaiCamUITests: XCTestCase {
     private func launch() {
         app = XCUIApplication()
         app.launchArguments = ["-fakeCamera", "YES", "-onboarded", "YES", "-testRoundSeconds", "\(Self.roundSeconds)",
-                                 "-testFastExport", "YES"]
+                                 "-testFastExport", "YES"] + Self.japanese
         app.launch()
         XCTAssertTrue(app.buttons["あそぶ"].waitForExistence(timeout: 20), "ホームが出ない")
         // 偽カメラのコマが届くまで待つ
@@ -97,7 +99,7 @@ final class OdaiCamUITests: XCTestCase {
     @MainActor
     func test3Demo() {
         app = XCUIApplication()
-        app.launchArguments = ["-demo", "YES", "-onboarded", "YES", "-testRoundSeconds", "30"]
+        app.launchArguments = ["-demo", "YES", "-onboarded", "YES", "-testRoundSeconds", "30"] + Self.japanese
         app.launch()
         XCTAssertTrue(app.buttons["あそぶ"].waitForExistence(timeout: 20), "ホームが出ない")
         sleep(3)
@@ -118,7 +120,8 @@ final class OdaiCamUITests: XCTestCase {
                     guard correct.exists else { break }
                     n += 1
                     if n == 2 { shot("demo-\(round)-play") }
-                    if n % 4 == 0 { app.buttons["パス"].tap() } else { correct.tap() }
+                    // ラウンドが終わる瞬間と重なることがあるので、残っているときだけ押す
+                    tapIfPresent(n % 4 == 0 ? app.buttons["パス"] : correct)
                 }
                 XCTAssertEqual(app.state, .runningForeground, "デモ \(round)：遊んでいる間に落ちた")
                 XCTAssertTrue(app.buttons["ホームへ"].waitForExistence(timeout: 20), "デモ \(round)：結果が出ない")
@@ -152,9 +155,9 @@ final class OdaiCamUITests: XCTestCase {
         let mid = (correct.frame.midX + pass.frame.midX) / 2
         XCTAssertLessThanOrEqual(abs(mid - screen.midX), screen.width * 0.05,
                                  "\(name)：正解とパスが中心からずれている \(mid)（画面 \(screen)）")
-        correct.tap()
+        tapIfPresent(correct)
         sleep(1)
-        app.buttons["パス"].tap()
+        tapIfPresent(app.buttons["パス"])
         sleep(1)
         shot("\(name)-play-after")
         XCTAssertTrue(app.buttons["ホームへ"].waitForExistence(timeout: TimeInterval(Self.roundSeconds + 15)),
@@ -209,6 +212,12 @@ final class OdaiCamUITests: XCTestCase {
         XCTAssertTrue(button.isHittable, "\(mode)：\(label) が押せない")
         let screen = app.windows.firstMatch.frame
         XCTAssertTrue(screen.contains(button.frame), "\(mode)：\(label) が画面の外 \(button.frame)（画面 \(screen)）")
+    }
+
+    /// ある・押せるときだけ押す（ラウンドの終わりと重なっても落ちないように）
+    @MainActor
+    private func tapIfPresent(_ element: XCUIElement) {
+        if element.exists && element.isHittable { element.tap() }
     }
 
     /// ボタンの中心が、画面の中心から ±5% 以内にあるか
