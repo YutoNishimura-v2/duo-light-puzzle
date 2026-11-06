@@ -144,3 +144,5 @@
 "お題：%@　%@" = "Prompt: %@ %@";
 "○" = "✓";
 "作り直す" = "Try again";
+"録画を受け取れませんでした。もう一回遊んでください" = "The recording didn't come through. Please play another round.";
+"時間がかかりすぎたので止めました" = "This was taking too long, so we stopped.";

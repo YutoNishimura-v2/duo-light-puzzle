@@ -98,6 +98,14 @@ final class Game {
         lastAnswer = nil
         lastAnswerAt = nil
         isNewBest = false
+        // 前のラウンドの種明かし作りは止める（新しいラウンドに古い動画が出ないように。メモリも手放す）
+        generation += 1
+        buildTask?.cancel()
+        buildTask = nil
+        deadline?.cancel()
+        deadline = nil
+        rebuild = nil
+        building = false
         highlightURL = nil
         highlightError = nil
         recordingStart = nil
@@ -181,12 +189,24 @@ final class Game {
         onWatch?(false)
         stopRecording?()
         phase = .menu
+        generation += 1
+        buildTask?.cancel()
+        buildTask = nil
+        deadline?.cancel()
+        deadline = nil
+        building = false
     }
 
     /// 録画ファイルができたら、ハイライト動画を作る
     func recordingFinished(_ recordings: Camera.Recordings) {
-        guard phase == .results else { return }
+        CrashLog.mark("録画を受け取った（元 \(recordings.raw != nil ? "あり" : "なし")・見えていた画面 \(recordings.seen != nil ? "あり" : "なし")・内カメ \(recordings.front != nil ? "あり" : "なし")）")
+        guard phase == .results else {
+            CrashLog.mark("録画を受け取ったが結果の画面ではないので使わない")
+            return
+        }
+        guard highlightURL == nil, !building, rebuild == nil else { return }
         guard let url = recordings.raw else {
+            deadline?.cancel()
             highlightError = String(localized: "録画できませんでした")
             return
         }
@@ -209,39 +229,78 @@ final class Game {
                                   start: t.start, end: end,
                                   seenQuality: seen, hookQuality: hook)
         }
-        rebuild = { [weak self] in self?.buildHighlight(url: url, recordings: recordings, clips: clips, language: language) }
+        rebuild = { [weak self] overlay in
+            self?.buildHighlight(url: url, recordings: recordings, clips: clips, language: language, overlay: overlay)
+        }
         buildHighlight(url: url, recordings: recordings, clips: clips, language: language)
     }
 
     /// 種明かし動画を作り直す（結果の画面の「作り直す」から）
     func rebuildHighlight() {
-        guard !building else { return }
+        guard !building, highlightURL == nil else { return }
         highlightError = nil
-        rebuild?()
+        guard let rebuild else {
+            // 録画そのものが届いていない。作り直せないことを伝える
+            highlightError = String(localized: "録画を受け取れませんでした。もう一回遊んでください")
+            return
+        }
+        // 2 回目からは帯の重ね書きを省き、早く出す
+        rebuild(false)
     }
 
-    @ObservationIgnored private var rebuild: (() -> Void)?
+    @ObservationIgnored private var rebuild: ((Bool) -> Void)?
+    /// いまのラウンドの番号。古いラウンドの書き出しが、あとから新しいラウンドの結果を書き換えないように
+    @ObservationIgnored private var generation = 0
+    @ObservationIgnored private var buildTask: Task<Void, Never>?
+    @ObservationIgnored private var deadline: Task<Void, Never>?
 
-    private func buildHighlight(url: URL, recordings: Camera.Recordings, clips: [Highlight.Clip], language: String) {
+    /// 結果の画面で待たせる上限（録画の後片付けから書き出しまで全部で）。
+    /// 実機は 30 秒。シミュレータは 1080x1920 の書き出しがとても遅いので長め
+    static var highlightLimit: TimeInterval {
+        #if targetEnvironment(simulator)
+        return 200
+        #else
+        return 30
+        #endif
+    }
+
+    /// ラウンドが終わったら締め切りを決める。録画が届かない・書き出しが止まる、どちらでも上限で打ち切って伝える
+    private func startDeadline() {
+        deadline?.cancel()
+        let gen = generation
+        deadline = Task { [weak self] in
+            try? await Task.sleep(for: .seconds(Self.highlightLimit))
+            guard !Task.isCancelled, let self, gen == self.generation,
+                  self.highlightURL == nil, self.highlightError == nil else { return }
+            CrashLog.mark("種明かし：\(Int(Self.highlightLimit)) 秒で終わらず打ち切り（録画 \(self.rebuild != nil ? "あり" : "届かず")）")
+            self.buildTask?.cancel()
+            self.buildTask = nil
+            self.building = false
+            self.highlightError = String(localized: "時間がかかりすぎたので止めました")
+        }
+    }
+
+    private func buildHighlight(url: URL, recordings: Camera.Recordings, clips: [Highlight.Clip], language: String, overlay: Bool = true) {
         building = true
-        Task {
+        let gen = generation
+        let started = Date()
+        CrashLog.mark("種明かし：作り始め（帯 \(overlay && !Self.fastExport ? "あり" : "なし")）")
+        // 作り直しのときも、そこから上限まで
+        if overlay == false { startDeadline() }
+        buildTask = Task {
             do {
-                highlightURL = try await Self.makeWithRetry {
+                let made = try await Self.makeWithRetry {
                     try await Highlight.make(raw: url, seen: recordings.seen, front: recordings.front, clips: clips, score: score,
-                                             overlay: !Self.fastExport, language: language)
+                                             overlay: overlay && !Self.fastExport, language: language)
                 }
+                guard gen == generation, !Task.isCancelled else { return }
+                highlightURL = made
+                deadline?.cancel()
+                CrashLog.mark("種明かし：できた（\(Int(Date().timeIntervalSince(started))) 秒）")
             } catch {
-                var message = String(localized: "ハイライトを作れませんでした: \(Self.describe(error))")
-                // 試験用：どこで失敗するかを絞るため、部品を外して作り直してみる
-                if FakeCamera.isOn {
-                    for (name, overlay, useSeen) in [("帯なし", false, true), ("見えていた画面なし", true, false), ("両方なし", false, false)] {
-                        let ok = (try? await Highlight.make(raw: url, seen: recordings.seen, front: recordings.front, clips: clips,
-                                                            overlay: overlay, useSeen: useSeen, language: language)) != nil
-                        message += "／\(name)：\(ok ? "成功" : "失敗")"
-                    }
-                    message += "／" + (await ExportProbe.run(raw: url, seen: recordings.seen, clips: clips))
-                }
-                highlightError = message
+                guard gen == generation, !Task.isCancelled else { return }
+                highlightError = String(localized: "ハイライトを作れませんでした: \(Self.describe(error))")
+                deadline?.cancel()
                 CrashLog.mark("ハイライト失敗：\(Self.describe(error))")
             }
             building = false
@@ -257,10 +316,12 @@ final class Game {
     /// 少し待って 2 回まで作り直す
     private static func makeWithRetry(_ make: () async throws -> URL) async throws -> URL {
         var last: Error?
-        for attempt in 0..<3 {
+        // 作り直しは 1 回まで（何度も重ねると、上限の 30 秒を食いつぶすため）
+        for attempt in 0..<2 {
             if attempt > 0 {
+                guard !Task.isCancelled else { break }
                 CrashLog.mark("ハイライト：作り直し \(attempt) 回目（\(describe(last!))）")
-                try? await Task.sleep(for: .milliseconds(attempt == 1 ? 700 : 1500))
+                try? await Task.sleep(for: .milliseconds(700))
             }
             do { return try await make() } catch { last = error }
         }
@@ -361,6 +422,7 @@ final class Game {
         onPrompt?(nil)
         onEffect?(nil, 0)
         onWatch?(false)
+        startDeadline()
         stopRecording?()
     }
 }

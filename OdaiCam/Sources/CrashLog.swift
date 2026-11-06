@@ -38,6 +38,8 @@ enum CrashLog {
             return trail
         }
         defaults.set(list, forKey: trailKey)
+        // 試験の記録（CI の app.log）でも追えるように、端末のログにも出す
+        NSLog("OdaiCam足跡: %@", event)
     }
 
     /// 裏に回ったら、正常に終わったとみなす（iOS はふつう、裏に回ったアプリを黙って終わらせる）

@@ -138,10 +138,18 @@ final class OdaiCamUITests: XCTestCase {
                 }
                 XCTAssertEqual(app.state, .runningForeground, "デモ \(round)：遊んでいる間に落ちた")
                 XCTAssertTrue(app.buttons["ホームへ"].waitForExistence(timeout: 20), "デモ \(round)：結果が出ない")
-                // シミュレータでは 1080x1920 の書き出しが 2 回あるので遅い。4 分まで待つ
-                let deadline = Date().addingTimeInterval(240)
+                // シミュレータでは 1080x1920 の書き出しが 2 回あるので遅い。
+                // アプリ側の上限（シミュレータ 200 秒）で打ち切り→作り直しまで見るので 7 分まで待つ
+                let deadline = Date().addingTimeInterval(420)
+                var retried = false
                 while Date() < deadline {
                     if app.buttons["共有"].exists { break }
+                    // 上限で打ち切られたら、画面を残して 1 回だけ「作り直す」を押す（帯なしで早く出るはず）
+                    if !retried, app.buttons["作り直す"].exists {
+                        shot("demo-\(round)-error")
+                        tapIfPresent(app.buttons["作り直す"])
+                        retried = true
+                    }
                     sleep(1)
                 }
                 XCTAssertTrue(app.buttons["共有"].exists, "デモ \(round)：種明かし動画ができない")

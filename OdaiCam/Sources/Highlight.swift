@@ -135,6 +135,7 @@ enum Highlight {
         // 当てる人の顔
         var frontSource: Source?
         if let front { frontSource = try await load(front)?.0 }
+        CrashLog.mark("ハイライト：録画を読み込んだ（\(Int(rawSource.end)) 秒）")
         let margin = 0.02
         var audioEnd = 0.0
         if let audioTrack, let r = try? await audioTrack.load(.timeRange) { audioEnd = r.end.seconds - margin }
@@ -514,7 +515,9 @@ enum Highlight {
         }
         defer { watchdog1.cancel() }
         do {
+            CrashLog.mark("ハイライト：1 回目の書き出し開始")
             try await exporter.export(to: step1, as: .mp4)
+            CrashLog.mark("ハイライト：1 回目の書き出し完了")
         } catch {
             // 書きかけのファイルを残さない（作り直しのたびに増えていた）
             try? FileManager.default.removeItem(at: step1)

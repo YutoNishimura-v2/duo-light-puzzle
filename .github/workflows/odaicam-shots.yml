@@ -180,7 +180,11 @@ jobs:
           PY
           mkdir -p demo/crashes
           find ~/Library/Logs/DiagnosticReports -name 'OdaiCam*' -newer project.yml -exec cp {} demo/crashes/ \; 2>/dev/null || true
-          xcrun simctl spawn "$UDID" log show --last 20m --style compact --predicate 'process == "OdaiCam"' > demo/app.log 2>&1 || true
+          xcrun simctl spawn "$UDID" log show --last 45m --style compact --predicate 'process == "OdaiCam"' > demo/app.log 2>&1 || true
+          # アプリの足跡（ラウンド・録画・書き出しの各段）だけを抜き出す
+          grep "OdaiCam足跡" demo/app.log > demo/footprints.txt 2>/dev/null || true
+          xcrun simctl spawn "$UDID" defaults read io.github.yutonishimura-v2.odaicam crash.trail >> demo/footprints.txt 2>&1 || true
+          cat demo/footprints.txt || true
 
       - uses: actions/upload-artifact@v4
         if: always()
@@ -192,6 +196,7 @@ jobs:
             OdaiCam/demo/attachments
             OdaiCam/demo/crashes
             OdaiCam/demo/usage.csv
+            OdaiCam/demo/footprints.txt
             OdaiCam/demo/ps-raw.txt
             OdaiCam/demo/xcodebuild.log
             OdaiCam/demo/app.log
