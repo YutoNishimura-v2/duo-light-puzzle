@@ -600,8 +600,10 @@ struct HomeView: View {
             }
         }
         .frame(height: 24)
-        .mask(LinearGradient(stops: [.init(color: .clear, location: 0), .init(color: .black, location: 0.15),
-                                     .init(color: .black, location: 0.85), .init(color: .clear, location: 1)],
+        // 端で途中まで見える項目は消えるまでぼかす（「モザイ」のように切れて見えないように）
+        .mask(LinearGradient(stops: [.init(color: .clear, location: 0), .init(color: .clear, location: 0.08),
+                                     .init(color: .black, location: 0.3), .init(color: .black, location: 0.7),
+                                     .init(color: .clear, location: 0.92), .init(color: .clear, location: 1)],
                              startPoint: .leading, endPoint: .trailing))
         .sensoryFeedback(.selection, trigger: mode)
     }
@@ -1222,12 +1224,9 @@ struct ResultsView: View {
     /// 種明かしの動画。画面の主役として、自動で繰り返し流す（押すと消音）
     private var video: some View {
         ZStack {
-            Color(white: 0.08)
+            Color.black
             if game.highlightURL != nil {
-                // 左右の余りは、同じ動画を大きく暗くぼかして埋める（縦長の動画を切らずに幅いっぱいに見せる）
-                PlayerLayerView(player: player.player, fill: true)
-                    .blur(radius: 40)
-                    .opacity(0.45)
+                // 左右の余りは黒のまま（ぼかしは灰色の板に見えた）。動画は切らずに全体を見せる
                 PlayerLayerView(player: player.player)
                     .onTapGesture {
                         muted.toggle()

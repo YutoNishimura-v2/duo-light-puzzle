@@ -193,7 +193,7 @@ enum Highlight {
         let byFun = clips.indices.sorted { rank(clips[$0], $0) > rank(clips[$1], $1) }
         /// 映っていた割合は 5% 刻みで比べる（細かい差より面白さを優先）
         func visibility(_ clip: Clip) -> Int { Int((clip.hookQuality.visibleFraction * 20).rounded()) }
-        var hook: (from: Double, length: Double, topIsSeen: Bool)?
+        var hook: (from: Double, length: Double, topIsSeen: Bool, effect: String?)?
         if seenSource != nil {
             let byVisibility = byFun.filter { clips[$0].effect != nil }.enumerated()
                 .sorted { a, b in
@@ -203,11 +203,11 @@ enum Highlight {
                 .map { $0.element }
             for i in byVisibility {
                 let c = clips[i]
-                // 半分も映っていないなら、空の画面をつかみにしない
-                if c.hookQuality.visibleFraction < 0.5, frontSource != nil { break }
+                // 半分も映っていないなら、空の画面をつかみにしない（顔があれば顔、なければ上下に分けない）
+                if c.hookQuality.visibleFraction < 0.5 { break }
                 let e = min(c.end, rawEnd, seenEnd)
                 let s = max(c.start, e - hookLength, 0)
-                if e - s >= 0.6 { hook = (s, e - s, true); break }
+                if e - s >= 0.6 { hook = (s, e - s, true, c.effect); break }
             }
         }
         if hook == nil, frontSource != nil {
@@ -215,7 +215,7 @@ enum Highlight {
                 let c = clips[i]
                 let e = min(c.end, rawEnd, faceEnd)
                 let s = max(c.start, e - hookLength, 0)
-                if e - s >= 0.6 { hook = (s, e - s, false); break }
+                if e - s >= 0.6 { hook = (s, e - s, false, nil); break }
             }
         }
 
@@ -274,7 +274,9 @@ enum Highlight {
             if ok {
                 try rawLane.put(range(hook.from, d), of: rawSource.track, at: cursor)
                 pieces.append(Piece(kind: .hook,
-                                    caption: hook.topIsSeen ? "見えてたのはコレ↑　正解はコレ↓" : "当てる人↑　演じる人↓",
+                                    caption: hook.topIsSeen
+                                        ? "見えてたのはコレ" + (hook.effect.map { "（\($0)）" } ?? "") + "↑　正解はコレ↓"
+                                        : "当てる人の顔↑　正解はコレ↓",
                                     time: CMTimeRange(start: cursor, duration: d),
                                     face: !hook.topIsSeen, split: true, topIsSeen: hook.topIsSeen))
                 cursor = cursor + d
