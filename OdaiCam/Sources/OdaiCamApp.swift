@@ -1262,26 +1262,28 @@ struct ResultsView: View {
             .frame(width: 40, height: 40)
             .clipShape(Circle())
             .overlay(Circle().strokeBorder(.white.opacity(0.15), lineWidth: 1))
-            VStack(alignment: .leading, spacing: 1) {
-                Text("\(game.deck.title) ・ \(Int(game.roundLength))秒").font(Theme.bold(15))
+            VStack(alignment: .leading, spacing: 2) {
+                // 1 行目の頭に点数の札（右端は外側の画面のカメラの穴に重なるので置かない）
+                HStack(spacing: 8) {
+                    // 数え上げはせず、幅も固定（途中で字が欠けないように）
+                    HStack(alignment: .firstTextBaseline, spacing: 2) {
+                        Text("\(game.score)").font(.system(size: 17, weight: .heavy).monospacedDigit())
+                        Text("点").font(.system(size: 11, weight: .bold))
+                    }
+                    .fixedSize()
+                    .padding(.horizontal, 10).frame(minWidth: 48, minHeight: 26)
+                    .background(game.isNewBest ? Theme.accent : Theme.surface, in: Capsule())
+                    .foregroundStyle(game.isNewBest ? .black : .white)
+                    .accessibilityElement(children: .ignore)
+                    .accessibilityLabel(String(localized: "\(game.score) 点") + (game.isNewBest ? String(localized: "、自己ベスト") : ""))
+                    .accessibilityIdentifier("score")
+                    Text("\(game.deck.title) ・ \(Int(game.roundLength))秒").font(Theme.bold(15)).lineLimit(1)
+                }
                 Text(verbatim: tally)
                     .font(.system(size: 13, weight: .medium))
                     .foregroundStyle(Theme.secondary)
                     .lineLimit(1)
             }
-            // 点数の札。数え上げはせず、幅も固定（途中で字が欠けないように）。
-            // 右端は外側の画面のカメラの穴に重なるので、名前のすぐ右に置く
-            HStack(alignment: .firstTextBaseline, spacing: 2) {
-                Text("\(game.score)").font(.system(size: 22, weight: .heavy).monospacedDigit())
-                Text("点").font(.system(size: 13, weight: .bold))
-            }
-            .fixedSize()
-            .padding(.horizontal, 14).frame(minWidth: 64, minHeight: 34)
-            .background(game.isNewBest ? Theme.accent : Theme.surface, in: Capsule())
-            .foregroundStyle(game.isNewBest ? .black : .white)
-            .accessibilityElement(children: .ignore)
-            .accessibilityLabel(String(localized: "\(game.score) 点") + (game.isNewBest ? String(localized: "、自己ベスト") : ""))
-            .accessibilityIdentifier("score")
             Spacer(minLength: 0)
         }
     }

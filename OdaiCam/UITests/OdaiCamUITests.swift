@@ -199,7 +199,7 @@ final class OdaiCamUITests: XCTestCase {
         if score.exists {
             let screen = app.windows.firstMatch.frame
             XCTAssertTrue(screen.contains(score.frame), "\(name)：点数の札が画面の外 \(score.frame)")
-            XCTAssertGreaterThanOrEqual(score.frame.width, 50, "\(name)：点数の札が細すぎる \(score.frame)")
+            XCTAssertGreaterThanOrEqual(score.frame.width, 40, "\(name)：点数の札が細すぎる \(score.frame)")
         } else {
             XCTFail("\(name)：点数の札がない")
         }

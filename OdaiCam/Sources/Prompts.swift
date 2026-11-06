@@ -132,9 +132,9 @@ struct Deck: Identifiable, Hashable {
             "Wrestling", "Cycling", "Scuba diving", "Pickleball", "Cheerleading", "Shot put", "Tug of war", "Paddleboarding", "Push-ups", "Lacrosse",
         ], language: "en"),
         Deck(id: "en-action", title: "Everyday Actions", prompts: [
-            "Brushing teeth", "Opening an umbrella", "Crowded subway", "Slurping noodles", "Vacuuming", "Taking a selfie", "Hanging laundry", "Oversleeping", "Sneezing", "Inflating balloons",
+            "Brushing teeth", "Yawning", "Taking a selfie", "Slurping noodles", "Vacuuming", "Opening an umbrella", "Hanging laundry", "Oversleeping", "Sneezing", "Inflating balloons",
             "Tossing pizza dough", "Blow-drying hair", "Swatting a mosquito", "Losing your keys", "Heavy door", "Snooze button", "Putting in contacts", "Doing makeup", "Stuck jar lid", "Ironing a shirt",
-            "Cracking an egg", "Washing dishes", "Tying shoelaces", "Playing catch", "Rock paper scissors", "Arm wrestling", "Handstand", "Yawning", "Hiccups", "Sipping hot coffee",
+            "Cracking an egg", "Washing dishes", "Tying shoelaces", "Playing catch", "Rock paper scissors", "Arm wrestling", "Handstand", "Crowded subway", "Hiccups", "Sipping hot coffee",
             "Typing fast", "Taking out trash", "Washing hair", "Hide and seek", "Making the bed", "Mowing the lawn", "Parallel parking", "Shaving", "Flossing", "Walking the dog",
             "Grocery shopping", "Pumping gas", "Loading the dishwasher", "Folding laundry", "Changing a lightbulb", "Assembling furniture", "Flipping pancakes", "Chopping onions", "Painting nails", "Texting",
             "Jogging", "Stretching", "Climbing stairs", "Reading a book", "Watering plants", "Feeding the cat", "Taking a shower", "Carrying groceries", "Applying sunscreen", "Drive-thru",
