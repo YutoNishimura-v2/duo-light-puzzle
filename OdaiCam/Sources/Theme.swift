@@ -153,13 +153,15 @@ struct PillButtonStyle: ButtonStyle {
     var primary = true
     var height: CGFloat = 54
     var fontSize: CGFloat = 17
+    /// 白の代わりに使う地の色（正解のボタンは棒人間の黄色）
+    var fill: Color = .white
 
     func makeBody(configuration: Configuration) -> some View {
         configuration.label
             .font(.system(size: fontSize, weight: .heavy))
             .foregroundStyle(primary ? .black : .white)
             .frame(maxWidth: .infinity, minHeight: height)
-            .background(primary ? Color.white : Theme.surface, in: Capsule())
+            .background(primary ? fill : Theme.surface, in: Capsule())
             .scaleEffect(configuration.isPressed ? 0.96 : 1)
             .opacity(configuration.isPressed ? 0.85 : 1)
             .animation(.spring(response: 0.2, dampingFraction: 0.7), value: configuration.isPressed)

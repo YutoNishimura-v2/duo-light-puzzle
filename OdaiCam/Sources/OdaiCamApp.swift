@@ -100,18 +100,22 @@ struct GuesserView: View {
                     showHowTo = true
                 }
             }
+            // シートの中も左右の安全領域を使い切る（外側の画面で右に寄りが出ていた）
+            .ignoresSafeArea(edges: .horizontal)
         }
         .sheet(isPresented: $showHowTo) {
             HowToView { showHowTo = false }
+                .ignoresSafeArea(edges: .horizontal)
                 .presentationBackground(.black)
         }
         .sheet(isPresented: $showDecks) {
             DeckSheet(game: game, editingDeck: $editingDeck)
+                .ignoresSafeArea(edges: .horizontal)
                 .presentationDetents([.large])
                 .presentationBackground(Color(white: 0.06))
                 .presentationCornerRadius(36)
         }
-        .sheet(isPresented: $editingDeck) { DeckEditor(game: game) }
+        .sheet(isPresented: $editingDeck) { DeckEditor(game: game).ignoresSafeArea(edges: .horizontal) }
         .task {
             if let shot = Shot.name {
                 onboarded = shot != "welcome"
@@ -255,7 +259,7 @@ struct Viewfinder<Content: View>: View {
                     .frame(width: width, height: geo.size.height)
                 if showWipe, wipe != nil || Shot.name != nil {
                     WipeView(image: wipe)
-                        .frame(width: width * 0.3, height: width * 0.4)
+                        .frame(width: width * 0.24, height: width * 0.32)
                         .padding(12)
                         .transition(.scale(scale: 0.8, anchor: .topLeading).combined(with: .opacity))
                 }
@@ -432,14 +436,13 @@ struct HomeView: View {
                 TopBar {
                     BarButton(symbol: "gearshape", label: "設定") { showSettings = true }
                 } trailing: {
-                    Button { showDecks = true } label: {
-                        Avatar(text: game.deck.initial, size: 34).padding(5)
-                    }
-                    .buttonStyle(PressStyle())
-                    .accessibilityLabel("山札：\(game.deck.title)")
+                    Color.clear.frame(width: 44)
                 }
                 UnderBar {
-                    TimerText(remaining: game.roundLength)
+                    Text("\(Int(game.roundLength))秒で何問いける？")
+                        .font(.system(size: 15, weight: .heavy))
+                        .foregroundStyle(.white)
+                        .contentTransition(.numericText())
                 }
             }
             .background(Color.black.ignoresSafeArea(edges: .top))
@@ -473,6 +476,7 @@ struct HomeView: View {
             }
             .padding(.top, 14)
             .padding(.bottom, 6)
+            .frame(maxWidth: .infinity)
             .background(Color.black.ignoresSafeArea(edges: .bottom))
         }
     }
@@ -551,29 +555,35 @@ struct HomeView: View {
 
     /// しばりのモード列。選ぶと中央に寄る
     private var modeStrip: some View {
-        ScrollViewReader { proxy in
-            ScrollView(.horizontal, showsIndicators: false) {
-                HStack(spacing: 26) {
-                    ForEach(modes, id: \.self) { m in
-                        Button {
-                            select(m)
-                            withAnimation(.snappy) { proxy.scrollTo(m, anchor: .center) }
-                        } label: {
-                            Text(m.title)
-                                .font(.system(size: 15, weight: .heavy))
-                                .foregroundStyle(m == mode ? .white : Theme.tertiary)
+        GeometryReader { geo in
+            ScrollViewReader { proxy in
+                ScrollView(.horizontal, showsIndicators: false) {
+                    HStack(spacing: 26) {
+                        ForEach(modes, id: \.self) { m in
+                            Button {
+                                select(m)
+                                withAnimation(.snappy) { proxy.scrollTo(m, anchor: .center) }
+                            } label: {
+                                Text(m.title)
+                                    .font(.system(size: 15, weight: .heavy))
+                                    .foregroundStyle(m == mode ? .white : Theme.secondary)
+                                    .fixedSize()
+                            }
+                            .buttonStyle(.plain)
+                            .id(m)
                         }
-                        .buttonStyle(.plain)
-                        .id(m)
                     }
                 }
-                .padding(.horizontal, 150)
+                // 両端に画面の半分の余白を置き、どの項目でも中央まで寄せられるようにする
+                .contentMargins(.horizontal, geo.size.width / 2, for: .scrollContent)
+                .onAppear {
+                    DispatchQueue.main.async { proxy.scrollTo(mode, anchor: .center) }
+                }
             }
-            .onAppear { proxy.scrollTo(mode, anchor: .center) }
         }
         .frame(height: 24)
-        .mask(LinearGradient(stops: [.init(color: .clear, location: 0), .init(color: .black, location: 0.2),
-                                     .init(color: .black, location: 0.8), .init(color: .clear, location: 1)],
+        .mask(LinearGradient(stops: [.init(color: .clear, location: 0), .init(color: .black, location: 0.15),
+                                     .init(color: .black, location: 0.85), .init(color: .clear, location: 1)],
                              startPoint: .leading, endPoint: .trailing))
         .sensoryFeedback(.selection, trigger: mode)
     }
@@ -872,6 +882,7 @@ struct CountdownView: View {
             }
             .padding(.top, 19)
             .padding(.bottom, 6)
+            .frame(maxWidth: .infinity)
             .background(Color.black.ignoresSafeArea(edges: .bottom))
         }
         .animation(.smooth(duration: 0.3), value: n)
@@ -948,7 +959,7 @@ struct PlayView: View {
                         Image(systemName: "checkmark").font(.system(size: 15, weight: .heavy))
                     }
                 }
-                .buttonStyle(PillButtonStyle(height: 60, fontSize: 19))
+                .buttonStyle(PillButtonStyle(height: 60, fontSize: 19, fill: Theme.accent))
                 .accessibilityLabel("正解")
             }
             .padding(.horizontal, 16)
@@ -1006,8 +1017,9 @@ struct PlayView: View {
                 }
                 Spacer()
             }
-            .padding(.horizontal, 12)
-            .padding(.top, 6)
+            .padding(.horizontal, 16)
+            // ロゴと残り時間（上の 80pt）は隠さない
+            .padding(.top, 86)
             .animation(.spring(response: 0.4, dampingFraction: 0.82), value: cheat)
             .animation(.spring(response: 0.4, dampingFraction: 0.82), value: pass)
             .allowsHitTesting(false)
@@ -1024,7 +1036,6 @@ struct ResultsView: View {
     @State private var player = LoopPlayer()
     @State private var muted = false
     @State private var message: String?
-    @State private var shown = 0
 
     var body: some View {
         VStack(spacing: 0) {
@@ -1039,13 +1050,13 @@ struct ResultsView: View {
             header
                 .padding(.horizontal, 16)
                 .padding(.bottom, 10)
-            video
-                .padding(.horizontal, 12)
-            prompts
-                .padding(.top, 10)
-            shareRow
-                .padding(.horizontal, 12)
-                .padding(.top, 12)
+            // 動画を主役に。共有のボタンは TikTok のように右の縦の列にして、動画には重ねない
+            HStack(alignment: .bottom, spacing: 10) {
+                video
+                shareColumn
+            }
+            .padding(.horizontal, 12)
+            .frame(maxHeight: .infinity)
             again
                 .padding(.horizontal, 16)
                 .padding(.top, 12)
@@ -1054,12 +1065,6 @@ struct ResultsView: View {
         .background(Color.black.ignoresSafeArea())
         .task {
             if let url = game.highlightURL { player.play(url) }
-            // 点数を数え上げる
-            shown = 0
-            for i in 0...max(game.score, 0) {
-                withAnimation(.snappy) { shown = i }
-                try? await Task.sleep(for: .milliseconds(max(40, 600 / max(game.score, 1))))
-            }
         }
         .onChange(of: game.highlightURL) { _, url in
             if let url { player.play(url) }
@@ -1088,16 +1093,21 @@ struct ResultsView: View {
                      + (game.cheats > 0 ? " ・ カンニング −\(game.cheats)" : ""))
                     .font(.system(size: 13, weight: .medium))
                     .foregroundStyle(Theme.secondary)
+                    .lineLimit(1)
             }
-            Spacer()
+            Spacer(minLength: 8)
+            // 点数の札。数え上げはせず、幅も固定（途中で字が欠けないように）
             HStack(alignment: .firstTextBaseline, spacing: 2) {
-                Text("\(shown)").font(Theme.brand(22)).contentTransition(.numericText())
-                Text("点").font(Theme.bold(13))
+                Text("\(game.score)").font(.system(size: 22, weight: .heavy).monospacedDigit())
+                Text("点").font(.system(size: 13, weight: .bold))
             }
-            .padding(.horizontal, 12).frame(height: 34)
+            .fixedSize()
+            .padding(.horizontal, 14).frame(minWidth: 64, minHeight: 34)
             .background(game.isNewBest ? Theme.accent : Theme.surface, in: Capsule())
             .foregroundStyle(game.isNewBest ? .black : .white)
+            .accessibilityElement(children: .ignore)
             .accessibilityLabel("\(game.score) 点" + (game.isNewBest ? "、自己ベスト" : ""))
+            .accessibilityIdentifier("score")
         }
     }
 
@@ -1142,29 +1152,16 @@ struct ResultsView: View {
         .clipShape(RoundedRectangle(cornerRadius: Theme.cardRadius, style: .continuous))
     }
 
-    /// お題の一覧（横に流れる札）
-    private var prompts: some View {
-        ScrollView(.horizontal, showsIndicators: false) {
-            HStack(spacing: 8) {
-                ForEach(game.turns) { t in
-                    HStack(spacing: 5) {
-                        Image(systemName: t.outcome == .correct ? "checkmark" : "arrow.uturn.right")
-                            .font(.system(size: 11, weight: .heavy))
-                        Text(t.prompt).font(.system(size: 13, weight: .bold))
-                    }
-                    .foregroundStyle(t.outcome == .correct ? .white : Theme.secondary)
-                    .padding(.horizontal, 12).frame(height: 30)
-                    .background(Theme.surface, in: Capsule())
-                }
+    /// 共有の列（TikTok の右の縦の列）：TikTok・ストーリーズ・保存・その他
+    private var shareColumn: some View {
+        VStack(spacing: 14) {
+            if let message {
+                Text(message)
+                    .font(.system(size: 11, weight: .bold))
+                    .multilineTextAlignment(.center)
+                    .foregroundStyle(Theme.secondary)
+                    .transition(.opacity)
             }
-            .padding(.horizontal, 16)
-        }
-        .frame(height: 30)
-    }
-
-    /// 共有の列：TikTok・ストーリーズ・保存・その他。動画には重ねない
-    private var shareRow: some View {
-        HStack(spacing: 8) {
             shareButton("music.note", "TikTok") { await post(open: "tiktok://") }
             shareButton("circle.dashed.inset.filled", "ストーリーズ") { await post(open: "instagram://story-camera") }
             shareButton(message == "保存しました" ? "checkmark" : "arrow.down.to.line", "保存") { await post(open: nil) }
@@ -1178,16 +1175,7 @@ struct ResultsView: View {
                 tile("square.and.arrow.up", "その他").opacity(0.35)
             }
         }
-        .overlay(alignment: .top) {
-            if let message {
-                Text(message)
-                    .font(.system(size: 12, weight: .bold))
-                    .padding(.horizontal, 10).frame(height: 24)
-                    .background(Theme.surface, in: Capsule())
-                    .offset(y: -30)
-                    .transition(.opacity)
-            }
-        }
+        .frame(width: 78)
         .animation(.smooth, value: message)
     }
 
@@ -1201,12 +1189,14 @@ struct ResultsView: View {
 
     private func tile(_ symbol: String, _ title: String) -> some View {
         VStack(spacing: 6) {
-            Image(systemName: symbol).font(.system(size: 20, weight: .bold))
-            Text(title).font(.system(size: 12, weight: .heavy)).lineLimit(1).minimumScaleFactor(0.8)
+            Image(systemName: symbol)
+                .font(.system(size: 22, weight: .bold))
+                .frame(width: 58, height: 58)
+                .background(Theme.surface, in: Circle())
+            Text(title).font(.system(size: 11, weight: .heavy)).lineLimit(1).minimumScaleFactor(0.7)
         }
         .foregroundStyle(.white)
-        .frame(maxWidth: .infinity, minHeight: 66)
-        .background(Theme.surface, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+        .frame(maxWidth: .infinity)
     }
 
     /// 写真に保存してから、投稿先のアプリを開く（投稿先ではいちばん新しい動画を選ぶだけ）

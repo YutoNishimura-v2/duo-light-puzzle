@@ -39,6 +39,21 @@ final class OdaiCamUITests: XCTestCase {
             assertCentered("あそぶ", after: mode)
             XCTAssertEqual(app.state, .runningForeground, "\(mode) を選んだら落ちた")
         }
+        // シートの中身も中央にあるか（山札のシートが左に寄っていた）
+        app.buttons["山札をえらぶ"].tap()
+        let animal = app.buttons.matching(NSPredicate(format: "label CONTAINS '動物'")).firstMatch
+        XCTAssertTrue(animal.waitForExistence(timeout: 5), "山札のシートが出ない")
+        sleep(1)
+        shot("decks")
+        assertCentered(animal, name: "山札のシートの「動物」")
+        app.buttons["閉じる"].tap()
+        sleep(1)
+        app.buttons["設定"].tap()
+        let howTo = app.buttons.matching(NSPredicate(format: "label CONTAINS '遊び方'")).firstMatch
+        XCTAssertTrue(howTo.waitForExistence(timeout: 5), "設定が出ない")
+        sleep(1)
+        shot("settings")
+        assertCentered(howTo, name: "設定の「遊び方」")
     }
 
     /// しばりごとに 1 ラウンド遊び、種明かしの動画ができるまで見る
@@ -118,6 +133,15 @@ final class OdaiCamUITests: XCTestCase {
             sleep(1)
         }
         shot("\(name)-highlight")
+        // 点数の札が画面の中にあって、字が欠けるほど細くないか
+        let score = app.descendants(matching: .any)["score"]
+        if score.exists {
+            let screen = app.windows.firstMatch.frame
+            XCTAssertTrue(screen.contains(score.frame), "\(name)：点数の札が画面の外 \(score.frame)")
+            XCTAssertGreaterThanOrEqual(score.frame.width, 50, "\(name)：点数の札が細すぎる \(score.frame)")
+        } else {
+            XCTFail("\(name)：点数の札がない")
+        }
         if failed.exists {
             // 理由の文言も残す
             let texts = app.staticTexts.allElementsBoundByIndex.map(\.label).joined(separator: " / ")
@@ -146,10 +170,14 @@ final class OdaiCamUITests: XCTestCase {
     /// ボタンの中心が、画面の中心から ±5% 以内にあるか
     @MainActor
     private func assertCentered(_ label: String, after mode: String) {
-        let button = app.buttons[label]
+        assertCentered(app.buttons[label], name: "\(mode)：\(label)")
+    }
+
+    @MainActor
+    private func assertCentered(_ element: XCUIElement, name: String) {
         let screen = app.windows.firstMatch.frame
-        XCTAssertLessThanOrEqual(abs(button.frame.midX - screen.midX), screen.width * 0.05,
-                                 "\(mode)：\(label) が中心からずれている \(button.frame.midX)（画面 \(screen)）")
+        XCTAssertLessThanOrEqual(abs(element.frame.midX - screen.midX), screen.width * 0.05,
+                                 "\(name) が中心からずれている \(element.frame.midX)（画面 \(screen)）")
     }
 
     /// 画面写真を結果に残す
