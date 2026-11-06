@@ -36,6 +36,7 @@ final class OdaiCamUITests: XCTestCase {
             shot("home-\(mode)")
             assertOnScreen("あそぶ", after: mode)
             assertOnScreen("設定", after: mode)
+            assertCentered("あそぶ", after: mode)
             XCTAssertEqual(app.state, .runningForeground, "\(mode) を選んだら落ちた")
         }
     }
@@ -46,9 +47,11 @@ final class OdaiCamUITests: XCTestCase {
         launch()
         // 動画の失敗はしばりごとに見たいので、1 つ失敗しても続ける
         continueAfterFailure = true
-        let thirty = app.buttons.matching(NSPredicate(format: "label BEGINSWITH '30'")).firstMatch
-        XCTAssertTrue(thirty.waitForExistence(timeout: 5), "30 秒のボタンがない")
-        thirty.tap()
+        // 時間のボタンは押すたびに 30・60・90 秒と変わる。30 秒になるまで押す
+        let time = app.buttons["time"]
+        XCTAssertTrue(time.waitForExistence(timeout: 5), "時間のボタンがない")
+        for _ in 0..<3 where !time.label.hasPrefix("30") { time.tap() }
+        XCTAssertTrue(time.label.hasPrefix("30"), "30 秒にできない：\(time.label)")
         for (i, mode) in Self.modes.enumerated() {
             // 落ちたら、残りのラウンドは飛ばす
             guard app.state == .runningForeground else {
@@ -84,6 +87,12 @@ final class OdaiCamUITests: XCTestCase {
         XCTAssertEqual(app.state, .runningForeground, "\(name)：カウントダウンのあと落ちた")
         sleep(1)
         shot("\(name)-play")
+        // 正解とパスの組が、画面の中心から ±5% 以内にある（左に寄る不具合の見張り）
+        let pass = app.buttons["パス"]
+        let screen = app.windows.firstMatch.frame
+        let mid = (correct.frame.midX + pass.frame.midX) / 2
+        XCTAssertLessThanOrEqual(abs(mid - screen.midX), screen.width * 0.05,
+                                 "\(name)：正解とパスが中心からずれている \(mid)（画面 \(screen)）")
         correct.tap()
         sleep(1)
         app.buttons["パス"].tap()
@@ -94,13 +103,13 @@ final class OdaiCamUITests: XCTestCase {
         XCTAssertEqual(app.state, .runningForeground, "\(name)：結果の前に落ちた")
         shot("\(name)-results")
 
-        // 動画ができると「共有」「写真に保存」が出る。できなければ「動画を作れませんでした」
+        // 動画ができると「保存」「共有」が押せる。できなければ「動画を作れませんでした」
         let failed = app.descendants(matching: .any)
             .matching(NSPredicate(format: "label CONTAINS '動画を作れませんでした'")).firstMatch
         let deadline = Date().addingTimeInterval(120)
         var ready = false
         while Date() < deadline {
-            if app.buttons["共有"].exists || app.buttons["写真に保存"].exists { ready = true; break }
+            if app.buttons["共有"].exists || (app.buttons["保存"].exists && app.buttons["保存"].isEnabled) { ready = true; break }
             if failed.exists { break }
             if app.state != .runningForeground {
                 XCTFail("\(name)：動画を作っている間に落ちた")
@@ -132,6 +141,15 @@ final class OdaiCamUITests: XCTestCase {
         XCTAssertTrue(button.isHittable, "\(mode)：\(label) が押せない")
         let screen = app.windows.firstMatch.frame
         XCTAssertTrue(screen.contains(button.frame), "\(mode)：\(label) が画面の外 \(button.frame)（画面 \(screen)）")
+    }
+
+    /// ボタンの中心が、画面の中心から ±5% 以内にあるか
+    @MainActor
+    private func assertCentered(_ label: String, after mode: String) {
+        let button = app.buttons[label]
+        let screen = app.windows.firstMatch.frame
+        XCTAssertLessThanOrEqual(abs(button.frame.midX - screen.midX), screen.width * 0.05,
+                                 "\(mode)：\(label) が中心からずれている \(button.frame.midX)（画面 \(screen)）")
     }
 
     /// 画面写真を結果に残す

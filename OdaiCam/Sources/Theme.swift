@@ -1,10 +1,12 @@
-import AudioToolbox
 import SwiftUI
 
 /// 見た目の決まり。BeReal. に合わせる：
 /// 真っ黒な地、白い太字のロゴ（末尾にピリオド）、角の丸いファインダーと左上の内カメの小窓、
-/// 白い輪のシャッター、灰色の丸い札、選んだものだけ白いカード。色はほぼ使わない
+/// 白い輪のシャッター、灰色の丸い札、選んだものだけ白いカード。
+/// 差し色は棒人間の黄色ひとつだけ。正解の瞬間・残り 10 秒・種明かしの帯にだけ使う
 enum Theme {
+    /// 棒人間の線と同じ黄色
+    static let accent = Color(red: 1, green: 0.87, blue: 0.43)
     static let background = Color.black
     /// 行・カード（BeReal の設定やシートの濃い灰色）
     static let surface = Color(white: 0.11)
@@ -12,7 +14,7 @@ enum Theme {
     static let chip = Color(white: 0.18).opacity(0.82)
     static let secondary = Color(white: 0.56)
     static let tertiary = Color(white: 0.34)
-    /// 残り 10 秒・カンニング（BeReal の「⚠️」の赤）
+    /// カンニング（BeReal の「⚠️」の赤）
     static let warning = Color(red: 1, green: 0.27, blue: 0.23)
 
     static let viewfinderRadius: CGFloat = 20
@@ -62,6 +64,11 @@ extension Deck {
         case "job": "briefcase.fill"
         case "sport": "figure.run"
         case "action": "hand.wave.fill"
+        case "nomikai": "wineglass.fill"
+        case "couple": "heart.fill"
+        case "aruaru": "bubble.left.fill"
+        case "muri": "flame.fill"
+        case "winter": "snowflake"
         default: "pencil"
         }
     }
@@ -169,17 +176,22 @@ struct PressStyle: ButtonStyle {
     }
 }
 
-/// BeReal のシャッター：白い太い輪だけ
+/// BeReal のシャッター（白い太い輪）。何が始まるか分かるよう、中に「スタート」と書く
 struct ShutterButton: View {
     var enabled = true
     let action: () -> Void
 
     var body: some View {
         Button(action: action) {
-            Circle()
-                .strokeBorder(.white, lineWidth: 6)
-                .frame(width: 84, height: 84)
-                .contentShape(Circle())
+            ZStack {
+                Circle().strokeBorder(.white, lineWidth: 6)
+                Circle().fill(.white).padding(11)
+                Text("スタート")
+                    .font(.system(size: 15, weight: .heavy))
+                    .foregroundStyle(.black)
+            }
+            .frame(width: 92, height: 92)
+            .contentShape(Circle())
         }
         .buttonStyle(PressStyle())
         .disabled(!enabled)
@@ -235,7 +247,7 @@ struct TimerText: View {
         let seconds = Int(remaining.rounded(.up))
         Text(String(format: "%02d:%02d", seconds / 60, seconds % 60))
             .font(Theme.timer(size))
-            .foregroundStyle(remaining <= 10 ? Theme.warning : .white)
+            .foregroundStyle(remaining <= 10 ? Theme.accent : .white)
             .contentTransition(.numericText(countsDown: true))
             .animation(.default, value: seconds)
     }
@@ -265,13 +277,4 @@ struct NoticeBanner: View {
         .overlay(RoundedRectangle(cornerRadius: 24, style: .continuous).strokeBorder(.white.opacity(0.08), lineWidth: 1))
         .shadow(color: .black.opacity(0.5), radius: 20, y: 8)
     }
-}
-
-/// 効果音（端末に入っている音だけを使う）
-enum Sound {
-    static func tick() { AudioServicesPlaySystemSound(1104) }
-    static func correct() { AudioServicesPlaySystemSound(1407) }
-    static func pass() { AudioServicesPlaySystemSound(1105) }
-    static func buzzer() { AudioServicesPlaySystemSound(1073) }
-    static func finish() { AudioServicesPlaySystemSound(1025) }
 }

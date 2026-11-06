@@ -4,7 +4,10 @@ import SwiftUI
 
 @main
 struct OdaiCamApp: App {
-    init() { CrashLog.start() }
+    init() {
+        CrashLog.start()
+        Sound.prepare()
+    }
 
     var body: some Scene {
         WindowGroup {
@@ -27,6 +30,7 @@ enum Shot {
 /// 内側の画面：当てる人。BeReal の撮影画面と同じく、角の丸いファインダーに映像を出し、
 /// 左上の小窓に内側のカメラ（当てる人の顔）を出す
 struct GuesserView: View {
+    /// 一度でも遊んだか（初めての人にだけ、ファインダーに 1 行の案内を出す）
     @AppStorage("onboarded") private var onboarded = false
     @Environment(\.scenePhase) private var scenePhase
     @State private var game = Game()
@@ -44,8 +48,11 @@ struct GuesserView: View {
     @State private var seenFrame: CGImage?
     /// 左上の小窓に出す、内側のカメラの映像
     @State private var wipe: CGImage?
+    /// 結果の画面の丸いアイコンに使う、当てる人の顔（ラウンドの終わりの小窓の 1 枚）
+    @State private var face: CGImage?
     @State private var showSettings = false
     @State private var showDecks = false
+    @State private var showHowTo = false
     @State private var editingDeck = false
     @State private var started = false
 
@@ -59,17 +66,23 @@ struct GuesserView: View {
             } else {
                 SampleScene().ignoresSafeArea()
             }
-            switch game.phase {
-            case .menu:
-                HomeView(game: game, seenFrame: seenFrame, wipe: wipe, cameraReady: cameraReady, cameraDenied: cameraDenied,
-                         innerReady: innerReady, voiceReady: voiceReady, showSettings: $showSettings, showDecks: $showDecks)
-            case .countdown(let n):
-                CountdownView(n: n, game: game, wipe: wipe)
-            case .playing:
-                PlayView(game: game, seenFrame: seenFrame, wipe: wipe, voiceOn: game.voiceJudge && voiceReady)
-            case .results:
-                ResultsView(game: game)
+            Group {
+                switch game.phase {
+                case .menu:
+                    HomeView(game: game, seenFrame: seenFrame, wipe: wipe, cameraReady: cameraReady,
+                             cameraDenied: cameraDenied, innerReady: innerReady, firstRun: !onboarded,
+                             showSettings: $showSettings, showDecks: $showDecks)
+                case .countdown(let n):
+                    CountdownView(n: n, game: game, wipe: wipe)
+                case .playing:
+                    PlayView(game: game, seenFrame: seenFrame, wipe: wipe, voiceOn: game.voiceJudge && voiceReady)
+                case .results:
+                    ResultsView(game: game, face: face)
+                }
             }
+            // 画面の左右の安全領域は使い切る（外側の画面で右に 2 割の空きができていた）。
+            // 端に寄りすぎないよう、各画面が自分で余白を持つ
+            .ignoresSafeArea(edges: .horizontal)
         }
         .animation(.smooth(duration: 0.35), value: game.phase)
         // 撮影画面が内側に全画面で出ていて、撮影が動いている間だけ、システムが外側の画面に出す
@@ -78,21 +91,19 @@ struct GuesserView: View {
                 ActorView(game: game)
             }
         }
-        .fullScreenCover(isPresented: Binding(get: { !onboarded }, set: { _ in })) {
-            WelcomeView {
-                onboarded = true
-                Task { await startCamera() }
-            }
-        }
         .sheet(isPresented: $showSettings) {
             SettingsSheet(game: game, voiceReady: voiceReady, innerReady: innerReady, editingDeck: $editingDeck) {
                 showSettings = false
-                // 設定の画面が閉じきってから、ようこそを出す
+                // 設定の画面が閉じきってから、遊び方を出す
                 Task {
                     try? await Task.sleep(for: .milliseconds(600))
-                    onboarded = false
+                    showHowTo = true
                 }
             }
+        }
+        .sheet(isPresented: $showHowTo) {
+            HowToView { showHowTo = false }
+                .presentationBackground(.black)
         }
         .sheet(isPresented: $showDecks) {
             DeckSheet(game: game, editingDeck: $editingDeck)
@@ -110,9 +121,11 @@ struct GuesserView: View {
                 game.loadPreview(shot)
                 if shot == "settings" { showSettings = true }
                 if shot == "decks" { showDecks = true }
+                if shot == "howto" { showHowTo = true }
                 return
             }
-            if onboarded { await startCamera() }
+            // 説明の画面は挟まない。起動したらすぐカメラを動かし、自分が棒人間になって見えるようにする
+            await startCamera()
         }
         .onChange(of: scenePhase) { _, phase in
             if phase == .background { CrashLog.suspended() } else if phase == .active { CrashLog.resumed() }
@@ -122,12 +135,15 @@ struct GuesserView: View {
         .onChange(of: game.phase) { _, phase in
             CrashLog.mark("画面 \(phase)")
             if phase == .menu { applyPreview(previewEffect) }
+            if case .countdown = phase { onboarded = true }
+            if phase == .results, let wipe { face = wipe }
         }
         .onDisappear { camera.stop() }
     }
 
+    /// ホームで見せるしばり。おまかせのときは棒人間（いちばん分かりやすい）
     private var previewEffect: Effect? {
-        game.phase == .menu && game.effectsOn ? game.fixedEffect : nil
+        game.phase == .menu && game.effectsOn ? (game.fixedEffect ?? .stick) : nil
     }
 
     private func applyPreview(_ effect: Effect?) {
@@ -150,6 +166,7 @@ struct GuesserView: View {
             innerReady = inner
             if inner { camera.alignInner() } else { game.cheatGuard = false }
             CrashLog.mark("カメラ準備（内側 \(inner ? "あり" : "なし")）")
+            applyPreview(previewEffect)
         }
         camera.onFront = { [watch, wipeFeed] in
             watch.process($0)
@@ -324,46 +341,37 @@ struct UnderBar<Content: View>: View {
     }
 }
 
-// MARK: - 初回の説明（BeReal の「Welcome to BeReal.」と同じ並び）
+// MARK: - 遊び方（設定の奥。BeReal の「Welcome to BeReal.」と同じ並び）
 
-struct WelcomeView: View {
-    let finish: () -> Void
+struct HowToView: View {
+    let close: () -> Void
 
     var body: some View {
         VStack(spacing: 0) {
             ScrollView {
                 VStack(alignment: .leading, spacing: 30) {
                     VStack(alignment: .leading, spacing: 10) {
-                        Text("ようこそ").font(Theme.bold(17)).foregroundStyle(Theme.secondary)
+                        Text("遊び方").font(Theme.bold(17)).foregroundStyle(Theme.secondary)
                         Wordmark(size: 46)
-                        Text("Duo の 2 つの画面で遊ぶ、声を出さないジェスチャーゲーム。")
-                            .font(.system(size: 16, weight: .medium))
-                            .foregroundStyle(Theme.secondary)
                     }
-                    .padding(.top, 70)
+                    .padding(.top, 56)
                     .padding(.bottom, 6)
                     row("theatermasks", "お題は外側の画面に",
                         "Duo を開いて持つ人が当てる役。外側の画面の前に立つ人だけがお題を見て、声を出さずに演じます。")
-                    row("eye.slash", "見えるのは画面越しだけ",
-                        "当てる人には、棒人間や影絵に変わった姿しか見えません。顔を上げて直接見るとカンニングで −1 点。")
+                    row("figure.stand", "見えるのは画面越しだけ",
+                        "当てる人には、棒人間や影絵に変わった姿しか見えません。顔を上げて直接見るとカンニング。1 回目は注意、2 回目から −1 点。")
                     row("waveform", "答えは声に出すだけ",
                         "合っていれば自動で次のお題へ。")
                     row("play.rectangle", "最後に種明かし",
-                        "見えていた画面と本当の演技を並べた動画ができます。そのまま友だちに送れます。")
+                        "見えていた画面と本当の演技を並べた動画ができます。そのまま TikTok やストーリーズに。")
                 }
                 .padding(.horizontal, 28)
             }
             .scrollBounceBehavior(.basedOnSize)
-            VStack(spacing: 14) {
-                Text("声の聞き取りも映像の加工も、すべてこの iPhone の中で行います。")
-                    .font(.system(size: 12, weight: .medium))
-                    .foregroundStyle(Theme.tertiary)
-                    .multilineTextAlignment(.center)
-                Button("はじめる", action: finish)
-                    .buttonStyle(PillButtonStyle())
-            }
-            .padding(.horizontal, 20)
-            .padding(.bottom, 16)
+            Button("とじる", action: close)
+                .buttonStyle(PillButtonStyle())
+                .padding(.horizontal, 20)
+                .padding(.bottom, 16)
         }
         .background(Color.black.ignoresSafeArea())
     }
@@ -392,7 +400,8 @@ struct HomeView: View {
     let cameraReady: Bool
     let cameraDenied: Bool
     let innerReady: Bool
-    let voiceReady: Bool
+    /// 初めての人（まだ一度も遊んでいない）
+    let firstRun: Bool
     @Binding var showSettings: Bool
     @Binding var showDecks: Bool
 
@@ -410,6 +419,7 @@ struct HomeView: View {
     }
 
     private let modes: [Mode] = [.random] + Effect.allCases.map { .fixed($0) } + [.none]
+    private static let lengths: [Double] = [30, 60, 90]
 
     private var mode: Mode {
         guard game.effectsOn else { return .none }
@@ -436,54 +446,49 @@ struct HomeView: View {
 
             Viewfinder(wipe: wipe, showWipe: innerReady) {
                 ZStack {
-                    // 選んだしばりをその場でかけて見せる
-                    if let seenFrame, game.effectsOn, game.fixedEffect != nil {
+                    // 選んだしばりをその場でかけて見せる（おまかせは棒人間）
+                    if let seenFrame, game.effectsOn {
                         EffectFrame(image: seenFrame)
+                    } else if Shot.name != nil, game.effectsOn {
+                        SampleStick()
                     }
                     VStack {
-                        HStack {
-                            Spacer(minLength: 0)
-                            deckChip
-                        }
                         Spacer()
-                        if cameraDenied {
-                            Chip(symbol: "exclamationmark.triangle.fill", text: "設定アプリでカメラを許可してください")
-                        } else {
-                            Chip(symbol: modeSymbol, text: modeHint)
-                                .contentTransition(.opacity)
-                                .animation(.smooth, value: modeHint)
-                        }
-                        timeChips.padding(.top, 10)
+                        hint
                     }
-                    .padding(12)
+                    .padding(14)
                 }
             }
 
-            VStack(spacing: 12) {
+            VStack(spacing: 14) {
                 HStack {
-                    toggle(on: game.voiceJudge, onSymbol: "waveform", offSymbol: "waveform.slash",
-                           label: "声で自動判定", enabled: voiceReady) { game.voiceJudge.toggle() }
+                    deckButton
                     Spacer()
                     ShutterButton(enabled: cameraReady) { game.startRound() }
                     Spacer()
-                    toggle(on: game.cheatGuard, onSymbol: "eye", offSymbol: "eye.slash",
-                           label: "カンニング禁止", enabled: innerReady) { game.cheatGuard.toggle() }
+                    timeButton
                 }
-                .padding(.horizontal, 44)
+                .padding(.horizontal, 36)
                 modeStrip
             }
-            .padding(.top, 16)
+            .padding(.top, 14)
             .padding(.bottom, 6)
             .background(Color.black.ignoresSafeArea(edges: .bottom))
         }
-        .sensoryFeedback(.selection, trigger: game.voiceJudge)
-        .sensoryFeedback(.selection, trigger: game.cheatGuard)
     }
 
-    /// 右上の札（BeReal の「BTS Off」の位置）。押すと山札を選ぶ
-    private var deckChip: some View {
-        ChipButton(symbol: game.deck.symbol, text: "\(game.deck.title)  \(game.deck.prompts.count)",
-                   label: "山札をえらぶ") { showDecks = true }
+    /// ファインダーの下の 1 行（初めての人には遊び方をひとことで）
+    @ViewBuilder
+    private var hint: some View {
+        if cameraDenied {
+            Chip(symbol: "exclamationmark.triangle.fill", text: "設定アプリでカメラを許可してください")
+        } else if firstRun {
+            Chip(symbol: "hand.wave.fill", text: "これが相手に見えるあなた。スタートで 3・2・1")
+        } else {
+            Chip(symbol: modeSymbol, text: modeHint)
+                .contentTransition(.opacity)
+                .animation(.smooth, value: modeHint)
+        }
     }
 
     private var modeSymbol: String {
@@ -502,41 +507,46 @@ struct HomeView: View {
         }
     }
 
-    /// 時間（BeReal の「1.0x」と同じ黒い丸）
-    private var timeChips: some View {
-        HStack(spacing: 6) {
-            ForEach([30.0, 60.0, 90.0], id: \.self) { t in
-                let selected = game.roundLength == t
-                Button {
-                    withAnimation(.snappy) { game.roundLength = t }
-                } label: {
-                    Text(selected ? "\(Int(t))秒" : "\(Int(t))")
-                        .font(.system(size: selected ? 13 : 12, weight: .bold))
-                        .foregroundStyle(selected ? .white : Theme.secondary)
-                        .frame(width: selected ? 44 : 34, height: selected ? 44 : 34)
-                        .background(.black.opacity(selected ? 0.85 : 0.55), in: Circle())
-                }
-                .buttonStyle(PressStyle())
+    /// 左：山札（BeReal のフラッシュの位置）
+    private var deckButton: some View {
+        Button { showDecks = true } label: {
+            VStack(spacing: 5) {
+                Image(systemName: game.deck.symbol)
+                    .font(.system(size: 20, weight: .semibold))
+                    .frame(width: 52, height: 52)
+                    .background(Theme.surface, in: Circle())
+                Text(game.deck.title)
+                    .font(.system(size: 11, weight: .bold))
+                    .lineLimit(1)
             }
-        }
-        .sensoryFeedback(.selection, trigger: game.roundLength)
-    }
-
-    /// シャッターの左右の白い記号（BeReal のフラッシュと切り替え）
-    private func toggle(on: Bool, onSymbol: String, offSymbol: String, label: String, enabled: Bool,
-                        action: @escaping () -> Void) -> some View {
-        Button(action: action) {
-            Image(systemName: on ? onSymbol : offSymbol)
-                .font(.system(size: 24, weight: .semibold))
-                .foregroundStyle(enabled ? .white : Theme.tertiary)
-                .contentTransition(.symbolEffect(.replace))
-                .frame(width: 48, height: 48)
-                .contentShape(Rectangle())
+            .foregroundStyle(.white)
+            .frame(width: 64)
         }
         .buttonStyle(PressStyle())
-        .disabled(!enabled)
-        .accessibilityLabel(label)
-        .accessibilityValue(on ? "オン" : "オフ")
+        .accessibilityLabel("山札をえらぶ")
+    }
+
+    /// 右：時間（押すたびに 30・60・90 秒）
+    private var timeButton: some View {
+        Button {
+            let i = Self.lengths.firstIndex(of: game.roundLength) ?? 1
+            withAnimation(.snappy) { game.roundLength = Self.lengths[(i + 1) % Self.lengths.count] }
+        } label: {
+            VStack(spacing: 5) {
+                Text("\(Int(game.roundLength))")
+                    .font(Theme.brand(20))
+                    .contentTransition(.numericText())
+                    .frame(width: 52, height: 52)
+                    .background(Theme.surface, in: Circle())
+                Text("秒").font(.system(size: 11, weight: .bold))
+            }
+            .foregroundStyle(.white)
+            .frame(width: 64)
+        }
+        .buttonStyle(PressStyle())
+        .accessibilityLabel("\(Int(game.roundLength))秒")
+        .accessibilityIdentifier("time")
+        .sensoryFeedback(.selection, trigger: game.roundLength)
     }
 
     /// しばりのモード列。選ぶと中央に寄る
@@ -946,22 +956,51 @@ struct PlayView: View {
             .padding(.bottom, 26)
             .background(Color.black.ignoresSafeArea(edges: .bottom))
         }
+        .overlay { correctFlash }
         .overlay(alignment: .top) { notices }
     }
 
-    /// 正解・パス・カンニングは、BeReal の通知の形で上から降ろす
+    /// 正解の瞬間は全面を黄色く光らせ、大きな文字を出す（外側の画面と同じ熱さにする）
+    private var correctFlash: some View {
+        TimelineView(.animation(minimumInterval: 1 / 30)) { context in
+            if let at = game.lastAnswerAt, let last = game.lastAnswer, last.outcome == .correct,
+               context.date.timeIntervalSince(at) < 0.9 {
+                let t = context.date.timeIntervalSince(at)
+                ZStack {
+                    Theme.accent
+                    VStack(spacing: 4) {
+                        Text("正解！")
+                            .font(.system(size: 96, weight: .heavy))
+                            .scaleEffect(t < 0.12 ? 0.7 + t * 2.5 : 1)
+                        Text(last.prompt).font(Theme.heavy(30))
+                    }
+                    .foregroundStyle(.black)
+                }
+                .ignoresSafeArea()
+                .opacity(t > 0.55 ? max(0, 1 - (t - 0.55) / 0.35) : 1)
+                .allowsHitTesting(false)
+            }
+        }
+    }
+
+    /// パス・カンニングは、BeReal の通知の形で上から降ろす
     private var notices: some View {
         TimelineView(.periodic(from: .now, by: 0.1)) { context in
             let now = context.date
             let cheat = game.lastCheat.map { now.timeIntervalSince($0) < 1.6 } ?? false
-            let answer = game.lastAnswerAt.map { now.timeIntervalSince($0) < 1.2 } ?? false
+            let pass = (game.lastAnswerAt.map { now.timeIntervalSince($0) < 1.2 } ?? false)
+                && game.lastAnswer?.outcome == .pass
             VStack {
                 if cheat {
-                    NoticeBanner(title: "⚠️ カンニング ⚠️", message: "画面から目を離しました", trailing: "−1", tint: Theme.warning)
-                        .transition(.move(edge: .top).combined(with: .opacity))
-                } else if answer, let last = game.lastAnswer {
-                    let correct = last.outcome == .correct
-                    NoticeBanner(title: correct ? "正解！" : "パス", message: last.prompt, trailing: correct ? "+1" : nil)
+                    if game.lastCheatWasWarning {
+                        NoticeBanner(title: "⚠️ 顔を上げないで ⚠️", message: "次からは −1 点です", tint: Theme.warning)
+                            .transition(.move(edge: .top).combined(with: .opacity))
+                    } else {
+                        NoticeBanner(title: "⚠️ カンニング ⚠️", message: "画面から目を離しました", trailing: "−1", tint: Theme.warning)
+                            .transition(.move(edge: .top).combined(with: .opacity))
+                    }
+                } else if pass, let last = game.lastAnswer {
+                    NoticeBanner(title: "パス", message: last.prompt)
                         .id(game.lastAnswerAt)
                         .transition(.move(edge: .top).combined(with: .opacity))
                 }
@@ -970,53 +1009,51 @@ struct PlayView: View {
             .padding(.horizontal, 12)
             .padding(.top, 6)
             .animation(.spring(response: 0.4, dampingFraction: 0.82), value: cheat)
-            .animation(.spring(response: 0.4, dampingFraction: 0.82), value: answer)
+            .animation(.spring(response: 0.4, dampingFraction: 0.82), value: pass)
             .allowsHitTesting(false)
         }
     }
 }
 
-// MARK: - 結果（BeReal の投稿と同じ。丸い写真・名前・大きなカード・コメントの並び）
+// MARK: - 結果（種明かし動画が主役。BeReal の投稿のように、丸い顔・大きな動画・共有の列）
 
 struct ResultsView: View {
     let game: Game
-    @State private var shown = 0
-    @State private var player: AVPlayer?
+    /// 当てる人の顔（内側のカメラの 1 枚。なければ山札の 1 文字）
+    let face: CGImage?
+    @State private var player = LoopPlayer()
+    @State private var muted = false
     @State private var message: String?
+    @State private var shown = 0
 
     var body: some View {
-        ZStack(alignment: .bottom) {
-            Color.black.ignoresSafeArea()
-            VStack(spacing: 0) {
-                TopBar {
-                    BarButton(symbol: "xmark", label: "ホームへ") {
-                        player?.pause()
-                        game.backToMenu()
-                    }
-                } trailing: {
-                    Color.clear.frame(width: 44)
+        VStack(spacing: 0) {
+            TopBar {
+                BarButton(symbol: "xmark", label: "ホームへ") {
+                    player.stop()
+                    game.backToMenu()
                 }
-                ScrollView {
-                    VStack(alignment: .leading, spacing: 14) {
-                        header
-                        post
-                        shareRow
-                        caption
-                        turns
-                    }
-                    .padding(.horizontal, 12)
-                    .padding(.top, 8)
-                    .padding(.bottom, 130)
-                }
-                .scrollIndicators(.hidden)
+            } trailing: {
+                Color.clear.frame(width: 44)
             }
+            header
+                .padding(.horizontal, 16)
+                .padding(.bottom, 10)
+            video
+                .padding(.horizontal, 12)
+            prompts
+                .padding(.top, 10)
+            shareRow
+                .padding(.horizontal, 12)
+                .padding(.top, 12)
             again
+                .padding(.horizontal, 16)
+                .padding(.top, 12)
+                .padding(.bottom, 8)
         }
+        .background(Color.black.ignoresSafeArea())
         .task {
-            if let url = game.highlightURL, player == nil {
-                player = AVPlayer(url: url)
-                player?.play()
-            }
+            if let url = game.highlightURL { player.play(url) }
             // 点数を数え上げる
             shown = 0
             for i in 0...max(game.score, 0) {
@@ -1025,37 +1062,63 @@ struct ResultsView: View {
             }
         }
         .onChange(of: game.highlightURL) { _, url in
-            if let url {
-                player = AVPlayer(url: url)
-                player?.play()
-            }
+            if let url { player.play(url) }
         }
+        .onDisappear { player.stop() }
     }
 
-    /// 投稿の頭（丸い写真・名前・いつ）
+    /// 投稿の頭（当てる人の顔・山札・点数は小さく）
     private var header: some View {
         HStack(spacing: 10) {
-            Avatar(text: game.deck.initial, size: 38)
+            Group {
+                if let face {
+                    Image(decorative: face, scale: 1).resizable().scaledToFill()
+                } else if Shot.name != nil {
+                    SampleFace()
+                } else {
+                    Avatar(text: game.deck.initial, size: 40)
+                }
+            }
+            .frame(width: 40, height: 40)
+            .clipShape(Circle())
+            .overlay(Circle().strokeBorder(.white.opacity(0.15), lineWidth: 1))
             VStack(alignment: .leading, spacing: 1) {
                 Text("\(game.deck.title) ・ \(Int(game.roundLength))秒").font(Theme.bold(15))
-                Text(Date.now.formatted(.dateTime.month().day().hour().minute())).font(.system(size: 13, weight: .medium))
+                Text("正解 \(game.correct) ・ パス \(game.turns.filter { $0.outcome == .pass }.count)"
+                     + (game.cheats > 0 ? " ・ カンニング −\(game.cheats)" : ""))
+                    .font(.system(size: 13, weight: .medium))
                     .foregroundStyle(Theme.secondary)
             }
             Spacer()
             HStack(alignment: .firstTextBaseline, spacing: 2) {
-                Text("\(shown)").font(Theme.heavy(30)).contentTransition(.numericText())
-                Text("点").font(Theme.heavy(16))
+                Text("\(shown)").font(Theme.brand(22)).contentTransition(.numericText())
+                Text("点").font(Theme.bold(13))
             }
+            .padding(.horizontal, 12).frame(height: 34)
+            .background(game.isNewBest ? Theme.accent : Theme.surface, in: Capsule())
+            .foregroundStyle(game.isNewBest ? .black : .white)
+            .accessibilityLabel("\(game.score) 点" + (game.isNewBest ? "、自己ベスト" : ""))
         }
-        .padding(.horizontal, 4)
     }
 
-    /// 種明かしの動画（BeReal の写真のカード。できるまでは「投稿して表示」のようにぼかす）
-    private var post: some View {
+    /// 種明かしの動画。画面の主役として、自動で繰り返し流す（押すと消音）
+    private var video: some View {
         ZStack {
             Color(white: 0.08)
-            if let player {
-                VideoPlayer(player: player)
+            if game.highlightURL != nil {
+                PlayerLayerView(player: player.player)
+                    .onTapGesture {
+                        muted.toggle()
+                        player.player.isMuted = muted
+                    }
+                    .overlay(alignment: .bottomTrailing) {
+                        Image(systemName: muted ? "speaker.slash.fill" : "speaker.wave.2.fill")
+                            .font(.system(size: 13, weight: .bold))
+                            .foregroundStyle(.white)
+                            .frame(width: 32, height: 32)
+                            .background(Theme.chip, in: Circle())
+                            .padding(10)
+                    }
             } else if let error = game.highlightError {
                 VStack(spacing: 10) {
                     Image(systemName: "exclamationmark.triangle").font(.system(size: 34, weight: .semibold))
@@ -1074,107 +1137,140 @@ struct ResultsView: View {
                 }
             }
         }
-        .aspectRatio(3 / 4, contentMode: .fit)
-        .frame(maxWidth: .infinity)
+        .aspectRatio(9 / 16, contentMode: .fit)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
         .clipShape(RoundedRectangle(cornerRadius: Theme.cardRadius, style: .continuous))
     }
 
-    /// 共有の丸いボタンの列（BeReal の「Share via・Instagram・メッセージ」）
-    @ViewBuilder
+    /// お題の一覧（横に流れる札）
+    private var prompts: some View {
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: 8) {
+                ForEach(game.turns) { t in
+                    HStack(spacing: 5) {
+                        Image(systemName: t.outcome == .correct ? "checkmark" : "arrow.uturn.right")
+                            .font(.system(size: 11, weight: .heavy))
+                        Text(t.prompt).font(.system(size: 13, weight: .bold))
+                    }
+                    .foregroundStyle(t.outcome == .correct ? .white : Theme.secondary)
+                    .padding(.horizontal, 12).frame(height: 30)
+                    .background(Theme.surface, in: Capsule())
+                }
+            }
+            .padding(.horizontal, 16)
+        }
+        .frame(height: 30)
+    }
+
+    /// 共有の列：TikTok・ストーリーズ・保存・その他。動画には重ねない
     private var shareRow: some View {
-        if let url = game.highlightURL {
-            HStack(spacing: 22) {
+        HStack(spacing: 8) {
+            shareButton("music.note", "TikTok") { await post(open: "tiktok://") }
+            shareButton("circle.dashed.inset.filled", "ストーリーズ") { await post(open: "instagram://story-camera") }
+            shareButton(message == "保存しました" ? "checkmark" : "arrow.down.to.line", "保存") { await post(open: nil) }
+            if let url = game.highlightURL {
                 ShareLink(item: url) {
-                    roundIcon("square.and.arrow.up", "共有")
+                    tile("square.and.arrow.up", "その他")
                 }
                 .buttonStyle(PressStyle())
                 .accessibilityLabel("共有")
-                Button {
-                    Task { message = await Camera.saveVideo(url) }
-                } label: {
-                    roundIcon(message == "保存しました" ? "checkmark" : "square.and.arrow.down", message ?? "写真に保存")
-                }
-                .buttonStyle(PressStyle())
-                .accessibilityLabel("写真に保存")
-                Spacer()
+            } else {
+                tile("square.and.arrow.up", "その他").opacity(0.35)
             }
-            .padding(.horizontal, 6)
         }
+        .overlay(alignment: .top) {
+            if let message {
+                Text(message)
+                    .font(.system(size: 12, weight: .bold))
+                    .padding(.horizontal, 10).frame(height: 24)
+                    .background(Theme.surface, in: Capsule())
+                    .offset(y: -30)
+                    .transition(.opacity)
+            }
+        }
+        .animation(.smooth, value: message)
     }
 
-    private func roundIcon(_ symbol: String, _ title: String) -> some View {
+    private func shareButton(_ symbol: String, _ title: String, action: @escaping () async -> Void) -> some View {
+        Button { Task { await action() } } label: { tile(symbol, title) }
+            .buttonStyle(PressStyle())
+            .disabled(game.highlightURL == nil)
+            .opacity(game.highlightURL == nil ? 0.35 : 1)
+            .accessibilityLabel(title)
+    }
+
+    private func tile(_ symbol: String, _ title: String) -> some View {
         VStack(spacing: 6) {
-            Image(systemName: symbol)
-                .font(.system(size: 20, weight: .semibold))
-                .foregroundStyle(.white)
-                .frame(width: 54, height: 54)
-                .background(Theme.surface, in: Circle())
-            Text(title).font(.system(size: 12, weight: .semibold)).foregroundStyle(.white)
+            Image(systemName: symbol).font(.system(size: 20, weight: .bold))
+            Text(title).font(.system(size: 12, weight: .heavy)).lineLimit(1).minimumScaleFactor(0.8)
         }
+        .foregroundStyle(.white)
+        .frame(maxWidth: .infinity, minHeight: 66)
+        .background(Theme.surface, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
     }
 
-    /// 投稿の説明（点数の内わけ）
-    private var caption: some View {
-        HStack(spacing: 8) {
-            Text("正解 \(game.correct) ・ パス \(game.turns.filter { $0.outcome == .pass }.count)" +
-                 (game.cheats > 0 ? " ・ カンニング −\(game.cheats)" : ""))
-                .font(.system(size: 15, weight: .semibold))
-            if game.isNewBest {
-                Text("自己ベスト")
-                    .font(.system(size: 12, weight: .heavy))
-                    .foregroundStyle(.black)
-                    .padding(.horizontal, 9).frame(height: 24)
-                    .background(.white, in: Capsule())
-            }
+    /// 写真に保存してから、投稿先のアプリを開く（投稿先ではいちばん新しい動画を選ぶだけ）
+    private func post(open app: String?) async {
+        guard let url = game.highlightURL else { return }
+        let result = await Camera.saveVideo(url)
+        message = result
+        guard result == "保存しました", let app, let target = URL(string: app) else { return }
+        if !(await UIApplication.shared.open(target)) {
+            message = "保存しました（アプリが見つかりません）"
         }
-        .padding(.horizontal, 6)
-    }
-
-    /// お題の一覧（BeReal のコメントの並び：太字の名前、灰色の本文）
-    private var turns: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            ForEach(game.turns) { t in
-                HStack(alignment: .firstTextBaseline, spacing: 10) {
-                    Text(t.prompt).font(Theme.bold(15)).foregroundStyle(.white)
-                    Text(detail(t)).font(.system(size: 15)).foregroundStyle(Theme.secondary)
-                    Spacer(minLength: 0)
-                    if let effect = t.effect {
-                        Text(effect.label).font(.system(size: 12, weight: .bold)).foregroundStyle(Theme.tertiary)
-                    }
-                }
-            }
-            Rectangle().fill(Color(white: 0.16)).frame(height: 1).padding(.top, 4)
-        }
-        .padding(.horizontal, 6)
-    }
-
-    private func detail(_ t: Game.Turn) -> String {
-        let outcome = switch t.outcome {
-        case .correct: "正解"
-        case .pass: "パス"
-        case nil: "時間切れ"
-        }
-        guard let end = t.end else { return outcome }
-        return outcome + String(format: " ・ %.1f秒", end - t.start)
     }
 
     /// もう一回（BeReal の白い「遅れて BeReal を投稿する」）
     private var again: some View {
         Button {
-            player?.pause()
+            player.stop()
             game.startRound()
         } label: {
             Label("役を交代してもう一回", systemImage: "arrow.triangle.2.circlepath")
         }
-        .buttonStyle(PillButtonStyle(height: 56))
+        .buttonStyle(PillButtonStyle(height: 54))
         .accessibilityLabel("役を交代してもう一回")
-        .padding(.horizontal, 16)
-        .padding(.top, 30)
-        .padding(.bottom, 8)
-        .background(
-            LinearGradient(colors: [.black.opacity(0), .black.opacity(0.9), .black], startPoint: .top, endPoint: .bottom)
-                .ignoresSafeArea()
-        )
+    }
+}
+
+/// 繰り返し流す動画の再生
+@MainActor
+final class LoopPlayer {
+    let player = AVQueuePlayer()
+    private var looper: AVPlayerLooper?
+    private var url: URL?
+
+    func play(_ url: URL) {
+        guard url != self.url else { return }
+        self.url = url
+        player.removeAllItems()
+        looper = AVPlayerLooper(player: player, templateItem: AVPlayerItem(url: url))
+        player.play()
+    }
+
+    func stop() {
+        player.pause()
+    }
+}
+
+/// 動画を枠いっぱいに出す（再生の操作部品は出さない）
+struct PlayerLayerView: UIViewRepresentable {
+    let player: AVPlayer
+
+    func makeUIView(context: Context) -> PlayerUIView {
+        let view = PlayerUIView()
+        view.playerLayer.player = player
+        view.playerLayer.videoGravity = .resizeAspectFill
+        return view
+    }
+
+    func updateUIView(_ view: PlayerUIView, context: Context) {
+        view.playerLayer.player = player
+    }
+
+    final class PlayerUIView: UIView {
+        override class var layerClass: AnyClass { AVPlayerLayer.self }
+        var playerLayer: AVPlayerLayer { layer as! AVPlayerLayer }
     }
 }
 
@@ -1262,7 +1358,7 @@ struct ActorView: View {
                     let t = context.date.timeIntervalSince(at)
                     let correct = last.outcome == .correct
                     ZStack {
-                        (correct ? Color.white : Color.black).opacity(correct ? 1 : 0.8)
+                        (correct ? Theme.accent : Color.black).opacity(correct ? 1 : 0.8)
                         Text(correct ? "正解！" : "パス")
                             .font(.system(size: 110, weight: .heavy))
                             .foregroundStyle(correct ? .black : .white)

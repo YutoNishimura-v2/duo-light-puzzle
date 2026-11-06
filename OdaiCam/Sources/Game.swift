@@ -33,7 +33,8 @@ final class Game {
     }
 
     private(set) var phase = Phase.menu
-    var deck = Deck.builtIn[0]
+    // 最初に開いたときは「動物」・60 秒・しばりおまかせ（effectsOn = true、fixedEffect = nil）
+    var deck = Deck.builtIn.first(where: { $0.id == "animal" }) ?? Deck.builtIn[0]
     var roundLength = 60.0
     private(set) var turns: [Turn] = []
     private(set) var remaining = 0.0
@@ -57,9 +58,16 @@ final class Game {
     var fixedEffect: Effect?
     /// 内側のカメラで当てる人を見張る（顔を上げて本人を見たら減点）
     var cheatGuard = true
+    /// 減点したカンニングの数（1 回目の注意は入らない）
     private(set) var cheats = 0
-    /// 直前にカンニングした時刻（画面に「カンニング！」を一瞬出す）
+    /// 注意だけで済ませたカンニングの数（ラウンドの 1 回目）
+    private(set) var cheatWarnings = 0
+    /// 直前にカンニングした時刻（画面に「カンニング！」を一瞬出す）。注意のときも入る
     private(set) var lastCheat: Date?
+    /// 直前のカンニングが注意だけ（減点なし）だったか。画面の文言を変えるのに使う
+    private(set) var lastCheatWasWarning = false
+    /// 1 回見上げて減点は 1 回まで（見張り側でも止めているが、念のためここでも間をあける）
+    static let cheatCooldown: TimeInterval = 3
 
     var current: Turn? { phase == .playing ? turns.last : nil }
     var correct: Int { turns.filter { $0.outcome == .correct }.count }
@@ -84,7 +92,9 @@ final class Game {
         guard phase == .menu || phase == .results else { return }
         turns = []
         cheats = 0
+        cheatWarnings = 0
         lastCheat = nil
+        lastCheatWasWarning = false
         lastAnswer = nil
         lastAnswerAt = nil
         isNewBest = false
@@ -102,6 +112,7 @@ final class Game {
                 try? await Task.sleep(for: .seconds(1))
             }
             phase = .playing
+            Sound.go()
             CrashLog.mark("プレイ開始")
             if cheatGuard { onWatch?(true) }
             nextPrompt()
@@ -127,11 +138,22 @@ final class Game {
         answer(.correct)
     }
 
+    /// 見張りから。ラウンドの 1 回目は注意だけ、2 回目から 1 点引く
     func cheated() {
         guard phase == .playing else { return }
-        cheats += 1
-        lastCheat = Date()
-        answerFeedback.notificationOccurred(.error)
+        let date = Date()
+        if let lastCheat, date.timeIntervalSince(lastCheat) < Self.cheatCooldown { return }
+        if cheatWarnings == 0 {
+            cheatWarnings += 1
+            lastCheatWasWarning = true
+            answerFeedback.notificationOccurred(.warning)
+        } else {
+            cheats += 1
+            lastCheatWasWarning = false
+            answerFeedback.notificationOccurred(.error)
+        }
+        lastCheat = date
+        CrashLog.mark(lastCheatWasWarning ? "カンニング（注意）" : "カンニング（−1）")
         Sound.buzzer()
     }
 
@@ -174,7 +196,7 @@ final class Game {
         building = true
         Task {
             do {
-                highlightURL = try await Highlight.make(raw: url, seen: recordings.seen, front: recordings.front, clips: clips)
+                highlightURL = try await Highlight.make(raw: url, seen: recordings.seen, front: recordings.front, clips: clips, score: score)
             } catch {
                 var message = "ハイライトを作れませんでした: \(Self.describe(error))"
                 // 試験用：どこで失敗するかを絞るため、部品を外して作り直してみる
@@ -221,6 +243,7 @@ final class Game {
             turns.append(Turn(prompt: "コアラ", effect: .stick, start: 40))
             phase = .playing
         case "results":
+            cheatWarnings = 1
             cheats = 1
             isNewBest = true
             phase = .results
