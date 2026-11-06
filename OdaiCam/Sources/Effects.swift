@@ -5,8 +5,10 @@ import UIKit
 import Vision
 import VideoToolbox
 
-/// 当てる人に見せる映りのしばり。最初は 5 つに絞る
+/// 当てる人に見せる映りのしばり（おまけ。基本はしばりなしで、人そのものを見せる）。
+/// 並びはホームのモード列の順。背景を変えるもの → 姿を変えるもの
 enum Effect: String, CaseIterable, Identifiable, Sendable {
+    case space, sea, classroom, stage
     case stick, silhouette, mosaic, delay, peephole
 
     var id: String { rawValue }
@@ -14,11 +16,23 @@ enum Effect: String, CaseIterable, Identifiable, Sendable {
     /// 日本語の名前。訳の表（Localizable.strings）の鍵にもなる
     var name: String {
         switch self {
+        case .space: "宇宙"
+        case .sea: "海"
+        case .classroom: "教室"
+        case .stage: "ステージ"
         case .stick: "棒人間"
         case .silhouette: "影絵"
         case .mosaic: "モザイク"
         case .delay: "3秒遅れ"
         case .peephole: "のぞき穴"
+        }
+    }
+
+    /// 人はそのまま映し、うしろの景色だけ差し替える
+    var isBackground: Bool {
+        switch self {
+        case .space, .sea, .classroom, .stage: true
+        default: false
         }
     }
 
@@ -104,7 +118,7 @@ final class EffectEngine: @unchecked Sendable {
     static let seenLog = SeenLog()
     /// 棒人間：この数以上の関節が見つかれば人が映っていたことにする
     static let minJoints = 5
-    /// 影絵：人の形が画面のこの割合より多ければ映っていたことにする
+    /// 影絵・背景：人の形が画面のこの割合より多ければ映っていたことにする
     static let minCoverage = 0.02
 
     private let queue = DispatchQueue(label: "effects", qos: .userInitiated)
@@ -118,6 +132,8 @@ final class EffectEngine: @unchecked Sendable {
     /// しばりが変わったら、次の処理で history を空にする（lock で守る）
     private var clearHistory = false
     private var lastHistory: TimeInterval = 0
+    /// 背景の絵（一度描いたら使い回す）。effects キューだけで触る
+    private var backgrounds: [Effect: (size: CGSize, image: CIImage)] = [:]
 
     private let bodyRequest = VNDetectHumanBodyPoseRequest()
     private let personRequest: VNGeneratePersonSegmentationRequest = {
@@ -174,11 +190,14 @@ final class EffectEngine: @unchecked Sendable {
 
     // MARK: しばりごとの絵
 
-    /// visible は人が映っていたか（棒人間と影絵だけ見分ける。ほかはいつも映っている）
+    /// visible は人が映っていたか（棒人間・影絵・背景だけ見分ける。ほかはいつも映っている）
     /// frameTime はフレームの時刻（デモでは、この時刻の役者の骨組み・型抜きを使う）
     private func render(_ effect: Effect, input: CIImage, source: CVPixelBuffer, now: TimeInterval, elapsed: TimeInterval,
                         frameTime: TimeInterval) -> (image: CIImage, visible: Bool) {
         let black = CIImage(color: .black).cropped(to: input.extent)
+        if effect.isBackground {
+            return backdrop(effect, source: source, input: input, frameTime: frameTime, black: black)
+        }
         switch effect {
         case .stick:
             let stick = stickFigure(source: source, size: input.extent.size, frameTime: frameTime)
@@ -193,7 +212,7 @@ final class EffectEngine: @unchecked Sendable {
 
     private func plain(_ effect: Effect, input: CIImage, now: TimeInterval, elapsed: TimeInterval, black: CIImage) -> CIImage {
         switch effect {
-        case .stick, .silhouette:
+        case .stick, .silhouette, .space, .sea, .classroom, .stage:
             return black
         case .mosaic:
             // 最初は粗く、25 秒かけて細かくなる（早く当てるほど難しい画面で当てたことになる）
@@ -236,8 +255,8 @@ final class EffectEngine: @unchecked Sendable {
         return history.first { now - $0.t <= Self.delaySeconds }?.image
     }
 
-    /// found は人の形が画面に十分あったか
-    private func silhouette(source: CVPixelBuffer, input: CIImage, frameTime: TimeInterval) -> (image: CIImage?, found: Bool) {
+    /// 人の形の型抜き（白が人、input の大きさ）。found は人の形が画面に十分あったか
+    private func personMask(source: CVPixelBuffer, input: CIImage, frameTime: TimeInterval) -> (mask: CIImage?, found: Bool) {
         let handler = VNImageRequestHandler(cvPixelBuffer: source)
         try? handler.perform([personRequest])
         var mask: CIImage?
@@ -253,12 +272,41 @@ final class EffectEngine: @unchecked Sendable {
             mask = demo
             found = true
         }
-        guard let mask else { return (nil, false) }
+        return (mask, found)
+    }
+
+    /// found は人の形が画面に十分あったか
+    private func silhouette(source: CVPixelBuffer, input: CIImage, frameTime: TimeInterval) -> (image: CIImage?, found: Bool) {
+        let person = personMask(source: source, input: input, frameTime: frameTime)
+        guard let mask = person.mask else { return (nil, false) }
         let blend = CIFilter.blendWithMask()
         blend.inputImage = CIImage(color: CIColor(red: 0.05, green: 0.05, blue: 0.08)).cropped(to: input.extent)
         blend.backgroundImage = CIImage(color: CIColor(red: 0.96, green: 0.93, blue: 0.85)).cropped(to: input.extent)
         blend.maskImage = mask
-        return (blend.outputImage, found)
+        return (blend.outputImage, person.found)
+    }
+
+    /// 本物の人（カメラの画素そのまま）を、描いておいた背景の上に切り抜いて置く。
+    /// 人が見つからないときは背景だけ（visible は false）
+    private func backdrop(_ effect: Effect, source: CVPixelBuffer, input: CIImage, frameTime: TimeInterval,
+                          black: CIImage) -> (image: CIImage, visible: Bool) {
+        let size = input.extent.size
+        var background = black
+        if let cached = backgrounds[effect], cached.size == size {
+            background = cached.image
+        } else if let cg = Backdrop.image(effect, size: size) {
+            background = CIImage(cgImage: cg)
+            backgrounds[effect] = (size, background)
+        }
+        let person = personMask(source: source, input: input, frameTime: frameTime)
+        guard let mask = person.mask else { return (background, false) }
+        // 縁を少しだけぼかして、切り抜きのギザギザを目立たなくする
+        let soft = mask.clampedToExtent().applyingGaussianBlur(sigma: 1.5).cropped(to: input.extent)
+        let blend = CIFilter.blendWithMask()
+        blend.inputImage = input
+        blend.backgroundImage = background
+        blend.maskImage = soft
+        return (blend.outputImage ?? background, person.found)
     }
 
     /// 人の形の割合（0〜1）。8 ビットの型抜きを 4 画素おきに数える

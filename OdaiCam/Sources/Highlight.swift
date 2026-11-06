@@ -171,7 +171,7 @@ enum Highlight {
             if seenFor < 0.4 { seenFor = 0 }
             return Plan(index: i, clip: clip, from: from, to: to, seenLength: seenFor)
         }
-        /// 見えていた画面に 1 秒以上なにも映っていない（棒人間・影絵が人を見つけられなかった）
+        /// 見えていた画面に 1 秒以上なにも映っていない（棒人間・影絵・背景が人を見つけられなかった）
         func blank(_ clip: Clip) -> Bool {
             seenSource != nil && clip.effect != nil && clip.seenQuality.hasEmptyGap
         }
@@ -673,7 +673,7 @@ enum Highlight {
     private static func overlayParts(size: CGSize, pieces: [Piece], wipe: CGRect?, score: Int, unit unitText: String) -> Overlay {
         let w = size.width, h = size.height
         let parts = Overlay(size: size)
-        // 色は棒人間の黄色ひとつだけ。種明かしの瞬間にだけ使う
+        // 色はブランドの黄色ひとつだけ。種明かしの瞬間にだけ使う
         let yellow = UIColor(red: 1, green: 0.87, blue: 0.43, alpha: 1)
         // CALayer の shadowRadius 12 と同じくらいのぼかし（Core Graphics のぼかしは倍の数で同じくらい）
         let shadowBlur: CGFloat = 24

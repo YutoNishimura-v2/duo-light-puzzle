@@ -4,7 +4,10 @@ import XCTest
 /// 実機で出た不具合（カウントダウン直後に落ちる、しばりを選ぶとボタンが画面の外に出る）を渡す前に見つけるため
 final class OdaiCamUITests: XCTestCase {
     /// ホームのモード列（左から順に押す。押すと中央に寄るので、隣は画面の中にある）
-    static let modes = ["おまかせ", "棒人間", "影絵", "モザイク", "3秒遅れ", "のぞき穴", "しばりなし"]
+    /// 起動したときはしばりなし（先頭）が選ばれている
+    static let modes = ["しばりなし", "宇宙", "海", "教室", "ステージ", "棒人間", "影絵", "モザイク", "3秒遅れ", "のぞき穴", "おまかせ"]
+    /// 1 ラウンド遊ぶモード。背景はどれも同じ処理なので宇宙だけ（ラウンドが増えると CI の 20 分に収まらない）
+    static let roundModes: Set<String> = ["しばりなし", "宇宙", "棒人間", "影絵", "モザイク", "3秒遅れ", "のぞき穴", "おまかせ"]
     /// 1 ラウンドの秒数（起動引数で短くする）
     static let roundSeconds = 15
     /// シミュレータの言葉に関係なく、アプリを日本語で動かす（ボタンは日本語の名前で探すため。山札も日本語になる）
@@ -70,18 +73,21 @@ final class OdaiCamUITests: XCTestCase {
         XCTAssertTrue(time.waitForExistence(timeout: 5), "時間のボタンがない")
         for _ in 0..<3 where !time.label.hasPrefix("30") { time.tap() }
         XCTAssertTrue(time.label.hasPrefix("30"), "30 秒にできない：\(time.label)")
-        for (i, mode) in Self.modes.enumerated() {
+        var first = true
+        for mode in Self.modes {
             // 落ちたら、残りのラウンドは飛ばす
             guard app.state == .runningForeground else {
                 XCTFail("アプリが落ちたので \(mode) から先は飛ばす")
                 return
             }
+            // 遊ばないモードも順に押す（押すと中央に寄るので、次のモードが画面の中に来る）
             tapMode(mode)
             sleep(1)
+            guard Self.roundModes.contains(mode) else { continue }
             XCTContext.runActivity(named: "ラウンド：\(mode)") { _ in
                 app.buttons["あそぶ"].tap()
                 playRound(mode)
-                if i == 0 {
+                if first {
                     // 1 回目だけ「役を交代してもう一回」も通す
                     app.buttons["役を交代してもう一回"].tap()
                     playRound("\(mode)-2回目")
@@ -90,6 +96,7 @@ final class OdaiCamUITests: XCTestCase {
                 XCTAssertTrue(app.buttons["あそぶ"].waitForExistence(timeout: 10), "\(mode)：ホームに戻れない")
                 shot("\(mode)-home")
             }
+            first = false
         }
     }
 
@@ -104,6 +111,12 @@ final class OdaiCamUITests: XCTestCase {
         XCTAssertTrue(app.buttons["あそぶ"].waitForExistence(timeout: 20), "ホームが出ない")
         sleep(3)
         shot("demo-home")
+        // 起動したときはしばりなし。種明かしに見えていた画面も入るよう、おまかせ（列の最後）まで順に押す
+        for mode in Self.modes {
+            tapMode(mode)
+            sleep(1)
+        }
+        shot("demo-home-random")
         for round in 1...3 {
             XCTContext.runActivity(named: "デモ \(round) ラウンド目") { _ in
                 if round == 1 {

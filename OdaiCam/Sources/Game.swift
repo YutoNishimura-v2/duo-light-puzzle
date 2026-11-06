@@ -33,7 +33,7 @@ final class Game {
     }
 
     private(set) var phase = Phase.menu
-    // 最初に開いたときは「動物」・60 秒・しばりおまかせ（effectsOn = true、fixedEffect = nil）
+    // 最初に開いたときは「動物」・60 秒・しばりなし（effectsOn = false）。主役は人そのもの、しばりはおまけ
     var deck = Deck.defaultForDevice
     var roundLength = 60.0
     private(set) var turns: [Turn] = []
@@ -52,8 +52,8 @@ final class Game {
     var voiceJudge = true
     /// 聞き取った言葉（当てる人に小さく見せる）
     private(set) var heard = ""
-    /// 見え方しばり。当てる人はカメラ越しのしばられた画面だけで当てる
-    var effectsOn = true
+    /// 見え方しばり（おまけ）。オンのとき、当てる人はカメラ越しのしばられた画面だけで当てる
+    var effectsOn = false
     /// nil ならおまかせ（お題ごとにくじ）
     var fixedEffect: Effect?
     /// 内側のカメラで当てる人を見張る（顔を上げて本人を見たら減点）
@@ -267,8 +267,8 @@ final class Game {
     /// 画面の確認用（起動引数 -shot）。カメラなしで各画面の状態を作る
     func loadPreview(_ shot: String) {
         let sample: [(String, Effect?, Outcome)] = [
-            ("ゴリラ", .stick, .correct), ("ペンギン", .silhouette, .correct), ("カンガルー", .mosaic, .pass),
-            ("フラミンゴ", .peephole, .correct), ("ナマケモノ", .delay, .correct),
+            ("ゴリラ", nil, .correct), ("ペンギン", .space, .correct), ("カンガルー", nil, .pass),
+            ("フラミンゴ", .stage, .correct), ("ナマケモノ", .silhouette, .correct),
         ]
         turns = sample.enumerated().map { i, t in
             Turn(prompt: t.0, effect: t.1, start: Double(i) * 8, end: Double(i) * 8 + 6, outcome: t.2)
@@ -278,7 +278,18 @@ final class Game {
         switch shot {
         case "countdown": phase = .countdown(3)
         case "play":
-            turns.append(Turn(prompt: "コアラ", effect: .stick, start: 40))
+            // 主役は人そのもの（しばりなし）
+            turns.append(Turn(prompt: "コアラ", effect: nil, start: 40))
+            phase = .playing
+        case "home-bg":
+            // 背景を宇宙に変えたホーム
+            effectsOn = true
+            fixedEffect = .space
+            phase = .menu
+        case "play-bg":
+            effectsOn = true
+            fixedEffect = .space
+            turns.append(Turn(prompt: "コアラ", effect: .space, start: 40))
             phase = .playing
         case "results":
             cheatWarnings = 1

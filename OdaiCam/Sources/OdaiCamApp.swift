@@ -130,7 +130,7 @@ struct GuesserView: View {
                 if shot == "howto" { showHowTo = true }
                 return
             }
-            // 説明の画面は挟まない。起動したらすぐカメラを動かし、自分が棒人間になって見えるようにする
+            // 説明の画面は挟まない。起動したらすぐカメラを動かし、相手に見える自分の姿をそのまま見せる
             await startCamera()
         }
         .onChange(of: scenePhase) { _, phase in
@@ -155,11 +155,11 @@ struct GuesserView: View {
         .onDisappear { camera.stop() }
     }
 
-    /// ホームで見せるしばり。おまかせのときは、棒人間 → 影絵 → モザイクを順に見せる
+    /// ホームで見せるしばり。おまかせのときは、背景と姿のしばりを交互に順に見せる（3 秒遅れはホームでは分かりにくいので除く）
     private var previewEffect: Effect? {
         guard game.phase == .menu, game.effectsOn else { return nil }
         if let fixed = game.fixedEffect { return fixed }
-        let cycle: [Effect] = [.stick, .silhouette, .mosaic]
+        let cycle: [Effect] = [.space, .silhouette, .sea, .mosaic, .stage, .stick, .classroom, .peephole]
         return cycle[previewCycle % cycle.count]
     }
 
@@ -349,7 +349,26 @@ struct EffectFrame: View {
     }
 }
 
-/// 画面の確認用の、しばりをかけた絵の代わり
+/// 画面の確認用の、しばりをかけた絵の代わり。背景のしばりは本物の背景の上に人の形を置く
+struct SampleSeen: View {
+    let effect: Effect?
+
+    var body: some View {
+        if let effect, effect.isBackground, let background = Backdrop.image(effect, size: CGSize(width: 540, height: 960)) {
+            EffectFrame(image: background)
+                .overlay {
+                    Image(systemName: "figure.arms.open")
+                        .font(.system(size: 260, weight: .regular))
+                        .foregroundStyle(Color(red: 0.93, green: 0.43, blue: 0.33))
+                        .shadow(color: .black.opacity(0.4), radius: 12, y: 6)
+                }
+        } else {
+            SampleStick()
+        }
+    }
+}
+
+/// 画面の確認用の、姿のしばり（棒人間など）の代わり
 struct SampleStick: View {
     var body: some View {
         Image(systemName: "figure.dance")
@@ -388,10 +407,12 @@ struct HowToView: View {
                     .padding(.bottom, 6)
                     row("theatermasks", "お題は外側の画面に",
                         "Duo を開いて持つ人が当てる役。外側の画面の前に立つ人だけがお題を見て、声を出さずに演じます。")
-                    row("figure.stand", "見えるのは画面越しだけ",
-                        "当てる人には、棒人間や影絵に変わった姿しか見えません。顔を上げて直接見るとカンニング。1 回目は注意、2 回目から −1 点。")
+                    row("camera.fill", "見えるのは画面越しだけ",
+                        "当てる人はカメラに映った姿だけで当てます。顔を上げて直接見るとカンニング。1 回目は注意、2 回目から −1 点。")
                     row("waveform", "答えは声に出すだけ",
                         "合っていれば自動で次のお題へ。")
+                    row("sparkles", "しばりはおまけ",
+                        "背景を宇宙や教室に変えたり、棒人間や影絵にしたり。いつもと違う姿で、もっとばかばかしく。")
                     row("play.rectangle", "最後に種明かし",
                         "見えていた画面と本当の演技を並べた動画ができます。そのまま TikTok やストーリーズに。")
                 }
@@ -448,7 +469,8 @@ struct HomeView: View {
         }
     }
 
-    private let modes: [Mode] = [.random] + Effect.allCases.map { .fixed($0) } + [.none]
+    /// しばりなしが先頭（主役は人そのもの）。しばりはおまけで、背景 → 姿の順、おまかせは最後
+    private let modes: [Mode] = [.none] + Effect.allCases.map { .fixed($0) } + [.random]
     private static let lengths: [Double] = [30, 60, 90]
 
     private var mode: Mode {
@@ -475,11 +497,11 @@ struct HomeView: View {
 
             Viewfinder(wipe: wipe, showWipe: innerReady) {
                 ZStack {
-                    // 選んだしばりをその場でかけて見せる（おまかせは棒人間）
+                    // 選んだしばりをその場でかけて見せる（しばりなしは下に敷いたカメラがそのまま見える）
                     if let seenFrame, game.effectsOn {
                         EffectFrame(image: seenFrame)
                     } else if Shot.name != nil, game.effectsOn {
-                        SampleStick()
+                        SampleSeen(effect: game.fixedEffect ?? .space)
                     }
                     VStack {
                         Spacer()
@@ -1036,7 +1058,7 @@ struct PlayView: View {
                         if let seenFrame {
                             EffectFrame(image: seenFrame)
                         } else if Shot.name != nil {
-                            SampleStick()
+                            SampleSeen(effect: game.current?.effect)
                         } else {
                             // 最初のしばりの画面が届くまでは、本人の映像を見せない
                             Color.black
@@ -1209,7 +1231,7 @@ struct ResultsView: View {
                 } else if Shot.name != nil {
                     SampleFace()
                 } else {
-                    Image(systemName: "figure.stand")
+                    Image(systemName: "person.fill")
                         .font(.system(size: 20, weight: .bold))
                         .foregroundStyle(.black)
                         .frame(width: 40, height: 40)

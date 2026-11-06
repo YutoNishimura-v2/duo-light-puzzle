@@ -3,9 +3,9 @@ import SwiftUI
 /// 見た目の決まり。BeReal. に合わせる：
 /// 真っ黒な地、白い太字のロゴ（末尾にピリオド）、角の丸いファインダーと左上の内カメの小窓、
 /// 白い輪のシャッター、灰色の丸い札、選んだものだけ白いカード。
-/// 差し色は棒人間の黄色ひとつだけ。正解の瞬間・残り 10 秒・種明かしの帯にだけ使う
+/// 差し色はブランドの黄色ひとつだけ。正解の瞬間・残り 10 秒・種明かしの帯にだけ使う
 enum Theme {
-    /// 棒人間の線と同じ黄色
+    /// ブランドの差し色（黄色）
     static let accent = Color(red: 1, green: 0.87, blue: 0.43)
     static let background = Color.black
     /// 行・カード（BeReal の設定やシートの濃い灰色）
@@ -81,6 +81,10 @@ extension Deck {
 extension Effect {
     var symbol: String {
         switch self {
+        case .space: "moon.stars.fill"
+        case .sea: "water.waves"
+        case .classroom: "graduationcap.fill"
+        case .stage: "music.mic"
         case .stick: "figure.stand"
         case .silhouette: "person.fill"
         case .mosaic: "square.grid.3x3.fill"
@@ -91,6 +95,10 @@ extension Effect {
 
     var hint: String {
         switch self {
+        case .space: String(localized: "宇宙に浮かんで見える")
+        case .sea: String(localized: "海の中にいるように見える")
+        case .classroom: String(localized: "黒板の前に立って見える")
+        case .stage: String(localized: "スポットライトのステージに立つ")
         case .stick: String(localized: "骨組みの線だけが見える")
         case .silhouette: String(localized: "真っ黒な影だけが見える")
         case .mosaic: String(localized: "粗いモザイクが少しずつ晴れる")
@@ -165,7 +173,7 @@ struct PillButtonStyle: ButtonStyle {
     var primary = true
     var height: CGFloat = 54
     var fontSize: CGFloat = 17
-    /// 白の代わりに使う地の色（正解のボタンは棒人間の黄色）
+    /// 白の代わりに使う地の色（正解のボタンは差し色の黄色）
     var fill: Color = .white
 
     func makeBody(configuration: Configuration) -> some View {

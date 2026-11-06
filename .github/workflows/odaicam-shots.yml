@@ -83,7 +83,7 @@ jobs:
           # 日本語と英語の両方で撮る（英語は名前の後ろに -en）
           for lang in ja en; do
             suffix=""; [ "$lang" = en ] && suffix="-en"
-            for s in welcome home play countdown results settings decks howto; do
+            for s in welcome home home-bg play play-bg countdown results settings decks howto; do
               xcrun simctl launch --terminate-running-process "$UDID" io.github.yutonishimura-v2.odaicam \
                 -AppleLanguages "($lang)" -shot "$s"
               sleep 6

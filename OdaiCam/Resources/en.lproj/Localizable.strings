@@ -16,6 +16,14 @@
 "粗いモザイクが少しずつ晴れる" = "Chunky pixels slowly clear up";
 "3 秒前の動きが見える" = "You see moves from 3 seconds ago";
 "小さな丸い窓だけがうろつく" = "Only a tiny roaming circle shows";
+"宇宙" = "Space";
+"海" = "Under the sea";
+"教室" = "Classroom";
+"ステージ" = "Stage";
+"宇宙に浮かんで見える" = "You're floating in space";
+"海の中にいるように見える" = "You're deep under the sea";
+"黒板の前に立って見える" = "You're up at the chalkboard";
+"スポットライトのステージに立つ" = "You're in the spotlight on stage";
 "おまかせ" = "Random";
 "しばりなし" = "No filter";
 "毎回ちがう姿で見える" = "A different look every time";
@@ -38,7 +46,9 @@
 "お題は外側の画面に" = "The prompt is on the outer screen";
 "Duo を開いて持つ人が当てる役。外側の画面の前に立つ人だけがお題を見て、声を出さずに演じます。" = "Whoever holds the open Duo is the guesser. Only the person in front of the outer screen sees the prompt and acts it out without a sound.";
 "見えるのは画面越しだけ" = "You only see them through the screen";
-"当てる人には、棒人間や影絵に変わった姿しか見えません。顔を上げて直接見るとカンニング。1 回目は注意、2 回目から −1 点。" = "The guesser only sees a stick figure, a silhouette, or another filter. Looking up at the actor is peeking: a warning the first time, then −1 point.";
+"当てる人はカメラに映った姿だけで当てます。顔を上げて直接見るとカンニング。1 回目は注意、2 回目から −1 点。" = "The guesser only sees the actor through the camera. Looking up at the actor is peeking: a warning the first time, then −1 point.";
+"しばりはおまけ" = "Filters are a bonus";
+"背景を宇宙や教室に変えたり、棒人間や影絵にしたり。いつもと違う姿で、もっとばかばかしく。" = "Swap the background for outer space or a classroom, or turn into a stick figure or a silhouette. Same game, even sillier.";
 "答えは声に出すだけ" = "Just say your answer";
 "合っていれば自動で次のお題へ。" = "Get it right and the next prompt comes up on its own.";
 "最後に種明かし" = "The big reveal";
