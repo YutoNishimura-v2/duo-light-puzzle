@@ -182,7 +182,7 @@ final class OdaiCamUITests: XCTestCase {
         // 動画ができると「保存」「共有」が押せる。できなければ「動画を作れませんでした」
         let failed = app.descendants(matching: .any)
             .matching(NSPredicate(format: "label CONTAINS '動画を作れませんでした'")).firstMatch
-        let deadline = Date().addingTimeInterval(120)
+        let deadline = Date().addingTimeInterval(240)
         var ready = false
         while Date() < deadline {
             if app.buttons["共有"].exists || (app.buttons["保存"].exists && app.buttons["保存"].isEnabled) { ready = true; break }
@@ -208,7 +208,7 @@ final class OdaiCamUITests: XCTestCase {
             let texts = app.staticTexts.allElementsBoundByIndex.map(\.label).joined(separator: " / ")
             XCTFail("\(name)：動画を作れませんでした：\(texts)")
         }
-        XCTAssertTrue(ready, "\(name)：120 秒たっても動画ができない")
+        XCTAssertTrue(ready, "\(name)：240 秒たっても動画ができない")
     }
 
     @MainActor

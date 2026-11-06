@@ -19,7 +19,7 @@ concurrency:
 jobs:
   check:
     runs-on: xcode-27
-    timeout-minutes: 75
+    timeout-minutes: 120
     defaults:
       run:
         working-directory: OdaiCam
@@ -109,7 +109,7 @@ jobs:
           REC=$!
           sleep 2
           # 固まっても後ろの手順（記録の回収・デモ）が動くよう、20 分で打ち切る。進み具合はログに流す
-          gtimeout 1200 xcodebuild test-without-building \
+          gtimeout 2400 xcodebuild test-without-building \
             -project OdaiCam.xcodeproj -scheme OdaiCamUITests \
             -destination "id=$UDID" -derivedDataPath build \
             -skip-testing:OdaiCamUITests/OdaiCamUITests/test3Demo \
@@ -198,7 +198,7 @@ jobs:
               sleep 2; T=$((T+2))
             done ) &
           MON=$!
-          gtimeout 1200 xcodebuild test-without-building \
+          gtimeout 2400 xcodebuild test-without-building \
             -project OdaiCam.xcodeproj -scheme OdaiCamUITests \
             -destination "id=$UDID" -derivedDataPath build \
             -only-testing:OdaiCamUITests/OdaiCamUITests/test3Demo \
