@@ -22,8 +22,84 @@ enum Effect: String, CaseIterable, Identifiable, Sendable {
     }
 }
 
+/// しばりの画面に人が映っていたかのまとめ（ハイライトでお題を選ぶのに使う）
+struct SeenQuality: Sendable, Equatable {
+    /// 人が映っていた時間の割合（0〜1）
+    var visibleFraction: Double
+    /// 人が映っていなかった時間の、いちばん長い続き（秒）
+    var longestEmpty: Double
+    /// 1 秒以上なにも映らない時間があった（種明かしが空の画面になる）
+    var hasEmptyGap: Bool { longestEmpty >= 1 }
+
+    /// しばりなし・記録なしのときは全部映っていたことにする
+    static let full = SeenQuality(visibleFraction: 1, longestEmpty: 0)
+}
+
+/// しばりの画面に人が映っていたかの記録。時刻は録画と同じ時計（systemUptime と同じ、フレームの時刻）の秒
+final class SeenLog: @unchecked Sendable {
+    private let lock = NSLock()
+    private var samples: [(t: TimeInterval, visible: Bool)] = []
+    /// 記録は 10 回/秒まで（映り方が変わったときだけは間をあけずに残す）
+    static let interval = 0.1
+    /// これより間があいたら、そのあいだは映っていなかったことにする（絵が出ていない）
+    static let stale = 0.5
+
+    /// ラウンドの頭で空にする
+    func reset() {
+        lock.withLock { samples.removeAll() }
+    }
+
+    func add(_ t: TimeInterval, visible: Bool) {
+        lock.withLock {
+            if let last = samples.last {
+                if t < last.t { return }
+                if t - last.t < Self.interval && last.visible == visible { return }
+            }
+            samples.append((t, visible))
+            // 長いラウンドでも増えすぎないように（10 分ぶん程度で古いものから捨てる）
+            if samples.count > 6000 { samples.removeFirst(1000) }
+        }
+    }
+
+    /// from〜to（録画と同じ時計の秒）に人が映っていた割合と、映っていなかったいちばん長い続き
+    func quality(from: TimeInterval, to: TimeInterval) -> SeenQuality {
+        guard to > from else { return .full }
+        let list = lock.withLock { samples }
+        let step = 0.05
+        var visible = 0.0, run = 0.0, longest = 0.0
+        var i = 0
+        var t = from
+        // 区間を 0.05 秒ずつ刻み、そのときの直前の記録で映っていたかを見る
+        while t < to {
+            while i < list.count && list[i].t <= t { i += 1 }
+            var on = false
+            if i > 0 {
+                let last = list[i - 1]
+                on = last.visible && t - last.t < Self.stale
+            }
+            let d = min(step, to - t)
+            if on {
+                visible += d
+                run = 0
+            } else {
+                run += d
+                longest = max(longest, run)
+            }
+            t += step
+        }
+        return SeenQuality(visibleFraction: min(visible / (to - from), 1), longestEmpty: longest)
+    }
+}
+
 /// 背面カメラのフレームにしばりをかける。重い処理なので専用のキューで、追いつかないフレームは捨てる
 final class EffectEngine: @unchecked Sendable {
+    /// しばりの画面に人が映っていたかの記録（ラウンド終わりに Game が読む）
+    static let seenLog = SeenLog()
+    /// 棒人間：この数以上の関節が見つかれば人が映っていたことにする
+    static let minJoints = 5
+    /// 影絵：人の形が画面のこの割合より多ければ映っていたことにする
+    static let minCoverage = 0.02
+
     private let queue = DispatchQueue(label: "effects", qos: .userInitiated)
     private let lock = NSLock()
     private let context = CIContext(options: [.cacheIntermediates: false])
@@ -76,8 +152,10 @@ final class EffectEngine: @unchecked Sendable {
             if clear { history.removeAll() }
             let now = ProcessInfo.processInfo.systemUptime
             let input = Self.downscaled(CIImage(cvPixelBuffer: buffer))
-            let output = render(effect, input: input, source: buffer, now: now, elapsed: now - start)
-                .cropped(to: input.extent)
+            let rendered = render(effect, input: input, source: buffer, now: now, elapsed: now - start)
+            // 人が映っていたかを、録画と同じフレームの時刻で残す
+            Self.seenLog.add(time.seconds, visible: rendered.visible)
+            let output = rendered.image.cropped(to: input.extent)
             guard let pb = makeBuffer(size: input.extent.size) else { return }
             context.render(output, to: pb)
             onPixelBuffer?(pb, time)
@@ -89,13 +167,25 @@ final class EffectEngine: @unchecked Sendable {
 
     // MARK: しばりごとの絵
 
-    private func render(_ effect: Effect, input: CIImage, source: CVPixelBuffer, now: TimeInterval, elapsed: TimeInterval) -> CIImage {
+    /// visible は人が映っていたか（棒人間と影絵だけ見分ける。ほかはいつも映っている）
+    private func render(_ effect: Effect, input: CIImage, source: CVPixelBuffer, now: TimeInterval, elapsed: TimeInterval) -> (image: CIImage, visible: Bool) {
         let black = CIImage(color: .black).cropped(to: input.extent)
         switch effect {
         case .stick:
-            return stickFigure(source: source, size: input.extent.size) ?? black
+            let stick = stickFigure(source: source, size: input.extent.size)
+            return (stick.image ?? black, stick.found)
         case .silhouette:
-            return silhouette(source: source, input: input) ?? black
+            let shadow = silhouette(source: source, input: input)
+            return (shadow.image ?? black, shadow.found)
+        default:
+            return (plain(effect, input: input, now: now, elapsed: elapsed, black: black), true)
+        }
+    }
+
+    private func plain(_ effect: Effect, input: CIImage, now: TimeInterval, elapsed: TimeInterval, black: CIImage) -> CIImage {
+        switch effect {
+        case .stick, .silhouette:
+            return black
         case .mosaic:
             // 最初は粗く、25 秒かけて細かくなる（早く当てるほど難しい画面で当てたことになる）
             let progress = min(max(elapsed / 25, 0), 1)
@@ -137,10 +227,12 @@ final class EffectEngine: @unchecked Sendable {
         return history.first { now - $0.t <= Self.delaySeconds }?.image
     }
 
-    private func silhouette(source: CVPixelBuffer, input: CIImage) -> CIImage? {
+    /// found は人の形が画面に十分あったか
+    private func silhouette(source: CVPixelBuffer, input: CIImage) -> (image: CIImage?, found: Bool) {
         let handler = VNImageRequestHandler(cvPixelBuffer: source)
         try? handler.perform([personRequest])
-        guard let maskBuffer = personRequest.results?.first?.pixelBuffer else { return nil }
+        guard let maskBuffer = personRequest.results?.first?.pixelBuffer else { return (nil, false) }
+        let found = Self.coverage(maskBuffer) > Self.minCoverage
         var mask = CIImage(cvPixelBuffer: maskBuffer)
         mask = mask.transformed(by: CGAffineTransform(scaleX: input.extent.width / mask.extent.width,
                                                       y: input.extent.height / mask.extent.height))
@@ -148,17 +240,36 @@ final class EffectEngine: @unchecked Sendable {
         blend.inputImage = CIImage(color: CIColor(red: 0.05, green: 0.05, blue: 0.08)).cropped(to: input.extent)
         blend.backgroundImage = CIImage(color: CIColor(red: 0.96, green: 0.93, blue: 0.85)).cropped(to: input.extent)
         blend.maskImage = mask
-        return blend.outputImage
+        return (blend.outputImage, found)
     }
 
-    /// 骨組みだけを描く
-    private func stickFigure(source: CVPixelBuffer, size: CGSize) -> CIImage? {
+    /// 人の形の割合（0〜1）。8 ビットの型抜きを 4 画素おきに数える
+    private static func coverage(_ mask: CVPixelBuffer) -> Double {
+        CVPixelBufferLockBaseAddress(mask, .readOnly)
+        defer { CVPixelBufferUnlockBaseAddress(mask, .readOnly) }
+        guard let base = CVPixelBufferGetBaseAddress(mask) else { return 0 }
+        let w = CVPixelBufferGetWidth(mask), h = CVPixelBufferGetHeight(mask)
+        let row = CVPixelBufferGetBytesPerRow(mask)
+        let pixels = base.assumingMemoryBound(to: UInt8.self)
+        var on = 0, all = 0
+        for y in stride(from: 0, to: h, by: 4) {
+            for x in stride(from: 0, to: w, by: 4) {
+                all += 1
+                if pixels[y * row + x] > 127 { on += 1 }
+            }
+        }
+        return all > 0 ? Double(on) / Double(all) : 0
+    }
+
+    /// 骨組みだけを描く。found は関節が十分に見つかったか
+    private func stickFigure(source: CVPixelBuffer, size: CGSize) -> (image: CIImage?, found: Bool) {
         let handler = VNImageRequestHandler(cvPixelBuffer: source)
         try? handler.perform([bodyRequest])
         let w = Int(size.width), h = Int(size.height)
         guard let ctx = CGContext(data: nil, width: w, height: h, bitsPerComponent: 8, bytesPerRow: 0,
                                   space: CGColorSpaceCreateDeviceRGB(),
-                                  bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue) else { return nil }
+                                  bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue) else { return (nil, false) }
+        var found = false
         ctx.setFillColor(UIColor(red: 0.06, green: 0.07, blue: 0.12, alpha: 1).cgColor)
         ctx.fill(CGRect(x: 0, y: 0, width: w, height: h))
         ctx.setLineCap(.round)
@@ -166,6 +277,7 @@ final class EffectEngine: @unchecked Sendable {
         let line = max(CGFloat(w) / 45, 6)
         for body in bodyRequest.results ?? [] {
             guard let points = try? body.recognizedPoints(.all) else { continue }
+            if points.values.filter({ $0.confidence > 0.2 }).count >= Self.minJoints { found = true }
             // Vision の座標は左下が原点の 0〜1。CGContext も左下が原点なのでそのまま掛ける
             func p(_ name: VNHumanBodyPoseObservation.JointName) -> CGPoint? {
                 guard let pt = points[name], pt.confidence > 0.2 else { return nil }
@@ -193,8 +305,8 @@ final class EffectEngine: @unchecked Sendable {
                 ctx.strokeEllipse(in: CGRect(x: nose.x - r, y: nose.y - r, width: r * 2, height: r * 2))
             }
         }
-        guard let cg = ctx.makeImage() else { return nil }
-        return CIImage(cgImage: cg)
+        guard let cg = ctx.makeImage() else { return (nil, found) }
+        return (CIImage(cgImage: cg), found)
     }
 
     // MARK: 下ごしらえ

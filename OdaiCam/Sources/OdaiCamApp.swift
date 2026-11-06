@@ -55,6 +55,8 @@ struct GuesserView: View {
     @State private var showHowTo = false
     @State private var editingDeck = false
     @State private var started = false
+    /// おまかせのとき、ホームで見え方を 2 秒ごとに切り替える番号
+    @State private var previewCycle = 0
 
     var body: some View {
         ZStack {
@@ -142,12 +144,28 @@ struct GuesserView: View {
             if case .countdown = phase { onboarded = true }
             if phase == .results, let wipe { face = wipe }
         }
+        .task(id: cycling) {
+            guard cycling else { return }
+            while !Task.isCancelled {
+                try? await Task.sleep(for: .seconds(2))
+                if Task.isCancelled { break }
+                previewCycle += 1
+            }
+        }
         .onDisappear { camera.stop() }
     }
 
-    /// ホームで見せるしばり。おまかせのときは棒人間（いちばん分かりやすい）
+    /// ホームで見せるしばり。おまかせのときは、棒人間 → 影絵 → モザイクを順に見せる
     private var previewEffect: Effect? {
-        game.phase == .menu && game.effectsOn ? (game.fixedEffect ?? .stick) : nil
+        guard game.phase == .menu, game.effectsOn else { return nil }
+        if let fixed = game.fixedEffect { return fixed }
+        let cycle: [Effect] = [.stick, .silhouette, .mosaic]
+        return cycle[previewCycle % cycle.count]
+    }
+
+    /// おまかせでホームにいる間だけ、2 秒ごとに見え方を進める
+    private var cycling: Bool {
+        game.phase == .menu && game.effectsOn && game.fixedEffect == nil
     }
 
     private func applyPreview(_ effect: Effect?) {
@@ -257,7 +275,7 @@ struct Viewfinder<Content: View>: View {
             ZStack(alignment: .topLeading) {
                 content
                     .frame(width: width, height: geo.size.height)
-                if showWipe, wipe != nil || Shot.name != nil {
+                if showWipe, wipe != nil {
                     WipeView(image: wipe)
                         .frame(width: width * 0.24, height: width * 0.32)
                         .padding(12)
@@ -505,7 +523,7 @@ struct HomeView: View {
 
     private var modeHint: String {
         switch mode {
-        case .random: "お題ごとに見え方が変わる"
+        case .random: "毎回ちがう姿で見える"
         case .fixed(let e): e.hint
         case .none: "そのままの映像で当てる"
         }
@@ -683,7 +701,7 @@ struct DeckSheet: View {
     }
 }
 
-// MARK: - 設定（BeReal の設定と同じ、黒地に濃い灰色の行と白い記号）
+// MARK: - 設定（山札のシートと同じ並び：中央の題、右上の丸い「×」、濃い灰色のカード）
 
 struct SettingsSheet: View {
     @Bindable var game: Game
@@ -693,100 +711,184 @@ struct SettingsSheet: View {
     let replayOnboarding: () -> Void
     @Environment(\.dismiss) private var dismiss
     @State private var crash = CrashLog.report
+    @State private var showDiagnostics = false
 
     var body: some View {
-        NavigationStack {
-            Form {
-                Section {
-                    Toggle(isOn: $game.voiceJudge) { row("waveform", "声で自動判定") }
-                        .disabled(!voiceReady)
-                        .tint(.green)
-                    Toggle(isOn: $game.cheatGuard) { row("eye", "カンニング禁止") }
-                        .disabled(!innerReady)
-                        .tint(.green)
-                } footer: {
-                    Text(footer)
-                }
-                .listRowBackground(Theme.surface)
-                Section {
-                    Button { editingDeck = true } label: { link("square.and.pencil", "お題帳を編集") }
-                        .buttonStyle(.plain)
-                    Button(action: replayOnboarding) { link("questionmark.circle", "遊び方") }
-                        .buttonStyle(.plain)
-                }
-                .listRowBackground(Theme.surface)
-                Section {
-                    LabeledContent {
-                        Text("\(game.best) 点").monospacedDigit().foregroundStyle(Theme.secondary)
-                    } label: { row("trophy", "自己ベスト") }
-                }
-                .listRowBackground(Theme.surface)
-                if let crash {
-                    Section {
-                        Text(crash).font(.caption.monospaced()).textSelection(.enabled)
-                        ShareLink(item: crash) { Label("この記録を送る", systemImage: "square.and.arrow.up") }
-                        Button("消す", role: .destructive) {
-                            CrashLog.clear()
-                            self.crash = nil
-                        }
-                    } header: {
-                        Text("前回の終了の記録")
+        VStack(spacing: 0) {
+            SheetHeader(title: "設定") { dismiss() }
+            ScrollView {
+                VStack(alignment: .leading, spacing: 22) {
+                    if crash != nil {
+                        // 普通の人には短いおわびだけ。中身は「診断」の中
+                        Label("前回うまく終われませんでした。ごめんなさい", systemImage: "exclamationmark.circle")
+                            .font(.system(size: 14, weight: .semibold))
+                            .foregroundStyle(Theme.secondary)
+                            .padding(.horizontal, 4)
                     }
-                    .listRowBackground(Theme.surface)
-                }
-                Section("診断") {
-                    Text(MultiCamProbe.summary).font(.caption.monospaced()).foregroundStyle(Theme.secondary).textSelection(.enabled)
-                    LabeledContent("バージョン", value: Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "-")
-                }
-                .listRowBackground(Theme.surface)
-                Section {
+                    group(footer: footer) {
+                        toggleRow("waveform", "声で自動判定", isOn: $game.voiceJudge, enabled: voiceReady)
+                        divider
+                        toggleRow("eye", "カンニング禁止", isOn: $game.cheatGuard, enabled: innerReady)
+                    }
+                    group {
+                        linkRow("square.and.pencil", "お題帳を編集") { editingDeck = true }
+                        divider
+                        linkRow("questionmark.circle", "遊び方", action: replayOnboarding)
+                    }
+                    group {
+                        HStack(spacing: 14) {
+                            icon("trophy")
+                            Text("自己ベスト").font(.system(size: 16, weight: .semibold))
+                            Spacer()
+                            Text("\(game.best) 点").font(.system(size: 16, weight: .semibold).monospacedDigit())
+                                .foregroundStyle(Theme.secondary)
+                        }
+                        .frame(minHeight: 52)
+                    }
+                    diagnostics
                     VStack(spacing: 4) {
                         Wordmark(size: 20)
-                        Text("お題カメラ").font(.footnote).foregroundStyle(Theme.tertiary)
+                        Text("お題カメラ　\(version)").font(.footnote).foregroundStyle(Theme.tertiary)
                     }
                     .frame(maxWidth: .infinity)
+                    .padding(.top, 8)
                 }
-                .listRowBackground(Color.clear)
-            }
-            .scrollContentBackground(.hidden)
-            .background(Color.black)
-            .navigationTitle("設定")
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItem(placement: .confirmationAction) {
-                    Button("完了", systemImage: "checkmark") { dismiss() }
-                }
+                .padding(.horizontal, 16)
+                .padding(.bottom, 30)
             }
         }
+        .foregroundStyle(.white)
         .tint(.white)
-        .presentationBackground(.black)
+        .presentationBackground(Color(white: 0.06))
+        .presentationCornerRadius(36)
+    }
+
+    private var version: String {
+        Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "-"
     }
 
     private var footer: String {
         var lines: [String] = []
         lines.append(voiceReady ? "答えを声に出すと、合っていれば自動で正解になります。" : "この iPhone では声の判定を使えません。")
-        lines.append(innerReady ? "顔を上げて演じる人を直接見ると −1 点です。" : "この iPhone では 2 つのカメラを同時に使えないため、カンニング禁止は使えません。")
+        lines.append(innerReady ? "顔を上げて演じる人を直接見ると、1 回目は注意、2 回目から −1 点。" : "この iPhone では 2 つのカメラを同時に使えないため、カンニング禁止は使えません。")
         return lines.joined(separator: "\n")
     }
 
-    /// 右に「>」のつく行
-    private func link(_ symbol: String, _ title: String) -> some View {
-        HStack {
-            row(symbol, title)
-            Spacer()
-            Image(systemName: "chevron.right").font(.footnote.weight(.bold)).foregroundStyle(Theme.tertiary)
+    /// 一番下の「診断」。開いたときだけ、落ちた記録やカメラの対応を見せる
+    private var diagnostics: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Button {
+                withAnimation(.snappy) { showDiagnostics.toggle() }
+            } label: {
+                HStack {
+                    Text("診断").font(.system(size: 14, weight: .semibold))
+                    Image(systemName: "chevron.down")
+                        .font(.system(size: 11, weight: .bold))
+                        .rotationEffect(.degrees(showDiagnostics ? 180 : 0))
+                    Spacer()
+                }
+                .foregroundStyle(Theme.tertiary)
+                .padding(.horizontal, 4)
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            if showDiagnostics {
+                group {
+                    VStack(alignment: .leading, spacing: 12) {
+                        if let crash {
+                            Text(crash).font(.caption.monospaced()).textSelection(.enabled)
+                            HStack(spacing: 16) {
+                                ShareLink(item: crash) { Label("この記録を送る", systemImage: "square.and.arrow.up") }
+                                Button("消す", role: .destructive) {
+                                    CrashLog.clear()
+                                    self.crash = nil
+                                }
+                            }
+                            .font(.system(size: 14, weight: .semibold))
+                        }
+                        Text(MultiCamProbe.summary).font(.caption.monospaced()).foregroundStyle(Theme.secondary)
+                            .textSelection(.enabled)
+                    }
+                    .padding(.vertical, 14)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                }
+            }
         }
-        .contentShape(Rectangle())
     }
 
-    private func row(_ symbol: String, _ title: String) -> some View {
-        HStack(spacing: 14) {
-            Image(systemName: symbol)
-                .font(.system(size: 17, weight: .semibold))
-                .foregroundStyle(.white)
-                .frame(width: 26)
-            Text(title).font(.system(size: 16, weight: .semibold)).foregroundStyle(.white)
+    private var divider: some View {
+        Rectangle().fill(Color(white: 0.18)).frame(height: 1).padding(.leading, 40)
+    }
+
+    private func group<Content: View>(footer: String? = nil, @ViewBuilder _ content: () -> Content) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            VStack(spacing: 0) { content() }
+                .padding(.horizontal, 16)
+                .background(Theme.surface, in: RoundedRectangle(cornerRadius: Theme.cardRadius, style: .continuous))
+            if let footer {
+                Text(footer).font(.system(size: 12)).foregroundStyle(Theme.secondary).padding(.horizontal, 4)
+            }
         }
+    }
+
+    private func icon(_ symbol: String) -> some View {
+        Image(systemName: symbol)
+            .font(.system(size: 17, weight: .semibold))
+            .frame(width: 26)
+    }
+
+    private func toggleRow(_ symbol: String, _ title: String, isOn: Binding<Bool>, enabled: Bool) -> some View {
+        Toggle(isOn: isOn) {
+            HStack(spacing: 14) {
+                icon(symbol)
+                Text(title).font(.system(size: 16, weight: .semibold))
+            }
+        }
+        .tint(.green)
+        .disabled(!enabled)
+        .frame(minHeight: 52)
+    }
+
+    private func linkRow(_ symbol: String, _ title: String, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            HStack(spacing: 14) {
+                icon(symbol)
+                Text(title).font(.system(size: 16, weight: .semibold))
+                Spacer()
+                Image(systemName: "chevron.right").font(.footnote.weight(.bold)).foregroundStyle(Theme.tertiary)
+            }
+            .frame(minHeight: 52)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel(title)
+    }
+}
+
+/// シートの頭：中央の題と、右上の丸い「×」
+struct SheetHeader: View {
+    let title: String
+    let close: () -> Void
+
+    var body: some View {
+        ZStack {
+            Text(title).font(Theme.bold(22))
+            HStack {
+                Spacer()
+                Button(action: close) {
+                    Image(systemName: "xmark")
+                        .font(.system(size: 16, weight: .bold))
+                        .foregroundStyle(.white)
+                        .frame(width: 40, height: 40)
+                        .background(Color(white: 0.2), in: Circle())
+                }
+                .buttonStyle(PressStyle())
+                .accessibilityLabel("閉じる")
+            }
+        }
+        .padding(.horizontal, 20)
+        .padding(.top, 24)
+        .padding(.bottom, 20)
     }
 }
 
@@ -905,7 +1007,7 @@ struct PlayView: View {
             }
             .background(Color.black.ignoresSafeArea(edges: .top))
 
-            Viewfinder(wipe: wipe, showWipe: wipe != nil || Shot.name != nil) {
+            Viewfinder(wipe: wipe, showWipe: wipe != nil) {
                 ZStack {
                     // しばりがあるときは、しばった画面で覆う（本人の映像は見せない）
                     if game.current?.effect != nil {
@@ -1050,13 +1152,15 @@ struct ResultsView: View {
             header
                 .padding(.horizontal, 16)
                 .padding(.bottom, 10)
-            // 動画を主役に。共有のボタンは TikTok のように右の縦の列にして、動画には重ねない
-            HStack(alignment: .bottom, spacing: 10) {
-                video
-                shareColumn
-            }
-            .padding(.horizontal, 12)
-            .frame(maxHeight: .infinity)
+            // 動画を主役に、左右いっぱいに敷く。共有のボタンは TikTok と同じく右端に重ねる
+            video
+                .overlay(alignment: .bottomTrailing) {
+                    shareColumn
+                        .padding(.trailing, 10)
+                        .padding(.bottom, 16)
+                }
+                .padding(.horizontal, 8)
+                .frame(maxHeight: .infinity)
             again
                 .padding(.horizontal, 16)
                 .padding(.top, 12)
@@ -1081,7 +1185,11 @@ struct ResultsView: View {
                 } else if Shot.name != nil {
                     SampleFace()
                 } else {
-                    Avatar(text: game.deck.initial, size: 40)
+                    Image(systemName: "figure.stand")
+                        .font(.system(size: 20, weight: .bold))
+                        .foregroundStyle(.black)
+                        .frame(width: 40, height: 40)
+                        .background(Theme.accent)
                 }
             }
             .frame(width: 40, height: 40)
@@ -1116,12 +1224,16 @@ struct ResultsView: View {
         ZStack {
             Color(white: 0.08)
             if game.highlightURL != nil {
+                // 左右の余りは、同じ動画を大きく暗くぼかして埋める（縦長の動画を切らずに幅いっぱいに見せる）
+                PlayerLayerView(player: player.player, fill: true)
+                    .blur(radius: 40)
+                    .opacity(0.45)
                 PlayerLayerView(player: player.player)
                     .onTapGesture {
                         muted.toggle()
                         player.player.isMuted = muted
                     }
-                    .overlay(alignment: .bottomTrailing) {
+                    .overlay(alignment: .topTrailing) {
                         Image(systemName: muted ? "speaker.slash.fill" : "speaker.wave.2.fill")
                             .font(.system(size: 13, weight: .bold))
                             .foregroundStyle(.white)
@@ -1147,7 +1259,6 @@ struct ResultsView: View {
                 }
             }
         }
-        .aspectRatio(9 / 16, contentMode: .fit)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .clipShape(RoundedRectangle(cornerRadius: Theme.cardRadius, style: .continuous))
     }
@@ -1191,11 +1302,12 @@ struct ResultsView: View {
         VStack(spacing: 6) {
             Image(systemName: symbol)
                 .font(.system(size: 22, weight: .bold))
-                .frame(width: 58, height: 58)
-                .background(Theme.surface, in: Circle())
+                .frame(width: 54, height: 54)
+                .background(.black.opacity(0.35), in: Circle())
             Text(title).font(.system(size: 11, weight: .heavy)).lineLimit(1).minimumScaleFactor(0.7)
         }
         .foregroundStyle(.white)
+        .shadow(color: .black.opacity(0.6), radius: 6, y: 1)
         .frame(maxWidth: .infinity)
     }
 
@@ -1246,11 +1358,13 @@ final class LoopPlayer {
 /// 動画を枠いっぱいに出す（再生の操作部品は出さない）
 struct PlayerLayerView: UIViewRepresentable {
     let player: AVPlayer
+    /// true なら枠を埋める（切れる）。false なら動画全体を見せる
+    var fill = false
 
     func makeUIView(context: Context) -> PlayerUIView {
         let view = PlayerUIView()
         view.playerLayer.player = player
-        view.playerLayer.videoGravity = .resizeAspectFill
+        view.playerLayer.videoGravity = fill ? .resizeAspectFill : .resizeAspect
         return view
     }
 

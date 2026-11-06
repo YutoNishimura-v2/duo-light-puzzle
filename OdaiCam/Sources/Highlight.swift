@@ -12,6 +12,10 @@ enum Highlight {
         /// 録画の頭からの秒数
         let start: TimeInterval
         let end: TimeInterval
+        /// 種明かしで流す「見えていた画面」の区間に、人が映っていたか（しばりなしは全部映っていたことに）
+        var seenQuality: SeenQuality = .full
+        /// つかみ（答える直前の 1 秒）の区間に、人が映っていたか
+        var hookQuality: SeenQuality = .full
     }
 
     /// 書き出しの大きさ（縦長・30 fps）
@@ -153,33 +157,62 @@ enum Highlight {
             let seenLength: Double
             var cost: Double { seenLength + to - from }
         }
-        let plans: [Plan] = clips.enumerated().compactMap { i, clip in
+        /// withSeen が false なら、見えていた画面を出さずに実際の演技だけにする
+        func plan(_ i: Int, _ clip: Clip, withSeen: Bool) -> Plan? {
             let to = min(clip.end + after, rawEnd)
-            let hasSeen = seenSource != nil && clip.effect != nil
+            let hasSeen = withSeen && seenSource != nil && clip.effect != nil
             let from = max(clip.start, to - (hasSeen ? realLength : realOnlyLength), 0)
             guard to - from >= 0.5 else { return nil }
             var seenFor = hasSeen ? min(Self.seenLength, to - from, seenEnd - from) : 0
             if seenFor < 0.4 { seenFor = 0 }
             return Plan(index: i, clip: clip, from: from, to: to, seenLength: seenFor)
         }
+        /// 見えていた画面に 1 秒以上なにも映っていない（棒人間・影絵が人を見つけられなかった）
+        func blank(_ clip: Clip) -> Bool {
+            seenSource != nil && clip.effect != nil && clip.seenQuality.hasEmptyGap
+        }
+        // 空の画面のお題は使わない。全部そうなら、実際の演技だけにして使う
+        var plans: [Plan] = clips.enumerated().compactMap { i, clip in
+            blank(clip) ? nil : plan(i, clip, withSeen: true)
+        }
+        if plans.isEmpty {
+            plans = clips.enumerated().compactMap { i, clip in plan(i, clip, withSeen: !blank(clip)) }
+        }
+        let blanks = clips.filter { blank($0) }.count
+        if blanks > 0 { CrashLog.mark("ハイライト：人が映っていないお題 \(blanks) 個") }
         guard !plans.isEmpty else { throw failure("使える場面がありません") }
 
         // 面白い順：正解は当てるまで長くかかったものほど上、次にパス。同じなら前のお題
-        func rank(_ p: Plan) -> (Int, Double, Int) {
-            (p.clip.outcome == "○" ? 2 : p.clip.outcome == "パス" ? 1 : 0, p.clip.end - p.clip.start, -p.index)
+        func rank(_ clip: Clip, _ index: Int) -> (Int, Double, Int) {
+            (clip.outcome == "○" ? 2 : clip.outcome == "パス" ? 1 : 0, clip.end - clip.start, -index)
         }
-        let ranked = plans.sorted { rank($0) > rank($1) }
+        let ranked = plans.sorted { rank($0.clip, $0.index) > rank($1.clip, $1.index) }
 
-        // つかみ：いちばん面白いお題の、答える直前の 1 秒を上下に並べる
+        // つかみ：答える直前の 1 秒を上下に並べる。上が見えていた画面なら、人がいちばんよく映っていたお題
+        // （映り方が同じなら面白い順）。人がほとんど映っていなければ、当てる人の顔にする
+        let byFun = clips.indices.sorted { rank(clips[$0], $0) > rank(clips[$1], $1) }
+        /// 映っていた割合は 5% 刻みで比べる（細かい差より面白さを優先）
+        func visibility(_ clip: Clip) -> Int { Int((clip.hookQuality.visibleFraction * 20).rounded()) }
         var hook: (from: Double, length: Double, topIsSeen: Bool)?
-        for p in ranked {
-            let c = p.clip
-            if seenSource != nil, c.effect != nil {
+        if seenSource != nil {
+            let byVisibility = byFun.filter { clips[$0].effect != nil }.enumerated()
+                .sorted { a, b in
+                    let va = visibility(clips[a.element]), vb = visibility(clips[b.element])
+                    return va != vb ? va > vb : a.offset < b.offset
+                }
+                .map { $0.element }
+            for i in byVisibility {
+                let c = clips[i]
+                // 半分も映っていないなら、空の画面をつかみにしない
+                if c.hookQuality.visibleFraction < 0.5, frontSource != nil { break }
                 let e = min(c.end, rawEnd, seenEnd)
                 let s = max(c.start, e - hookLength, 0)
                 if e - s >= 0.6 { hook = (s, e - s, true); break }
             }
-            if frontSource != nil {
+        }
+        if hook == nil, frontSource != nil {
+            for i in byFun {
+                let c = clips[i]
                 let e = min(c.end, rawEnd, faceEnd)
                 let s = max(c.start, e - hookLength, 0)
                 if e - s >= 0.6 { hook = (s, e - s, false); break }

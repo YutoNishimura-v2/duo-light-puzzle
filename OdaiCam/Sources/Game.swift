@@ -101,6 +101,7 @@ final class Game {
         highlightURL = nil
         highlightError = nil
         recordingStart = nil
+        EffectEngine.seenLog.reset()
         queue = deck.prompts.shuffled()
         CrashLog.mark("ラウンド開始（\(deck.title)・\(Int(roundLength)) 秒・しばり \(effectsOn ? (fixedEffect?.label ?? "おまかせ") : "なし")）")
         startRecording?()
@@ -189,9 +190,21 @@ final class Game {
             highlightError = "録画できませんでした"
             return
         }
+        // しばりの画面に人が映っていたか。録画の秒を、記録と同じ時計の秒に直して聞く（しばりなしは全部映っていたことに）
+        let base = recordingStart
+        func quality(_ t: Turn, _ from: TimeInterval, _ to: TimeInterval) -> SeenQuality {
+            guard t.effect != nil, let base else { return .full }
+            return EffectEngine.seenLog.quality(from: base + from, to: base + to)
+        }
         let clips = turns.compactMap { t -> Highlight.Clip? in
             guard let end = t.end, let outcome = t.outcome else { return nil }
-            return Highlight.Clip(prompt: t.prompt, outcome: outcome.rawValue, effect: t.effect?.label, start: t.start, end: end)
+            // ハイライトと同じ区間：見えていた画面は実際の演技の頭から、つかみは答える直前の 1 秒
+            let to = end + Highlight.after
+            let from = max(t.start, to - Highlight.realLength)
+            let seen = quality(t, from, min(from + Highlight.seenLength, to))
+            let hook = quality(t, max(t.start, end - Highlight.hookLength), end)
+            return Highlight.Clip(prompt: t.prompt, outcome: outcome.rawValue, effect: t.effect?.label, start: t.start, end: end,
+                                  seenQuality: seen, hookQuality: hook)
         }
         building = true
         Task {
