@@ -1,0 +1,11 @@
+# 本物の人の動画（odaicam-realperson.yml が CI で落として使う。リポジトリには入れない）
+# 1 行 1 本：名前|URL|始める秒|使用許諾と作者
+# 白い部屋で 1 人が全身で動く（アメリカ陸軍の体力訓練の動画。合衆国政府の著作物でパブリックドメイン）
+jump|https://upload.wikimedia.org/wikipedia/commons/1/17/Conditioning_Drill_1-_Power_Jump.webm|15|Public domain（PD-USGov-Military-Army、Army Combat Fitness Test「Conditioning Drill 1: Power Jump」、Wikimedia Commons）
+squat|https://upload.wikimedia.org/wikipedia/commons/3/34/Conditioning_Drill_3-_Alternate_Staggered_Squat_Jump.webm|17|Public domain（PD-USGov-Military-Army、Army Combat Fitness Test「Conditioning Drill 3: Alternate Staggered Squat Jump」、Wikimedia Commons）
+# ジムで 1 人が腕を振る（背景がごちゃごちゃ・暗め・小さめの難しい例）
+jacks|https://upload.wikimedia.org/wikipedia/commons/5/57/Jumping_jacks_and_burpees.webm|0|CC BY-SA 4.0（Taco fleur, CC BY-SA 4.0, via Wikimedia Commons「Jumping jacks and burpees」）
+# 今どきのカラー映像：手前で 2 人が組んで踊り、まわりや後ろにも踊る人（パーティーで友だちが映り込むのに近い）
+square|https://upload.wikimedia.org/wikipedia/commons/3/3f/Square_dance_at_the_Concord_Scout_House%2C_April_2022.webm|12|CC BY-SA 4.0（Sdkb, CC BY-SA 4.0, via Wikimedia Commons「Square dance at the Concord Scout House, April 2022」）
+# 2 人が踊り、後ろに大勢の客（古い白黒の映画。いちばん難しい例）
+grizzly|https://upload.wikimedia.org/wikipedia/commons/5/55/The_Grizzly_Bear_Dance_%281913%29.webm|14|Public domain（The Grizzly Bear Dance, 1913, Wikimedia Commons）

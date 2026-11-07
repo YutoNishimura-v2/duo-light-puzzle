@@ -1,0 +1,109 @@
+name: odaicam-realperson
+
+# 本物の人の動画に、アプリと同じしばり（OdaiCam/Sources/Effects.swift）を Mac の本物の Vision でかける点検。
+# シミュレータの Vision は人を見つけないので、着ぐるみ・影絵・背景・棒人間が人の体についてくるかはここで見る。
+# 動画は OdaiCam/Tools/RealPerson/clips.txt（自由に使える動画だけ。出典と使用許諾もそこに書く）。リポジトリには入れない
+on:
+  push:
+    # 作業ブランチでも push で走る（手動実行は main にこのファイルが入るまで使えないため）
+    branches: [main, odaicam-bereal]
+    paths:
+      - "OdaiCam/Sources/Effects.swift"
+      - "OdaiCam/Sources/Backdrop.swift"
+      - "OdaiCam/Tools/RealPerson/**"
+      - ".github/workflows/odaicam-realperson.yml"
+  workflow_dispatch:
+
+concurrency:
+  group: odaicam-realperson-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  realperson:
+    runs-on: xcode-27
+    timeout-minutes: 40
+    defaults:
+      run:
+        working-directory: OdaiCam
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Toolchain
+        run: |
+          set -euo pipefail
+          sudo xcode-select -s /Applications/Xcode_27.1.app
+          brew install ffmpeg
+
+      - name: Build the checker
+        run: |
+          set -euo pipefail
+          xcrun swiftc -O -swift-version 5 -o realperson \
+            Sources/Effects.swift Sources/Backdrop.swift Tools/RealPerson/Shims.swift Tools/RealPerson/main.swift
+
+      - name: Clips
+        run: |
+          set -uo pipefail
+          mkdir -p clips out
+          # 1 行 1 本：名前|URL|始める秒|使用許諾と作者
+          grep -v '^#' Tools/RealPerson/clips.txt | while IFS='|' read -r name url start license; do
+            [ -n "$name" ] || continue
+            echo "== ${name}（${license}）"
+            # Wikimedia は続けて落とすと 429（多すぎ）を返すので、間をあけて、断られたら待って取り直す
+            sleep 5
+            if curl -fsSL --retry 6 --retry-delay 20 -A "OdaiCamCI/1.0 (https://github.com/YutoNishimura-v2)" -o "$RUNNER_TEMP/$name.src" "$url"; then
+              # 縦長 9:16 の真ん中を切り出し、540x960・30 コマ/秒・10 秒（アプリのしばりと同じ大きさ）
+              ffmpeg -nostdin -y -loglevel error -ss "$start" -t 10 -i "$RUNNER_TEMP/$name.src" \
+                -vf "crop='min(iw,ih*9/16)':'min(ih,iw*16/9)',scale=540:960,fps=30,format=yuv420p" -an -c:v libx264 -crf 20 \
+                "clips/${name}.mp4" || echo "変換に失敗: ${name}"
+            else
+              echo "取れなかった: ${name}"
+            fi
+          done
+          ls -la clips
+
+      - name: Run
+        run: |
+          set -uo pipefail
+          FAIL=0
+          {
+            echo "## 本物の人の動画でしばりを点検（Mac の Vision）"
+            echo "| 動画 | 棒人間 | 着ぐるみ | 影絵 | 宇宙 | 関節の震え（中央値／95%、px） |"
+            echo "|---|---|---|---|---|---|"
+          } >> "$GITHUB_STEP_SUMMARY"
+          for v in clips/*.mp4; do
+            [ -f "$v" ] || continue
+            n=$(basename "$v" .mp4)
+            if ./realperson "$v" out "$n"; then
+              python3 - "out/$n.json" <<'PY' >> "$GITHUB_STEP_SUMMARY"
+          import json, sys
+          s = json.load(open(sys.argv[1]))
+          p = lambda k: f"{s.get(k, 0)*100:.0f}%"
+          print(f"| {s['name']} | {p('visible_stick')} | {p('visible_costume')} | {p('visible_silhouette')} | {p('visible_space')} | {s['joint_jitter_px_median']}／{s['joint_jitter_px_p95']}（{s['frame_height_px']}px の画面） |")
+          print(f"<!-- {s['name']} hidden_by={s.get('costume_hidden_by')} broken={s.get('costume_broken_frames')} jumps={s.get('costume_figure_jumps')} -->", file=sys.stderr)
+          PY
+            else
+              echo "点検に失敗: ${n}"; FAIL=1
+            fi
+          done
+          echo "割合は 10 秒のうち人を見つけてしばりがかかったコマの割合。震えは着ぐるみの関節の位置の 2 階差分（なめらかにしたあと）" >> "$GITHUB_STEP_SUMMARY"
+          ls -la out
+          exit $FAIL
+
+      # 見る物（一覧の画像・数字・コマごとの記録）を小さく先に上げる。
+      # 42393502155 は全部を 1 つにまとめた約 120MB の上げ直しが GitHub 側の時間切れで落ち、画像が残らなかった
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: odaicam-realperson-sheets
+          path: |
+            OdaiCam/out/*-sheet.png
+            OdaiCam/out/*.json
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        continue-on-error: true
+        with:
+          name: odaicam-realperson
+          path: |
+            OdaiCam/out
+            OdaiCam/clips

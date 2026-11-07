@@ -1,7 +1,12 @@
 @preconcurrency import AVFoundation
 import CoreImage
 import CoreImage.CIFilterBuiltins
+// Mac の点検の道具（Tools/RealPerson）でも同じファイルをそのまま使う。Mac では UIColor の代わりを道具の側で用意する
+#if canImport(UIKit)
 import UIKit
+#else
+import AppKit
+#endif
 import Vision
 import VideoToolbox
 
@@ -219,6 +224,15 @@ final class EffectEngine: @unchecked Sendable {
         bodyRequestStore = r
         return r
     }
+    private var peopleRequestStore: VNDetectHumanRectanglesRequest?
+    /// 1 人ずつの枠（全身）。骨格が後ろの小さい人か、影絵で主役だけを残すかを決めるのに使う
+    private var peopleRequest: VNDetectHumanRectanglesRequest {
+        if let r = peopleRequestStore { return r }
+        let r = VNDetectHumanRectanglesRequest()
+        r.upperBodyOnly = false
+        peopleRequestStore = r
+        return r
+    }
     private var personRequest: VNGeneratePersonSegmentationRequest {
         if let r = personRequestStore { return r }
         let r = VNGeneratePersonSegmentationRequest()
@@ -263,6 +277,7 @@ final class EffectEngine: @unchecked Sendable {
             if vision {
                 bodyRequestStore = nil
                 personRequestStore = nil
+                peopleRequestStore = nil
             }
             context.clearCaches()
         }
@@ -340,10 +355,23 @@ final class EffectEngine: @unchecked Sendable {
         var output = input
         if let effect {
             smoothedJoints = [:]
+            trustedMain = [:]
+            trustedMainTime = -.infinity
             output = render(effect, input: input, source: source, now: frameTime, elapsed: 0, frameTime: frameTime).image
         }
         return context.createCGImage(output.cropped(to: input.extent), from: input.extent)
     }
+
+    /// 続けて流すコマに、しばりを 1 枚かける（関節のなめらかさを前のコマから引き継ぐ）。
+    /// Mac の点検の道具（Tools/RealPerson）が本物の人の動画で使う。アプリでは使わない
+    func sequenceFrame(_ effect: Effect, source: CVPixelBuffer, frameTime: TimeInterval) -> (image: CGImage?, visible: Bool) {
+        let input = Self.downscaled(CIImage(cvPixelBuffer: source))
+        let rendered = render(effect, input: input, source: source, now: frameTime, elapsed: frameTime, frameTime: frameTime)
+        return (context.createCGImage(rendered.image.cropped(to: input.extent), from: input.extent), rendered.visible)
+    }
+
+    /// 直前のコマの関節（1 人目、なめらかにしたあと。0〜1、左下が原点）。点検の道具が震えを測るのに使う
+    var lastJoints: Joints { smoothedJoints }
 
     /// main が画面を受け取った（main で呼ぶ）
     private func frameDelivered() {
@@ -457,16 +485,18 @@ final class EffectEngine: @unchecked Sendable {
             found = true
         } else {
             let handler = VNImageRequestHandler(cvPixelBuffer: source)
-            try? handler.perform([personRequest])
+            try? handler.perform([personRequest, peopleRequest])
+            updatePeople(now: now)
             if let m = personRequest.results?.first?.pixelBuffer {
                 maskBuffer = m
                 found = Self.coverage(m) > Self.minCoverage
             }
-            // 切り抜きに失敗したコマは、0.6 秒までは直前の形を使い続ける（影絵や着ぐるみが一瞬真っ黒・空にならないように）
+            // 切り抜きに失敗したコマは、1.2 秒までは直前の形を使い続ける（影絵や着ぐるみが一瞬真っ黒・空にならないように。
+            // 0.6 秒では、何人も映る実写で影絵が空になるコマが残った）
             if found {
                 lastGoodMask = maskBuffer
                 lastGoodMaskTime = now
-            } else if let good = lastGoodMask, now - lastGoodMaskTime < 0.6 {
+            } else if let good = lastGoodMask, now - lastGoodMaskTime < 1.2 {
                 maskBuffer = good
                 found = true
             }
@@ -502,11 +532,83 @@ final class EffectEngine: @unchecked Sendable {
         return (mask, found)
     }
 
+    /// 1 人ずつの枠（0〜1、左下が原点）と、最後に誰かを見つけた時刻
+    private(set) var peopleBoxes: [CGRect] = []
+    private var peopleTime: TimeInterval = -.infinity
+
+    /// peopleRequest の結果を取り込む。見つからないコマは、1.2 秒までは直前の枠を使う（型抜きと同じ長さ）
+    private func updatePeople(now: TimeInterval) {
+        let boxes = (peopleRequest.results ?? []).map(\.boundingBox).filter { $0.height > 0.02 }
+        if !boxes.isEmpty {
+            peopleBoxes = boxes
+            peopleTime = now
+        } else if now - peopleTime >= 1.2 {
+            peopleBoxes = []
+        }
+    }
+
+    /// 画面でいちばん大きい人の高さ（0〜1）。誰も見つけていなければ 0
+    var biggestPersonHeight: CGFloat { peopleBoxes.map(\.height).max() ?? 0 }
+
+    /// 骨格の人形を付けてよい人の大きさ（いちばん大きい人の高さに対する割合）
+    static let minPersonRatio: CGFloat = 0.5
+    /// 影絵・背景のしばりで残す人の大きさ（いちばん大きい人の高さに対する割合）。これより小さい人の枠は消す
+    static let backgroundPersonRatio: CGFloat = 0.6
+
+    /// 後ろの小さい人の枠（白）。ただし手前の人の枠と重なるところは消さない（黒）。消す人がいなければ nil。
+    /// 手前の人だけを残す作り方（1 回目）は、人の枠が手前の人を取りこぼすと演じている人まで切れた（grizzly の 2・8 秒）ので、
+    /// 見つけた小さい人だけを消す
+    private func backgroundPeopleMask(extent: CGRect) -> CIImage? {
+        let biggest = biggestPersonHeight
+        guard Self.usesVision, biggest > 0 else { return nil }
+        func pixels(_ box: CGRect, pad: CGFloat) -> CGRect {
+            let r = box.insetBy(dx: -box.height * pad, dy: -box.height * pad)
+            return CGRect(x: extent.minX + r.minX * extent.width, y: extent.minY + r.minY * extent.height,
+                          width: r.width * extent.width, height: r.height * extent.height).intersection(extent)
+        }
+        let small = peopleBoxes.filter { $0.height < biggest * Self.backgroundPersonRatio }
+        guard !small.isEmpty else { return nil }
+        var mask = CIImage(color: .black).cropped(to: extent)
+        for box in small {
+            mask = CIImage(color: .white).cropped(to: pixels(box, pad: 0.05)).composited(over: mask)
+        }
+        for box in peopleBoxes where box.height >= biggest * Self.backgroundPersonRatio {
+            mask = CIImage(color: .black).cropped(to: pixels(box, pad: 0.05)).composited(over: mask)
+        }
+        return mask.applyingGaussianBlur(sigma: Double(extent.width * 0.01)).cropped(to: extent)
+    }
+
+    /// 影絵・背景のしばりの型抜きを、演じている手前の人に絞る。
+    /// 型抜きは後ろの群衆まで薄く拾い、誰が演じているか分からなかった（square の 2・5 秒、2026-11-08 批評）。
+    /// - 薄い（自信の低い）ところは消し、濃いところははっきりさせる（0.3 以下 → 0、0.8 以上 → 1）
+    /// - 後ろの小さい人の枠の中は消す
+    private func keepForeground(_ mask: CIImage, extent: CGRect) -> CIImage {
+        guard Self.usesVision else { return mask }
+        let curve = CIFilter.colorMatrix()
+        curve.inputImage = mask
+        curve.rVector = CIVector(x: 2, y: 0, z: 0, w: 0)
+        curve.gVector = CIVector(x: 0, y: 2, z: 0, w: 0)
+        curve.bVector = CIVector(x: 0, y: 0, z: 2, w: 0)
+        curve.biasVector = CIVector(x: -0.6, y: -0.6, z: -0.6, w: 0)
+        let clamp = CIFilter.colorClamp()
+        clamp.inputImage = curve.outputImage
+        clamp.minComponents = CIVector(x: 0, y: 0, z: 0, w: 0)
+        clamp.maxComponents = CIVector(x: 1, y: 1, z: 1, w: 1)
+        let firm = clamp.outputImage?.cropped(to: extent) ?? mask
+        guard let erase = backgroundPeopleMask(extent: extent) else { return firm }
+        let cut = CIFilter.blendWithMask()
+        cut.inputImage = CIImage(color: .black).cropped(to: extent)
+        cut.backgroundImage = firm
+        cut.maskImage = erase
+        return cut.outputImage?.cropped(to: extent) ?? firm
+    }
+
     /// found は人の形が画面に十分あったか
     private func silhouette(source: CVPixelBuffer, input: CIImage, now: TimeInterval,
                             frameTime: TimeInterval) -> (image: CIImage?, found: Bool) {
         let person = personMask(source: source, input: input, now: now, frameTime: frameTime)
-        guard let mask = person.mask else { return (nil, false) }
+        guard let whole = person.mask else { return (nil, false) }
+        let mask = keepForeground(whole, extent: input.extent)
         let blend = CIFilter.blendWithMask()
         blend.inputImage = CIImage(color: CIColor(red: 0.05, green: 0.05, blue: 0.08)).cropped(to: input.extent)
         blend.backgroundImage = CIImage(color: CIColor(red: 0.96, green: 0.93, blue: 0.85)).cropped(to: input.extent)
@@ -532,7 +634,8 @@ final class EffectEngine: @unchecked Sendable {
             }
         }
         let person = personMask(source: source, input: input, now: now, frameTime: frameTime)
-        guard let mask = person.mask else { return (scene, false) }
+        guard let whole = person.mask else { return (scene, false) }
+        let mask = keepForeground(whole, extent: input.extent)
         // 型抜きは小さい絵を引き伸ばしたものなので、縁に元の部屋（明るい壁）の画素がにじみ、人の周りに白い縁が出ていた。
         // 型抜きを内側へ少し縮めてから、細くぼかす（縁は背景の色に溶ける）
         let erode = CIFilter.morphologyMinimum()
@@ -599,7 +702,8 @@ final class EffectEngine: @unchecked Sendable {
         var bodies: [Joints] = []
         if Self.usesVision, !(demo && now < bodyRetryAt) {
             let handler = VNImageRequestHandler(cvPixelBuffer: source)
-            try? handler.perform([bodyRequest])
+            try? handler.perform([bodyRequest, peopleRequest])
+            updatePeople(now: now)
             for body in bodyRequest.results ?? [] {
                 guard let points = try? body.recognizedPoints(.all) else { continue }
                 var sure: Joints = [:]
@@ -608,6 +712,9 @@ final class EffectEngine: @unchecked Sendable {
                 bodies.append(sure)
             }
             if demo, !found { bodyRetryAt = now + Self.demoVisionRetry }
+            bodies = Self.mainBodies(bodies, previous: smoothedJoints)
+            bodies = trustedBodies(bodies, now: now)
+            found = !bodies.isEmpty
         }
         if !found, demo {
             bodies = [DemoActor.joints(at: frameTime)]
@@ -622,8 +729,203 @@ final class EffectEngine: @unchecked Sendable {
             }
             smoothedJoints = first
             bodies[0] = first
+        } else {
+            // 人形を出さないコマ：次に見つけた人を前の主役と比べない
+            smoothedJoints = [:]
         }
         return (bodies, found)
+    }
+
+    /// 最後に信じてよかった主役の関節と、その時刻・関節ごとに最後に見えた時刻
+    private var trustedMain: Joints = [:]
+    private var trustedMainTime: TimeInterval = -.infinity
+    private var jointSeenAt: [VNHumanBodyPoseObservation.JointName: TimeInterval] = [:]
+    /// 点検用：直前のコマの主役の候補（あやしいかを判定する前）と、使ったか・使わなかった理由
+    private(set) var lastCandidate: Joints = [:]
+    private(set) var lastDecision = "no_body"
+    /// 骨格があやしいコマで、直前の主役の姿を保つ長さ（秒）。これを過ぎたら人形を隠す
+    static let holdSeconds: TimeInterval = 0.8
+    /// 一瞬だけ見えなくなった関節を、直前の位置で補う長さ（秒）
+    static let jointCarrySeconds: TimeInterval = 0.3
+    /// 1 コマで関節が動いてよい距離（0〜1）。これより飛んだ関節は誤検出として捨てる（Tools/RealPerson/analyze.py の joint_step）
+    static let maxJointStep: CGFloat = 0.12
+
+    /// 何人も映る実写で、主役が後ろの小さい人に飛ぶ・横棒になる・巨大な斜めのクマになる崩れがあった
+    /// （odaicam-realperson の grizzly、2026-11-07 批評）。あやしい骨格は使わず、直前の姿を保つか隠す。
+    /// - 主役（先頭）が人の形として不自然（plausible が偽）なら使わない
+    /// - 直前の主役から大きさが急に変わった・急に遠くへ飛んだときも使わない（holdSeconds の間だけ）
+    /// - 使わないときは、holdSeconds までは直前の主役をそのまま、過ぎたら空（人形を出さない）
+    /// 主役が使えるときは、一瞬だけ抜けた関節を直前の位置で補う（腕が抜けて手の点だけ浮くのを防ぐ）
+    private func trustedBodies(_ bodies: [Joints], now: TimeInterval) -> [Joints] {
+        let recent = now - trustedMainTime < Self.holdSeconds && !trustedMain.isEmpty
+        lastCandidate = bodies.first ?? [:]
+        lastBiggestPerson = biggestPersonHeight
+        // 一瞬だけ見えなくなった関節は、判定の前に直前の位置で補う（腕立て・しゃがみで腰が数コマ抜け、人形が消えていた）
+        var main = bodies.first ?? [:]
+        var fresh = Set(main.keys)
+        if !main.isEmpty, recent {
+            // 1 コマで 1 つの関節だけ遠くへ飛ぶのは、Vision が隣の人の首や腰をつかんだ誤り。見えなかったものとして扱う
+            // （square で腰・首が 1 コマだけ 0.3 以上飛び、震えの 95% 値が 70px になっていた。ふつうの動きは 1 コマ 0.1 未満）
+            for (name, p) in main {
+                if let q = trustedMain[name], hypot(p.x - q.x, p.y - q.y) > Self.maxJointStep {
+                    main[name] = nil
+                    fresh.remove(name)
+                }
+            }
+            for (name, p) in trustedMain where main[name] == nil {
+                if let seen = jointSeenAt[name], now - seen < Self.jointCarrySeconds { main[name] = p }
+            }
+        }
+        if main.isEmpty {
+            lastDecision = "no_body"
+        } else if isBackgroundPerson(main) {
+            lastDecision = "background_person"
+        } else {
+            lastDecision = Self.implausibleReason(main)
+                ?? (!recent || Self.consistent(main, with: trustedMain) ? "ok" : "jump")
+        }
+        okStreak = lastDecision == "ok" ? okStreak + 1 : 0
+        // 新しく人形を出すのは、続けて acquireFrames コマ自然な骨格が取れてから（1 コマだけの誤検出に人形が付き、0.8 秒残っていた）
+        if lastDecision == "ok", recent || okStreak >= Self.acquireFrames {
+            for name in fresh { jointSeenAt[name] = now }
+            // 腰が取れていないときは、補った腰を描く（胴と脚が離れた人形にしない）
+            if main[.root] == nil, main[.leftHip] == nil, main[.rightHip] == nil,
+               let neck = main[.neck] ?? Self.midpoint(main[.leftShoulder], main[.rightShoulder]) {
+                main[.root] = Self.hipCenter(main, neck: neck)
+            }
+            trustedMain = main
+            trustedMainTime = now
+            // 人形は演じている 1 人だけ。後ろや横の友だちにも人形が出ると、誰が演じているか分からなくなる（square の 8 秒）
+            return [main]
+        }
+        // 後ろの人に乗り移ったら、直前の姿も残さずすぐ隠す（他人に付くより、隠すほうが自然）
+        if recent, lastDecision != "background_person" { return [trustedMain] }
+        if lastDecision != "ok" { trustedMain = [:] }
+        return []
+    }
+
+    /// 骨格が、画面でいちばん大きい人の半分の高さに届かない（手前の人を Vision が骨格で取れず、後ろの客に付いていた。
+    /// grizzly の 2・5 秒、2026-11-08 批評）。人の枠を見つけていなければ判定しない
+    private func isBackgroundPerson(_ j: Joints) -> Bool {
+        let biggest = biggestPersonHeight
+        guard biggest > 0, let box = Self.extent(j) else { return false }
+        return max(box.width, box.height) < biggest * Self.minPersonRatio
+    }
+
+    /// 点検用：直前のコマでいちばん大きい人の高さ（0〜1）
+    private(set) var lastBiggestPerson: CGFloat = 0
+    /// 続けて自然な骨格が取れたコマ数
+    private var okStreak = 0
+    /// 新しく人形を出すまでに要る、続けて自然な骨格が取れたコマ数
+    static let acquireFrames = 3
+
+    /// 人の形として自然か：首（か両肩）と腰（か左右の腰）がある（腕だけの横棒を落とす）、胴の長さがほどほど、
+    /// 手足の 1 本が体よりずっと長くない、脚が胴よりずっと短くない（斜めの巨大な人形を落とす）。
+    /// 横に寝た姿勢は落とさない（1 回目は横長の骨格を落としていて、腕立ての姿勢で人形が消えた）
+    static func plausible(_ j: Joints) -> Bool { implausibleReason(j) == nil }
+
+    /// plausible が偽になる理由（点検の道具で、人形が出ないコマを理由ごとに数える）。自然なら nil
+    static func implausibleReason(_ j: Joints) -> String? {
+        func mid(_ a: CGPoint?, _ b: CGPoint?) -> CGPoint? {
+            guard let a, let b else { return nil }
+            return CGPoint(x: (a.x + b.x) / 2, y: (a.y + b.y) / 2)
+        }
+        guard let neck = j[.neck] ?? mid(j[.leftShoulder], j[.rightShoulder]) else { return "no_neck" }
+        guard let root = hipCenter(j, neck: neck) else { return "no_hip" }
+        guard let box = extent(j) else { return "few_joints" }
+        func length(_ a: CGPoint, _ b: CGPoint) -> CGFloat { hypot(a.x - b.x, a.y - b.y) }
+        let torso = length(neck, root)
+        let size = max(box.width, box.height)
+        // 胴が画面の 45% を超えるのは、別の人の頭と腰をつないだ斜めの巨大な人形（実写の grizzly・square の 2 秒）。
+        // 腕立て・しゃがみでは胴がカメラの方を向いて短く写るので、胴の短さは「ほぼ無い」ときだけ落とす
+        // （0.02・体の 0.18 倍では jacks・jump の正しい姿勢を落としていた。数字は Tools/RealPerson/analyze.py で決めた）
+        if torso <= 0.01 { return "torso_tiny" }
+        if torso > 0.45 { return "torso_over_45pct" }
+        if torso < size * 0.05 { return "torso_short_for_body" }
+        // 手足の 1 本が体に比べて長すぎない（寝転ぶ・前に倒れる姿勢で胴が短く写っても落とさないよう、体の大きさとも比べる）
+        let reference = max(torso, size * 0.4)
+        let bones: [(VNHumanBodyPoseObservation.JointName, VNHumanBodyPoseObservation.JointName, CGFloat)] = [
+            (.leftShoulder, .leftElbow, 1.4), (.rightShoulder, .rightElbow, 1.4),
+            (.leftElbow, .leftWrist, 1.4), (.rightElbow, .rightWrist, 1.4),
+            (.leftHip, .leftKnee, 1.8), (.rightHip, .rightKnee, 1.8),
+            (.leftKnee, .leftAnkle, 1.8), (.rightKnee, .rightAnkle, 1.8),
+        ]
+        for (a, b, most) in bones {
+            if let p = j[a], let q = j[b], length(p, q) > reference * most { return "long_bone" }
+        }
+        // 脚が見えているなら、胴に比べて短すぎない（斜めの巨大な人形は、長い胴の先に短い脚がついていた）
+        for (hip, knee, ankle) in [(j[.leftHip], j[.leftKnee], j[.leftAnkle]), (j[.rightHip], j[.rightKnee], j[.rightAnkle])] {
+            if let hip, let knee, let ankle, length(hip, knee) + length(knee, ankle) < torso * 0.6 { return "short_leg" }
+        }
+        return nil
+    }
+
+    /// 2 点の真ん中（どちらかがなければ nil）
+    static func midpoint(_ a: CGPoint?, _ b: CGPoint?) -> CGPoint? {
+        guard let a, let b else { return nil }
+        return CGPoint(x: (a.x + b.x) / 2, y: (a.y + b.y) / 2)
+    }
+
+    /// 腰の中心：root、左右の腰の真ん中、片方の腰、どれもなければ首と膝の真ん中（腰だけ取れないコマを補う）
+    static func hipCenter(_ j: Joints, neck: CGPoint) -> CGPoint? {
+        func average(_ points: [CGPoint]) -> CGPoint? {
+            guard !points.isEmpty else { return nil }
+            let n = CGFloat(points.count)
+            return CGPoint(x: points.map(\.x).reduce(0, +) / n, y: points.map(\.y).reduce(0, +) / n)
+        }
+        if let root = j[.root] { return root }
+        if let hip = average([j[.leftHip], j[.rightHip]].compactMap { $0 }) { return hip }
+        guard let knee = average([j[.leftKnee], j[.rightKnee]].compactMap { $0 }) else { return nil }
+        return CGPoint(x: (neck.x + knee.x) / 2, y: (neck.y + knee.y) / 2)
+    }
+
+    /// 直前の主役と続いているか：大きさが 0.6〜1.6 倍の中で、中心が画面の 2 割より遠くへ飛んでいない
+    static func consistent(_ j: Joints, with previous: Joints) -> Bool {
+        guard let now = extent(j), let before = extent(previous) else { return true }
+        let a = max(now.width, now.height), b = max(before.width, before.height)
+        guard b > 0 else { return true }
+        let ratio = a / b
+        let jump = hypot(now.midX - before.midX, now.midY - before.midY)
+        return ratio >= 0.6 && ratio <= 1.6 && jump <= 0.2
+    }
+
+    /// 主役の体のまわり（0〜1）。着ぐるみで毛の色を塗る範囲を、ここに絞る
+    var trustedMainArea: CGRect? {
+        guard let box = Self.extent(trustedMain) else { return nil }
+        let pad = max(box.width, box.height) * 0.22
+        return box.insetBy(dx: -pad, dy: -pad)
+    }
+
+    /// 関節の範囲（0〜1）。関節が 3 つ未満なら nil
+    static func extent(_ joints: Joints) -> CGRect? {
+        guard joints.count >= 3 else { return nil }
+        let xs = joints.values.map(\.x), ys = joints.values.map(\.y)
+        return CGRect(x: xs.min()!, y: ys.min()!, width: xs.max()! - xs.min()!, height: ys.max()! - ys.min()!)
+    }
+
+    /// 演じている人だけを残す。実写で試すと、後ろの人や関節の少ない誤検出にも人形が出て、
+    /// 大きさがばらばらのクマが何体も重なっていた（odaicam-realperson、2026-11-07）。
+    /// - 関節が minJoints 未満のものは捨てる
+    /// - いちばん大きい人の半分より小さい人は捨てる（後ろの客）
+    /// - 主役（先頭）は、前のコマの主役にいちばん近い人。大きさが最大の 6 割に満たなければ最大の人に替える
+    ///   （先頭が入れ替わると、なめらかにする処理が別の人と混ざって大きく跳ねていた）
+    static func mainBodies(_ bodies: [Joints], previous: Joints) -> [Joints] {
+        let sized = bodies.filter { $0.count >= minJoints }.compactMap { b in extent(b).map { (b, $0) } }
+        guard let biggest = sized.map({ max($0.1.height, $0.1.width) }).max(), biggest > 0 else { return [] }
+        let kept = sized.filter { max($0.1.height, $0.1.width) >= biggest * 0.5 }
+        func center(_ r: CGRect) -> CGPoint { CGPoint(x: r.midX, y: r.midY) }
+        var mainIndex = kept.indices.max { max(kept[$0].1.height, kept[$0].1.width) < max(kept[$1].1.height, kept[$1].1.width) } ?? 0
+        if let prev = extent(previous) {
+            let p = center(prev)
+            let near = kept.indices.min { a, b in
+                hypot(center(kept[a].1).x - p.x, center(kept[a].1).y - p.y) < hypot(center(kept[b].1).x - p.x, center(kept[b].1).y - p.y)
+            }
+            if let near, max(kept[near].1.height, kept[near].1.width) >= biggest * 0.6 { mainIndex = near }
+        }
+        guard kept.indices.contains(mainIndex) else { return [] }
+        var result = [kept[mainIndex].0]
+        for (i, k) in kept.enumerated() where i != mainIndex { result.append(k.0) }
+        return result
     }
 
     /// 骨組みの人形（棒人間）と着ぐるみの描き方
@@ -639,12 +941,28 @@ final class EffectEngine: @unchecked Sendable {
             guard let a, let b else { return a ?? b }
             return CGPoint(x: (a.x + b.x) / 2, y: (a.y + b.y) / 2)
         }
+        // 手足の先は、つながる関節（肘か肩・膝か腰）があるときだけ描く（腕が抜けて手の点だけ浮かないように）
+        func attached(_ name: VNHumanBodyPoseObservation.JointName) -> Bool {
+            switch name {
+            case .leftWrist: return points[.leftElbow] != nil || points[.leftShoulder] != nil
+            case .rightWrist: return points[.rightElbow] != nil || points[.rightShoulder] != nil
+            case .leftAnkle: return points[.leftKnee] != nil || points[.leftHip] != nil
+            case .rightAnkle: return points[.rightKnee] != nil || points[.rightHip] != nil
+            default: return true
+            }
+        }
         let neck = p(.neck) ?? mid(p(.leftShoulder), p(.rightShoulder))
         let root = p(.root) ?? mid(p(.leftHip), p(.rightHip))
         // 体の大きさの目安（肩幅か、首から腰まで）
         var unit = w / 10
         if let l = p(.leftShoulder), let r = p(.rightShoulder) { unit = max(hypot(l.x - r.x, l.y - r.y), w / 20) }
         else if let neck, let root { unit = max(hypot(neck.x - root.x, neck.y - root.y) * 0.6, w / 20) }
+        // 肩の位置がずれて肩幅が大きく出ると、体より大きな頭のクマになっていた（実写の点検）。
+        // 体の縦の長さ（頭から足まで、見えている関節の範囲）の 3 割までに抑える
+        if let box = extent(points) {
+            let body = max(box.height * h, box.width * w)
+            if body > 0 { unit = min(unit, max(body * 0.3, w / 40)) }
+        }
         // 頭の上の向き（首→鼻。なければ真上）
         var up = CGVector(dx: 0, dy: 1)
         if let neck, let nose = p(.nose) {
@@ -706,7 +1024,7 @@ final class EffectEngine: @unchecked Sendable {
                 if let q = p(name) { ctx.fillEllipse(in: CGRect(x: q.x - line * 0.42, y: q.y - line * 0.42, width: line * 0.84, height: line * 0.84)) }
             }
             for name: VNHumanBodyPoseObservation.JointName in [.leftWrist, .rightWrist, .leftAnkle, .rightAnkle] {
-                guard let q = p(name) else { continue }
+                guard let q = p(name), attached(name) else { continue }
                 let r = line * 0.85
                 ctx.setFillColor(edge); ctx.fillEllipse(in: CGRect(x: q.x - r, y: q.y - r, width: r * 2, height: r * 2))
                 ctx.setFillColor(yellow); ctx.fillEllipse(in: CGRect(x: q.x - r * 0.72, y: q.y - r * 0.72, width: r * 1.44, height: r * 1.44))
@@ -740,7 +1058,7 @@ final class EffectEngine: @unchecked Sendable {
             }
             // 手足の先はクリーム色の肉球
             for name: VNHumanBodyPoseObservation.JointName in [.leftWrist, .rightWrist, .leftAnkle, .rightAnkle] {
-                guard let q = p(name) else { continue }
+                guard let q = p(name), attached(name) else { continue }
                 let r = line * 0.62
                 ctx.setFillColor(furDark); ctx.fillEllipse(in: CGRect(x: q.x - r * 1.1, y: q.y - r * 1.1, width: r * 2.2, height: r * 2.2))
                 ctx.setFillColor(cream); ctx.fillEllipse(in: CGRect(x: q.x - r * 0.8, y: q.y - r * 0.8, width: r * 1.6, height: r * 1.6))
@@ -829,12 +1147,19 @@ final class EffectEngine: @unchecked Sendable {
         let joints = bodyJoints(source: source, now: now, frameTime: frameTime)
         let size = input.extent.size
         var base = input
-        // 人の形を少し太らせた型抜きで、元の人を毛の色で隠す（着ぐるみの下から本人がはみ出さないように）
-        if let mask = personMask(source: source, input: input, now: now, frameTime: frameTime).mask {
+        // 人の形を少し太らせた型抜きで、元の人を毛の色で隠す（着ぐるみの下から本人がはみ出さないように）。
+        // 塗るのは人形を描く人の体のまわりだけ。型抜きは床の荷物・影・後ろの人も拾い、着ぐるみのない茶色のしみになっていた
+        // （実写の点検の jacks の足元・grizzly の 2 人目、2026-11-07 批評）。人形を出さないコマは塗らない
+        let area: CGRect? = Self.usesVision && !trustedMain.isEmpty ? trustedMainArea.map {
+            CGRect(x: input.extent.minX + $0.minX * size.width, y: input.extent.minY + $0.minY * size.height,
+                   width: $0.width * size.width, height: $0.height * size.height)
+        } : nil
+        let paint = !joints.bodies.isEmpty && (area != nil || !Self.usesVision || FakeCamera.isDemo)
+        if paint, let mask = personMask(source: source, input: input, now: now, frameTime: frameTime).mask {
             let grow = CIFilter.morphologyMaximum()
             grow.inputImage = mask.clampedToExtent()
             grow.radius = Float(max(3, size.width * 0.012))
-            let fat = (grow.outputImage ?? mask).applyingGaussianBlur(sigma: 2).cropped(to: input.extent)
+            let fat = (grow.outputImage ?? mask).applyingGaussianBlur(sigma: 2).cropped(to: area ?? input.extent)
             let blend = CIFilter.blendWithMask()
             blend.inputImage = CIImage(color: CIColor(red: 0.55, green: 0.36, blue: 0.22)).cropped(to: input.extent)
             blend.backgroundImage = input
