@@ -169,7 +169,7 @@ struct GuesserView: View {
     private var previewEffect: Effect? {
         guard game.phase == .menu, game.effectsOn else { return nil }
         if let fixed = game.fixedEffect { return fixed }
-        let cycle: [Effect] = [.space, .silhouette, .sea, .mosaic, .stage, .stick, .classroom, .peephole]
+        let cycle: [Effect] = [.stick, .mosaic, .costume, .space, .silhouette, .sea, .stage, .classroom, .peephole]
         return cycle[previewCycle % cycle.count]
     }
 

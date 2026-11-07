@@ -12,6 +12,14 @@
 "3秒遅れ" = "3s delay";
 "のぞき穴" = "Peephole";
 "骨組みの線だけが見える" = "Only the skeleton lines show";
+"顔つきの棒人間が同じ動きをする" = "A stick buddy with a face copies your moves";
+"クマの着ぐるみが同じ動きをする" = "A bear costume copies your moves";
+"選んだ粗さのモザイクで見える" = "Pixelated at the level you pick";
+"着ぐるみ" = "Costume";
+"粗い" = "Chunky";
+"ふつう" = "Medium";
+"細かい" = "Fine";
+"モザイクの粗さ" = "Pixel size";
 "真っ黒な影だけが見える" = "Only a black shadow shows";
 "粗いモザイクが少しずつ晴れる" = "Chunky pixels slowly clear up";
 "3 秒前の動きが見える" = "You see moves from 3 seconds ago";
