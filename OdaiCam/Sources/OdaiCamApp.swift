@@ -433,10 +433,12 @@ struct HowToView: View {
                         "当てる人はカメラに映った姿だけで当てます。顔を上げて直接見るとカンニング。1 回目は注意、2 回目から −1 点。")
                     row("waveform", "答えは声に出すだけ",
                         "合っていれば自動で次のお題へ。")
-                    row("sparkles", "しばりはおまけ",
-                        "背景を宇宙や教室に変えたり、棒人間や影絵にしたり。いつもと違う姿で、もっとばかばかしく。")
+                    row("figure.stand", "しばりで見え方が変わる",
+                        "当てる人には、棒人間・モザイク・着ぐるみ・影絵などに変わって見えます。シャッターの下の列で選べて、「おまかせ」ならお題ごとに入れ替わります。「しばりなし」はそのままの姿。")
                     row("play.rectangle", "最後に種明かし",
-                        "見えていた画面と本当の演技を並べた動画ができます。そのまま TikTok やストーリーズに。")
+                        "当てる人に見えていた画面と、本当の演技を並べた動画ができます。そのまま TikTok やストーリーズに。")
+                    row("arrow.triangle.2.circlepath", "役を交代してもう一回",
+                        "Duo を渡して、演じる人と当てる人を入れ替えます。")
                 }
                 .padding(.horizontal, 28)
             }
@@ -460,6 +462,43 @@ struct HowToView: View {
                 Text(text).font(.system(size: 15)).foregroundStyle(Theme.secondary)
                     .fixedSize(horizontal: false, vertical: true)
             }
+        }
+    }
+}
+
+// MARK: - 初めての人への見本（種明かしがどういうものか、開いて 10 秒で分かるように）
+
+/// 当てる人に見えていた画面（着ぐるみ）と、本当の演技（本人）を、同じポーズで交互に見せる小さなカード
+struct RevealTeaser: View {
+    static let step = 1.6
+    private static func image(_ name: String) -> UIImage? {
+        Bundle.main.url(forResource: name, withExtension: "jpg").flatMap { UIImage(contentsOfFile: $0.path) }
+    }
+    private let seen = RevealTeaser.image("TeaserSeen")
+    private let real = RevealTeaser.image("TeaserReal")
+
+    var body: some View {
+        if let seen, let real {
+            TimelineView(.periodic(from: .now, by: Self.step)) { context in
+                let showReal = Int(context.date.timeIntervalSinceReferenceDate / Self.step) % 2 == 1
+                VStack(spacing: 6) {
+                    Text(showReal ? "ほんとはコレ" : "当てる人に見えてたのは")
+                        .font(.system(size: 11, weight: .heavy))
+                        .foregroundStyle(showReal ? .white : .black)
+                        .padding(.horizontal, 8).frame(height: 22)
+                        .background(showReal ? Color.black.opacity(0.75) : Theme.accent, in: Capsule())
+                    Image(uiImage: showReal ? real : seen)
+                        .resizable().scaledToFill()
+                        .frame(width: 108, height: 192)
+                        .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+                        .overlay(RoundedRectangle(cornerRadius: 14, style: .continuous).stroke(.black, lineWidth: 3))
+                        .id(showReal)
+                        .transition(.opacity)
+                }
+                .animation(.easeInOut(duration: 0.35), value: showReal)
+            }
+            .accessibilityElement(children: .ignore)
+            .accessibilityLabel("種明かしの見本：当てる人に見えていた着ぐるみと、本当の演技")
         }
     }
 }
@@ -534,6 +573,10 @@ struct HomeView: View {
                         SampleSeen(effect: game.fixedEffect ?? .space)
                     }
                     VStack(spacing: 10) {
+                        // 初めての人には、右上に種明かしの見本を流す（最初の設定に関係なく、何が起きるゲームかが分かる）
+                        if firstRun && !cameraDenied {
+                            HStack { Spacer(); RevealTeaser() }
+                        }
                         Spacer()
                         if mode == .fixed(.mosaic) { mosaicPicker }
                         hint

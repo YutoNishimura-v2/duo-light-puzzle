@@ -131,7 +131,7 @@ jobs:
           rows = list(csv.DictReader(open("demo/usage.csv")))
           if rows:
               cpu = [float(r["cpu_percent"]) for r in rows]; mem = [float(r["rss_mb"]) for r in rows]
-              print(f"## デモ 3 ラウンドの重さ（{len(rows)} 点、2 秒ごと）")
+              print(f"## デモ 10 ラウンド続けたときの重さ（{len(rows)} 点、2 秒ごと）")
               print(f"CPU 平均 {sum(cpu)/len(cpu):.0f}% / 最大 {max(cpu):.0f}%　メモリ 最初 {mem[0]:.0f} MB / 最大 {max(mem):.0f} MB / 最後 {mem[-1]:.0f} MB")
           PY
 
@@ -192,6 +192,8 @@ jobs:
             | python3 -c 'import json,sys; print("\n".join(json.load(sys.stdin).get("crash.trail", [])))' > demo/footprints.txt 2>&1 || true
           ls -la "$DATA/tmp" "$DATA/Library/Caches" >> demo/footprints.txt 2>&1 || true
           cat demo/footprints.txt || true
+          # 10 ラウンドの安定性：ラウンドの終わりと種明かしのできあがりの、iOS が見るメモリ量（phys_footprint）
+          { echo "## 10 ラウンドの安定性（phys_footprint）"; grep -E "ラウンド終了|種明かし：できた|打ち切り|失敗" demo/footprints.txt | sed 's/^/- /'; } >> "$GITHUB_STEP_SUMMARY" || true
 
       - uses: actions/upload-artifact@v4
         if: always()

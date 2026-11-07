@@ -12,6 +12,8 @@ final class OdaiCamUITests: XCTestCase {
     // 15 秒では、CI の重いシミュレータで画面写真と配置の確認をしている間にラウンドが終わり、
     // 「パス」を押す前に結果の画面になって落ちた（run 42328558975）
     static let roundSeconds = 25
+    /// デモ（test3Demo）で続けて遊ぶラウンドの数
+    static let demoRounds = 10
     /// シミュレータの言葉に関係なく、アプリを日本語で動かす（ボタンは日本語の名前で探すため。山札も日本語になる）
     static let japanese = ["-AppleLanguages", "(ja)", "-AppleLocale", "ja_JP"]
 
@@ -121,7 +123,8 @@ final class OdaiCamUITests: XCTestCase {
             sleep(1)
         }
         shot("demo-home-random")
-        for round in 1...3 {
+        // 10 ラウンド続けて遊んでも落ちない・メモリが増え続けないかを見る（実機の「3 回続けて」より厳しめ）
+        for round in 1...Self.demoRounds {
             XCTContext.runActivity(named: "デモ \(round) ラウンド目") { _ in
                 if round == 1 {
                     app.buttons["あそぶ"].tap()
