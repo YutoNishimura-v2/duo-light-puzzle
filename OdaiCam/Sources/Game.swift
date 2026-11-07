@@ -73,6 +73,8 @@ final class Game {
     private static var savedMode: (on: Bool, effect: Effect?) {
         // 試験（偽カメラ）はいつもしばりなしから始める（UI テストはしばりなしを先頭として順に押す）
         if FakeCamera.isOn { return (false, nil) }
+        // 画面写真（-shot）は、いつも初めて開いたときの最初の設定で撮る（前の写真の home-bg の「宇宙」が残っていた）
+        if Shot.name != nil { return firstRunMode }
         guard let raw = UserDefaults.standard.string(forKey: "mode") else { return firstRunMode }
         if raw == "none" { return (false, nil) }
         if raw == "random" { return (true, nil) }
@@ -80,7 +82,7 @@ final class Game {
     }
 
     private func saveMode() {
-        guard !FakeCamera.isOn else { return }
+        guard !FakeCamera.isOn, Shot.name == nil else { return }
         let raw = !effectsOn ? "none" : (fixedEffect?.rawValue ?? "random")
         UserDefaults.standard.set(raw, forKey: "mode")
     }
