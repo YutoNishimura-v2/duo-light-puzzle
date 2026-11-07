@@ -747,6 +747,8 @@ final class EffectEngine: @unchecked Sendable {
     static let holdSeconds: TimeInterval = 0.8
     /// 一瞬だけ見えなくなった関節を、直前の位置で補う長さ（秒）
     static let jointCarrySeconds: TimeInterval = 0.3
+    /// 1 コマで関節が動いてよい距離（0〜1）。これより飛んだ関節は誤検出として捨てる（Tools/RealPerson/analyze.py の joint_step）
+    static let maxJointStep: CGFloat = 0.12
 
     /// 何人も映る実写で、主役が後ろの小さい人に飛ぶ・横棒になる・巨大な斜めのクマになる崩れがあった
     /// （odaicam-realperson の grizzly、2026-11-07 批評）。あやしい骨格は使わず、直前の姿を保つか隠す。
@@ -760,7 +762,16 @@ final class EffectEngine: @unchecked Sendable {
         lastBiggestPerson = biggestPersonHeight
         // 一瞬だけ見えなくなった関節は、判定の前に直前の位置で補う（腕立て・しゃがみで腰が数コマ抜け、人形が消えていた）
         var main = bodies.first ?? [:]
+        var fresh = Set(main.keys)
         if !main.isEmpty, recent {
+            // 1 コマで 1 つの関節だけ遠くへ飛ぶのは、Vision が隣の人の首や腰をつかんだ誤り。見えなかったものとして扱う
+            // （square で腰・首が 1 コマだけ 0.3 以上飛び、震えの 95% 値が 70px になっていた。ふつうの動きは 1 コマ 0.1 未満）
+            for (name, p) in main {
+                if let q = trustedMain[name], hypot(p.x - q.x, p.y - q.y) > Self.maxJointStep {
+                    main[name] = nil
+                    fresh.remove(name)
+                }
+            }
             for (name, p) in trustedMain where main[name] == nil {
                 if let seen = jointSeenAt[name], now - seen < Self.jointCarrySeconds { main[name] = p }
             }
@@ -776,7 +787,7 @@ final class EffectEngine: @unchecked Sendable {
         okStreak = lastDecision == "ok" ? okStreak + 1 : 0
         // 新しく人形を出すのは、続けて acquireFrames コマ自然な骨格が取れてから（1 コマだけの誤検出に人形が付き、0.8 秒残っていた）
         if lastDecision == "ok", recent || okStreak >= Self.acquireFrames {
-            for name in bodies[0].keys { jointSeenAt[name] = now }
+            for name in fresh { jointSeenAt[name] = now }
             // 腰が取れていないときは、補った腰を描く（胴と脚が離れた人形にしない）
             if main[.root] == nil, main[.leftHip] == nil, main[.rightHip] == nil,
                let neck = main[.neck] ?? Self.midpoint(main[.leftShoulder], main[.rightShoulder]) {

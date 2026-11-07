@@ -36,6 +36,7 @@ DEFAULTS: dict[str, float] = {
     "carry": 0.3,             # seconds a lost joint is filled from the trusted pose
     "acquire": 3,             # consecutive ok frames before a new figure is shown
     "min_person_ratio": 0.5,  # skeleton smaller than this x biggest person -> background person
+    "joint_step": 0.12,       # a joint moving farther than this in one frame is a misdetection
 }
 
 HIPS = ("left_upLeg_joint", "right_upLeg_joint")
@@ -134,18 +135,50 @@ def consistent(j: Joints, prev: Joints, p: dict[str, float]) -> bool:
     return p["ratio_lo"] <= sa / sb <= p["ratio_hi"] and jump <= p["jump"]
 
 
-def replay(frames: list[dict], p: dict[str, float]) -> tuple[float, Counter]:
-    """Run the trust/hold rules over the frames; return (shown rate, hidden reasons)."""
+def smooth(drawn: Joints, before: Joints) -> Joints:
+    """Mirror bodyJoints' smoothing: average with the previous frame unless a joint moved far."""
+    out = dict(drawn)
+    for name, q in drawn.items():
+        r = before.get(name)
+        if r is not None and dist(q, r) < 0.08:
+            out[name] = ((q[0] + r[0]) / 2, (q[1] + r[1]) / 2)
+    return out
+
+
+def jitter_p95(track: list[Joints], width: float = 540, height: float = 960) -> float:
+    """95th percentile of each joint's second difference in pixels (main.swift's joint_jitter_px_p95)."""
+    accel = []
+    for i in range(1, len(track) - 1):
+        for name, q in track[i].items():
+            a, b = track[i - 1].get(name), track[i + 1].get(name)
+            if a is None or b is None:
+                continue
+            accel.append(math.hypot((b[0] - 2 * q[0] + a[0]) * width, (b[1] - 2 * q[1] + a[1]) * height))
+    accel.sort()
+    return accel[min(len(accel) - 1, int(len(accel) * 0.95))] if accel else -1.0
+
+
+def replay(frames: list[dict], p: dict[str, float],
+           track: list[Joints] | None = None) -> tuple[float, Counter]:
+    """Run the trust/hold rules over the frames; return (shown rate, hidden reasons).
+
+    If ``track`` is given, the drawn (smoothed) joints of every frame are appended to it.
+    """
     trusted: Joints = {}
     t_time = -1e9
     seen: dict[str, float] = {}
     streak = 0
     shown, why = 0, Counter()
+    smoothed: Joints = {}
     for f in frames:
         t = f["t"]
         c: Joints = {k: tuple(v) for k, v in f["candidate"].items()}
         recent = t - t_time < p["hold"] and bool(trusted)
+        fresh = list(c)
         if c and recent:
+            # one joint leaping away in a single frame is Vision grabbing a neighbour: treat it as lost
+            fresh = [k for k, v in c.items() if k not in trusted or dist(v, trusted[k]) <= p["joint_step"]]
+            c = {k: c[k] for k in fresh}
             for name, q in trusted.items():
                 if name not in c and t - seen.get(name, -1e9) < p["carry"]:
                     c[name] = q
@@ -157,17 +190,25 @@ def replay(frames: list[dict], p: dict[str, float]) -> tuple[float, Counter]:
         else:
             d = reason(c, p) or ("ok" if (not recent or consistent(c, trusted, p)) else "jump")
         streak = streak + 1 if d == "ok" else 0
+        drawn: Joints = {}
         if d == "ok" and (recent or streak >= p["acquire"]):
-            for name in f["candidate"]:
+            for name in fresh:
                 seen[name] = t
+            if "root" not in c and not any(h in c for h in HIPS):
+                c["root"] = root_of(c)
             trusted, t_time = c, t
+            drawn = c
             shown += 1
         elif recent and d != "background_person":
+            drawn = trusted
             shown += 1
         else:
             if d != "ok":
                 trusted = {}
             why[d] += 1
+        smoothed = smooth(drawn, smoothed) if drawn else {}
+        if track is not None:
+            track.append(smoothed)
     return shown / max(len(frames), 1), why
 
 
@@ -181,10 +222,12 @@ def main() -> None:
     for path in sorted(glob.glob(os.path.join(folder, "*-frames.json"))):
         with open(path, encoding="utf-8") as fh:
             frames = json.load(fh)
-        rate, why = replay(frames, p)
+        track: list[Joints] = []
+        rate, why = replay(frames, p, track)
         name = os.path.basename(path).replace("-frames.json", "")
         logged = sum(f["visible"] for f in frames) / max(len(frames), 1)
-        print(f"{name:10s} sim={rate:.3f} logged={logged:.3f} hidden_by={dict(why.most_common())}")
+        print(f"{name:10s} sim={rate:.3f} logged={logged:.3f} jitter_p95={jitter_p95(track):.1f}px"
+              f" hidden_by={dict(why.most_common())}")
 
 
 if __name__ == "__main__":
