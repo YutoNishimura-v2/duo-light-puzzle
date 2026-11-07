@@ -550,30 +550,57 @@ final class EffectEngine: @unchecked Sendable {
     /// 画面でいちばん大きい人の高さ（0〜1）。誰も見つけていなければ 0
     var biggestPersonHeight: CGFloat { peopleBoxes.map(\.height).max() ?? 0 }
 
-    /// 手前の人（いちばん大きい人の半分以上の高さの人）の枠を少し広げてまとめた範囲。人を見つけていなければ nil。
-    /// 型抜きは後ろの群衆まで拾い、影絵・背景のしばりで誰が演じているか分からなかった（square の 2・5 秒、2026-11-08 批評）
+    /// 骨格の人形を付けてよい人の大きさ（いちばん大きい人の高さに対する割合）
     static let minPersonRatio: CGFloat = 0.5
-    private func foregroundPeopleMask(extent: CGRect) -> CIImage? {
+    /// 影絵・背景のしばりで残す人の大きさ（いちばん大きい人の高さに対する割合）。これより小さい人の枠は消す
+    static let backgroundPersonRatio: CGFloat = 0.6
+
+    /// 後ろの小さい人の枠（白）。ただし手前の人の枠と重なるところは消さない（黒）。消す人がいなければ nil。
+    /// 手前の人だけを残す作り方（1 回目）は、人の枠が手前の人を取りこぼすと演じている人まで切れた（grizzly の 2・8 秒）ので、
+    /// 見つけた小さい人だけを消す
+    private func backgroundPeopleMask(extent: CGRect) -> CIImage? {
         let biggest = biggestPersonHeight
         guard Self.usesVision, biggest > 0 else { return nil }
-        var mask = CIImage(color: .black).cropped(to: extent)
-        for box in peopleBoxes where box.height >= biggest * Self.minPersonRatio {
-            let pad = box.height * 0.08
-            let r = box.insetBy(dx: -pad, dy: -pad)
-            let rect = CGRect(x: extent.minX + r.minX * extent.width, y: extent.minY + r.minY * extent.height,
-                              width: r.width * extent.width, height: r.height * extent.height)
-            mask = CIImage(color: .white).cropped(to: rect.intersection(extent)).composited(over: mask)
+        func pixels(_ box: CGRect, pad: CGFloat) -> CGRect {
+            let r = box.insetBy(dx: -box.height * pad, dy: -box.height * pad)
+            return CGRect(x: extent.minX + r.minX * extent.width, y: extent.minY + r.minY * extent.height,
+                          width: r.width * extent.width, height: r.height * extent.height).intersection(extent)
         }
-        return mask.applyingGaussianBlur(sigma: Double(extent.width * 0.02)).cropped(to: extent)
+        let small = peopleBoxes.filter { $0.height < biggest * Self.backgroundPersonRatio }
+        guard !small.isEmpty else { return nil }
+        var mask = CIImage(color: .black).cropped(to: extent)
+        for box in small {
+            mask = CIImage(color: .white).cropped(to: pixels(box, pad: 0.05)).composited(over: mask)
+        }
+        for box in peopleBoxes where box.height >= biggest * Self.backgroundPersonRatio {
+            mask = CIImage(color: .black).cropped(to: pixels(box, pad: 0.05)).composited(over: mask)
+        }
+        return mask.applyingGaussianBlur(sigma: Double(extent.width * 0.01)).cropped(to: extent)
     }
 
-    /// 型抜きを手前の人のまわりだけに絞る（人を見つけていなければそのまま）
+    /// 影絵・背景のしばりの型抜きを、演じている手前の人に絞る。
+    /// 型抜きは後ろの群衆まで薄く拾い、誰が演じているか分からなかった（square の 2・5 秒、2026-11-08 批評）。
+    /// - 薄い（自信の低い）ところは消し、濃いところははっきりさせる（0.3 以下 → 0、0.8 以上 → 1）
+    /// - 後ろの小さい人の枠の中は消す
     private func keepForeground(_ mask: CIImage, extent: CGRect) -> CIImage {
-        guard let area = foregroundPeopleMask(extent: extent) else { return mask }
-        let keep = CIFilter.minimumCompositing()
-        keep.inputImage = mask
-        keep.backgroundImage = area
-        return keep.outputImage?.cropped(to: extent) ?? mask
+        guard Self.usesVision else { return mask }
+        let curve = CIFilter.colorMatrix()
+        curve.inputImage = mask
+        curve.rVector = CIVector(x: 2, y: 0, z: 0, w: 0)
+        curve.gVector = CIVector(x: 0, y: 2, z: 0, w: 0)
+        curve.bVector = CIVector(x: 0, y: 0, z: 2, w: 0)
+        curve.biasVector = CIVector(x: -0.6, y: -0.6, z: -0.6, w: 0)
+        let clamp = CIFilter.colorClamp()
+        clamp.inputImage = curve.outputImage
+        clamp.minComponents = CIVector(x: 0, y: 0, z: 0, w: 0)
+        clamp.maxComponents = CIVector(x: 1, y: 1, z: 1, w: 1)
+        let firm = clamp.outputImage?.cropped(to: extent) ?? mask
+        guard let erase = backgroundPeopleMask(extent: extent) else { return firm }
+        let cut = CIFilter.blendWithMask()
+        cut.inputImage = CIImage(color: .black).cropped(to: extent)
+        cut.backgroundImage = firm
+        cut.maskImage = erase
+        return cut.outputImage?.cropped(to: extent) ?? firm
     }
 
     /// found は人の形が画面に十分あったか

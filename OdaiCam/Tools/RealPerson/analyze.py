@@ -25,8 +25,8 @@ DEFAULTS: dict[str, float] = {
     "torso_max": 0.45,        # torso longer than this (fraction of frame) -> giant diagonal figure
     "torso_tiny": 0.01,       # torso shorter than this -> no torso at all
     "torso_min_ratio": 0.08,  # torso shorter than this x body size -> arms-only bar
-    "arm": 1.1,
-    "leg": 1.4,
+    "arm": 1.4,
+    "leg": 1.8,
     "short_leg": 0.6,
     "ref_size": 0.4,          # bones are compared with max(torso, body size x ref_size)
     "ratio_lo": 0.6,
