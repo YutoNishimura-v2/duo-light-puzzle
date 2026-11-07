@@ -121,6 +121,7 @@ final class Game {
         isNewBest = false
         // 前のラウンドの種明かし作りは止める（新しいラウンドに古い動画が出ないように。メモリも手放す）
         generation += 1
+        demoRound += 1
         buildTask?.cancel()
         buildTask = nil
         deadline?.cancel()
@@ -273,6 +274,8 @@ final class Game {
     @ObservationIgnored private var rebuild: ((Bool) -> Void)?
     /// いまのラウンドの番号。古いラウンドの書き出しが、あとから新しいラウンドの結果を書き換えないように
     @ObservationIgnored private var generation = 0
+    /// デモでラウンドごとにしばりの順をずらす
+    @ObservationIgnored private var demoRound = -1
     @ObservationIgnored private var buildTask: Task<Void, Never>?
     @ObservationIgnored private var deadline: Task<Void, Never>?
 
@@ -421,12 +424,21 @@ final class Game {
         if voiceJudge { onPrompt?(prompt) }
     }
 
-    /// おまかせなら、直前と同じにならないようにくじで選ぶ
+    /// おまかせの中心：姿を変えるしばり（着ぐるみ・影絵・モザイク・棒人間）。ほかのしばりより 3 倍出やすくする
+    static let figureEffects: [Effect] = [.costume, .silhouette, .mosaic, .stick]
+
+    /// おまかせなら、直前と同じにならないようにくじで選ぶ。
+    /// デモ（CI）では、ラウンドの 1 問目から姿を変えるしばりを順に出す（種明かし動画に着ぐるみなどが必ず入るように）
     private func nextEffect() -> Effect? {
         guard effectsOn else { return nil }
         if let fixedEffect { return fixedEffect }
         let last = turns.last?.effect
-        return Effect.allCases.filter { $0 != last }.randomElement()
+        if FakeCamera.isDemo {
+            let order = Self.figureEffects
+            return order[(turns.count + demoRound) % order.count]
+        }
+        let pool = Effect.allCases.flatMap { Self.figureEffects.contains($0) ? [$0, $0, $0] : [$0] }
+        return pool.filter { $0 != last }.randomElement()
     }
 
     private func finishRound() {
