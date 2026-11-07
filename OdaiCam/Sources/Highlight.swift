@@ -929,8 +929,8 @@ enum Highlight {
             let unitWidth = ceil(unit.size().width)
             let gap = w * 0.02
             let left = (w - numberWidth - gap - unitWidth) / 2
-            // 数字と「点」の下端（文字の並ぶ線）をそろえる。下から 47% の高さ
-            let baseline = h - h * 0.47
+            // 数字と「点」の下端（文字の並ぶ線）をそろえる。上から 47% の高さ（下の「◯秒で◯問正解」に重ならないように）
+            let baseline = h * 0.47
             parts.number = draw(full) { _ in
                 number.draw(at: CGPoint(x: left, y: baseline - numberFont.ascender))
                 unit.draw(at: CGPoint(x: left + numberWidth + gap, y: baseline - unitFont.ascender))

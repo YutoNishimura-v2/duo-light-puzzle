@@ -49,7 +49,8 @@ final class FakeCamera: @unchecked Sendable {
     var videoSettings: [String: Any] {
         // B フレームを使わない（符号化が前後のコマを抱えておく分のメモリが要らない）
         [AVVideoCodecKey: AVVideoCodecType.h264, AVVideoWidthKey: Int(size.width), AVVideoHeightKey: Int(size.height),
-         AVVideoCompressionPropertiesKey: [AVVideoAllowFrameReorderingKey: false]]
+         // 1 秒ごとに区切りのコマ（途中から読み出すつかみの頭が、緑に崩れて出ていた）
+         AVVideoCompressionPropertiesKey: [AVVideoAllowFrameReorderingKey: false, AVVideoMaxKeyFrameIntervalKey: 30]]
     }
 
     /// デモの顔の録画の設定
