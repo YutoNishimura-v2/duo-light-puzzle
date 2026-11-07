@@ -35,7 +35,7 @@ enum CrashLog {
         let list: [String] = lock.withLock {
             // iOS がメモリ不足で落とすときの基準の量（phys_footprint）も添える
             trail.append("\(time) [\(footprintMB) MB] \(event)")
-            if trail.count > 60 { trail.removeFirst(trail.count - 60) }
+            if trail.count > 300 { trail.removeFirst(trail.count - 300) }
             return trail
         }
         defaults.set(list, forKey: trailKey)

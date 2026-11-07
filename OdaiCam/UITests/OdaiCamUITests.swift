@@ -12,6 +12,8 @@ final class OdaiCamUITests: XCTestCase {
     // 15 秒では、CI の重いシミュレータで画面写真と配置の確認をしている間にラウンドが終わり、
     // 「パス」を押す前に結果の画面になって落ちた（run 42328558975）
     static let roundSeconds = 25
+    /// デモ（test3Demo）で続けて遊ぶラウンドの数
+    static let demoRounds = 10
     /// シミュレータの言葉に関係なく、アプリを日本語で動かす（ボタンは日本語の名前で探すため。山札も日本語になる）
     static let japanese = ["-AppleLanguages", "(ja)", "-AppleLocale", "ja_JP"]
 
@@ -86,6 +88,8 @@ final class OdaiCamUITests: XCTestCase {
             tapMode(mode)
             sleep(1)
             guard Self.roundModes.contains(mode) else { continue }
+            // 落ちたときに、どのモードのラウンドだったかが CI の記録（xcodebuild.log）で分かるように書き出す
+            print("UIテスト：ラウンド開始 モード=\(mode)")
             XCTContext.runActivity(named: "ラウンド：\(mode)") { _ in
                 app.buttons["あそぶ"].tap()
                 playRound(mode)
@@ -119,7 +123,8 @@ final class OdaiCamUITests: XCTestCase {
             sleep(1)
         }
         shot("demo-home-random")
-        for round in 1...3 {
+        // 10 ラウンド続けて遊んでも落ちない・メモリが増え続けないかを見る（実機の「3 回続けて」より厳しめ）
+        for round in 1...Self.demoRounds {
             XCTContext.runActivity(named: "デモ \(round) ラウンド目") { _ in
                 if round == 1 {
                     app.buttons["あそぶ"].tap()
@@ -195,10 +200,22 @@ final class OdaiCamUITests: XCTestCase {
         // 動画ができると「保存」「共有」が押せる。できなければ「動画を作れませんでした」
         let failed = app.descendants(matching: .any)
             .matching(NSPredicate(format: "label CONTAINS '動画を作れませんでした'")).firstMatch
-        let deadline = Date().addingTimeInterval(240)
+        var deadline = Date().addingTimeInterval(240)
         var ready = false
+        var retried = false
         while Date() < deadline {
             if app.buttons["共有"].exists || (app.buttons["保存"].exists && app.buttons["保存"].isEnabled) { ready = true; break }
+            // 上限で打ち切られたら、使う人と同じく「作り直す」を 1 回だけ押して待つ
+            // （遅い CI のランナーで、シミュレータの上限 200 秒に届いたことがある：run 42362309519）
+            if failed.exists, !retried, app.buttons["作り直す"].exists {
+                print("UIテスト：\(name) 作り直す を押す")
+                shot("\(name)-retry")
+                tapIfPresent(app.buttons["作り直す"])
+                retried = true
+                deadline = Date().addingTimeInterval(240)
+                sleep(2)
+                continue
+            }
             if failed.exists { break }
             if app.state != .runningForeground {
                 XCTFail("\(name)：動画を作っている間に落ちた")
