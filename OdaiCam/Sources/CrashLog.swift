@@ -15,14 +15,15 @@ enum CrashLog {
     static func start() {
         let last = defaults.stringArray(forKey: trailKey) ?? []
         if defaults.bool(forKey: runningKey), !last.isEmpty, defaults.string(forKey: reportKey) == nil {
-            defaults.set("前回は途中で終了しました。直前の操作:\n" + last.joined(separator: "\n"), forKey: reportKey)
+            defaults.set(String(localized: "前回は途中で終了しました。直前の操作:") + "\n" + last.joined(separator: "\n"), forKey: reportKey)
         }
         defaults.set(true, forKey: runningKey)
         defaults.set([String](), forKey: trailKey)
         NSSetUncaughtExceptionHandler { e in
             let stack = e.callStackSymbols.prefix(25).joined(separator: "\n")
             let trail = CrashLog.lock.withLock { CrashLog.trail }
-            UserDefaults.standard.set("\(e.name.rawValue): \(e.reason ?? "")\n\n直前の操作:\n\(trail.joined(separator: "\n"))\n\n\(stack)",
+            let header = String(localized: "直前の操作:")
+            UserDefaults.standard.set("\(e.name.rawValue): \(e.reason ?? "")\n\n\(header)\n\(trail.joined(separator: "\n"))\n\n\(stack)",
                                       forKey: "crash.report")
             UserDefaults.standard.synchronize()
         }
@@ -33,10 +34,12 @@ enum CrashLog {
         let time = Date().formatted(date: .omitted, time: .standard)
         let list: [String] = lock.withLock {
             trail.append("\(time) \(event)")
-            if trail.count > 20 { trail.removeFirst(trail.count - 20) }
+            if trail.count > 60 { trail.removeFirst(trail.count - 60) }
             return trail
         }
         defaults.set(list, forKey: trailKey)
+        // 試験の記録（CI の app.log）でも追えるように、端末のログにも出す
+        NSLog("OdaiCam足跡: %@", event)
     }
 
     /// 裏に回ったら、正常に終わったとみなす（iOS はふつう、裏に回ったアプリを黙って終わらせる）

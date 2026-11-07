@@ -14,9 +14,12 @@ concurrency:
   group: odaicam-shots
   cancel-in-progress: true
 
+# Mac の仮想機は高いので、1 つのジョブで 1 回だけビルドし、画面写真・UI テスト・デモを続けて回す
+# （前は 3 つのジョブがそれぞれビルドしていて、1 回の実行で約 3 倍かかっていた）
 jobs:
-  shots:
+  check:
     runs-on: xcode-27
+    timeout-minutes: 120
     defaults:
       run:
         working-directory: OdaiCam
@@ -27,64 +30,7 @@ jobs:
         run: |
           set -euo pipefail
           sudo xcode-select -s /Applications/Xcode_27.1.app
-          brew install xcodegen
-          xcrun simctl list devices available
-
-      - name: Build for simulator
-        run: |
-          set -euo pipefail
-          xcodegen generate
-          xcodebuild build -quiet \
-            -project OdaiCam.xcodeproj -scheme OdaiCam \
-            -configuration Debug -sdk iphonesimulator -destination 'generic/platform=iOS Simulator' \
-            -derivedDataPath build \
-            CODE_SIGNING_ALLOWED=YES CODE_SIGN_IDENTITY=- CODE_SIGN_STYLE=Manual
-
-      - name: Screenshots
-        run: |
-          set -euo pipefail
-          # Duo があればそれ、なければ最新の Pro
-          UDID=$(xcrun simctl list devices available -j | python3 -c '
-          import json, sys
-          d = json.load(sys.stdin)["devices"]
-          devs = [x for k, v in d.items() if "iOS" in k for x in v]
-          pick = [x for x in devs if "Duo" in x["name"]] or [x for x in devs if "Pro" in x["name"] and "Max" not in x["name"]] or devs
-          print(pick[-1]["udid"]); print(pick[-1]["name"], file=sys.stderr)')
-          xcrun simctl boot "$UDID" || true
-          xcrun simctl bootstatus "$UDID" -b
-          xcrun simctl ui "$UDID" appearance dark
-          xcrun simctl status_bar "$UDID" override --time 9:41 || true
-          # シミュレータの Duo は閉じた状態で起動し、アプリは外側の画面に出る（内側は黒のまま。開く命令は simctl にない）
-          xcrun simctl install "$UDID" build/Build/Products/Debug-iphonesimulator/OdaiCam.app
-          mkdir -p shots
-          for s in welcome home play countdown results settings decks; do
-            xcrun simctl launch --terminate-running-process "$UDID" io.github.yutonishimura-v2.odaicam -shot "$s"
-            sleep 6
-            # Duo は画面が 2 つ（内側と外側）。両方撮る
-            xcrun simctl io "$UDID" screenshot --display=3 "shots/$s-inner.png" || xcrun simctl io "$UDID" screenshot "shots/$s-inner.png"
-            xcrun simctl io "$UDID" screenshot --display=1 "shots/$s-outer.png" || true
-          done
-          ls -la shots
-
-      - uses: actions/upload-artifact@v4
-        with:
-          name: odaicam-shots
-          path: OdaiCam/shots
-
-  uitest:
-    runs-on: xcode-27
-    timeout-minutes: 40
-    defaults:
-      run:
-        working-directory: OdaiCam
-    steps:
-      - uses: actions/checkout@v5
-
-      - name: Toolchain
-        run: |
-          set -euo pipefail
-          sudo xcode-select -s /Applications/Xcode_27.1.app
-          brew install xcodegen
+          brew install xcodegen ffmpeg coreutils
 
       - name: Sample clip
         # 偽カメラに流す人の動画。The Grizzly Bear Dance (1913)、パブリックドメイン（Wikimedia Commons）。
@@ -127,6 +73,137 @@ jobs:
             -derivedDataPath build \
             CODE_SIGNING_ALLOWED=YES CODE_SIGN_IDENTITY=- CODE_SIGN_STYLE=Manual
 
+      - name: Screenshots
+        run: |
+          set -euo pipefail
+          xcrun simctl status_bar "$UDID" override --time 9:41 || true
+          # シミュレータの Duo は閉じた状態で起動し、アプリは外側の画面に出る（内側は黒のまま。開く命令は simctl にない）
+          xcrun simctl install "$UDID" build/Build/Products/Debug-iphonesimulator/OdaiCam.app
+          mkdir -p shots
+          # 日本語と英語の両方で撮る（英語は名前の後ろに -en）
+          for lang in ja en; do
+            suffix=""; [ "$lang" = en ] && suffix="-en"
+            for s in welcome home home-bg play play-bg countdown results settings decks howto; do
+              xcrun simctl launch --terminate-running-process "$UDID" io.github.yutonishimura-v2.odaicam \
+                -AppleLanguages "($lang)" -shot "$s"
+              sleep 6
+              # Duo は画面が 2 つ（内側と外側）。アプリが出るのは外側
+              xcrun simctl io "$UDID" screenshot --display=1 "shots/$s$suffix-outer.png" || xcrun simctl io "$UDID" screenshot "shots/$s$suffix-outer.png"
+            done
+          done
+          xcrun simctl terminate "$UDID" io.github.yutonishimura-v2.odaicam || true
+          ls -la shots
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: odaicam-shots
+          path: OdaiCam/shots
+
+      # デモ（種明かし動画のコマと CPU・メモリ）を先に回す。いちばん見たい成果物なので、UI テストが長引いても先に出る
+      - name: Demo rounds
+        if: always()
+        run: |
+          set -uo pipefail
+          mkdir -p demo
+          # アプリの CPU とメモリ（RSS、MB）を 2 秒ごとに記録
+          ( echo "sec,cpu_percent,rss_mb" > demo/usage.csv
+            T=0
+            while true; do
+              # シミュレータのアプリもこの Mac の 1 つの処理として見える（中身の確認用に生の行も残す）
+              L=$(ps -axo rss=,%cpu=,command= | grep '[O]daiCam\.app/OdaiCam' | grep -v Runner | head -1 || true)
+              [ $T -le 10 ] && ps -axo pid=,command= | grep -i '[o]daicam' >> demo/ps-raw.txt || true
+              if [ -n "$L" ]; then echo "$L" | awk -v t=$T '{printf "%d,%s,%.1f\n", t, $2, $1/1024}' >> demo/usage.csv; fi
+              sleep 2; T=$((T+2))
+            done ) &
+          MON=$!
+          gtimeout 2400 xcodebuild test-without-building \
+            -project OdaiCam.xcodeproj -scheme OdaiCamUITests \
+            -destination "id=$UDID" -derivedDataPath build \
+            -only-testing:OdaiCamUITests/OdaiCamUITests/test3Demo \
+            -resultBundlePath demo/Result.xcresult 2>&1 | tee demo/xcodebuild.log | grep --line-buffered -E "Test Case|error:|XCTAssert"
+          STATUS=${PIPESTATUS[0]}
+          kill $MON || true
+          grep -E "Test (Case|Suite)|error:|XCTAssert|failed|passed" demo/xcodebuild.log || tail -50 demo/xcodebuild.log
+          echo "DEMO_STATUS=$STATUS" >> "$GITHUB_ENV"
+          python3 - <<'PY' | tee -a "$GITHUB_STEP_SUMMARY"
+          import csv
+          rows = list(csv.DictReader(open("demo/usage.csv")))
+          if rows:
+              cpu = [float(r["cpu_percent"]) for r in rows]; mem = [float(r["rss_mb"]) for r in rows]
+              print(f"## デモ 3 ラウンドの重さ（{len(rows)} 点、2 秒ごと）")
+              print(f"CPU 平均 {sum(cpu)/len(cpu):.0f}% / 最大 {max(cpu):.0f}%　メモリ 最初 {mem[0]:.0f} MB / 最大 {max(mem):.0f} MB / 最後 {mem[-1]:.0f} MB")
+          PY
+
+      - name: Reveal video frames
+        if: always()
+        run: |
+          set -uo pipefail
+          DATA=$(xcrun simctl get_app_container "$UDID" io.github.yutonishimura-v2.odaicam data)
+          mkdir -p demo/videos demo/frames
+          # 仕上がった動画だけ。アプリがデモのときに Documents に残したもの（ラウンドごとに 1 本、重複なし）
+          find "$DATA/Documents" -name 'highlight-demo-*.mp4' -exec cp {} demo/videos/ \;
+          ls -la demo/videos
+          i=0
+          for v in $(ls demo/videos/highlight-*.mp4); do
+            i=$((i+1))
+            D=$(ffprobe -v error -show_entries format=duration -of csv=p=0 "$v")
+            echo "round$i: ${D}s"
+            # 1 秒ごとのコマと、つかみ（0.5 秒）、最後（点数の札）、一覧
+            ffmpeg -y -loglevel error -i "$v" -vf "fps=1,scale=540:-2" "demo/frames/round${i}_%02ds.png"
+            ffmpeg -y -loglevel error -ss 0.5 -i "$v" -frames:v 1 -vf "scale=540:-2" "demo/frames/round${i}_hook.png"
+            ffmpeg -y -loglevel error -sseof -0.7 -i "$v" -frames:v 1 -vf "scale=540:-2" "demo/frames/round${i}_end.png"
+            ffmpeg -y -loglevel error -i "$v" -vf "fps=1,scale=270:-2,tile=6x4:padding=6:color=white" -frames:v 1 "demo/frames/round${i}_sheet.png"
+            mv "$v" "demo/videos/round$i.mp4"
+          done
+          ls demo/frames | head -100
+
+      - name: Demo screenshots
+        if: always()
+        run: |
+          set -uo pipefail
+          mkdir -p demo/raw demo/attachments
+          xcrun xcresulttool export attachments --path demo/Result.xcresult --output-path demo/raw || true
+          python3 - <<'PY'
+          import json, os, re, shutil
+          try:
+              m = json.load(open("demo/raw/manifest.json"))
+          except Exception as e:
+              print(e); raise SystemExit
+          for test in m:
+              for a in test["attachments"]:
+                  name = a.get("suggestedHumanReadableName", "")
+                  if name.endswith(".png") and not name.startswith(("UI Snapshot", "Synthesized")):
+                      shutil.copy(os.path.join("demo/raw", a["exportedFileName"]),
+                                  os.path.join("demo/attachments", re.sub(r"_0_[0-9A-F-]+\.png$", ".png", name)))
+          print(sorted(os.listdir("demo/attachments")))
+          PY
+          mkdir -p demo/crashes
+          find ~/Library/Logs/DiagnosticReports -name 'OdaiCam*' -newer project.yml -exec cp {} demo/crashes/ \; 2>/dev/null || true
+          xcrun simctl spawn "$UDID" log show --last 45m --style compact --predicate 'process == "OdaiCam"' > demo/app.log 2>&1 || true
+          # アプリの足跡（ラウンド・録画・書き出しの各段）だけを抜き出す
+          # 端末のログは伏字になるので、アプリの設定ファイルに残した足跡（直近 60 件）を読む
+          DATA=$(xcrun simctl get_app_container "$UDID" io.github.yutonishimura-v2.odaicam data 2>/dev/null || true)
+          plutil -convert json -o - "$DATA/Library/Preferences/io.github.yutonishimura-v2.odaicam.plist" 2>/dev/null \
+            | python3 -c 'import json,sys; print("\n".join(json.load(sys.stdin).get("crash.trail", [])))' > demo/footprints.txt 2>&1 || true
+          ls -la "$DATA/tmp" "$DATA/Library/Caches" >> demo/footprints.txt 2>&1 || true
+          cat demo/footprints.txt || true
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: odaicam-demo
+          path: |
+            OdaiCam/demo/videos
+            OdaiCam/demo/frames
+            OdaiCam/demo/attachments
+            OdaiCam/demo/crashes
+            OdaiCam/demo/usage.csv
+            OdaiCam/demo/footprints.txt
+            OdaiCam/demo/ps-raw.txt
+            OdaiCam/demo/xcodebuild.log
+            OdaiCam/demo/app.log
+
       - name: UI test
         run: |
           set -uo pipefail
@@ -135,12 +212,14 @@ jobs:
           xcrun simctl io "$UDID" recordVideo --display=1 --codec=h264 --force uitest/run.mp4 &
           REC=$!
           sleep 2
-          xcodebuild test-without-building \
+          # 固まっても後ろの手順（記録の回収・デモ）が動くよう、20 分で打ち切る。進み具合はログに流す
+          gtimeout 2400 xcodebuild test-without-building \
             -project OdaiCam.xcodeproj -scheme OdaiCamUITests \
             -destination "id=$UDID" -derivedDataPath build \
-            -resultBundlePath uitest/Result.xcresult > uitest/xcodebuild.log 2>&1
-          STATUS=$?
-          grep -E "Test (Case|Suite)|error:|XCTAssert|failed|passed" uitest/xcodebuild.log || tail -50 uitest/xcodebuild.log
+            -skip-testing:OdaiCamUITests/OdaiCamUITests/test3Demo \
+            -resultBundlePath uitest/Result.xcresult 2>&1 | tee uitest/xcodebuild.log | grep --line-buffered -E "Test Case|error:|XCTAssert"
+          STATUS=${PIPESTATUS[0]}
+          tail -30 uitest/xcodebuild.log
           kill -INT $REC || true
           wait $REC || true
           # 録画はそのままだと 500 MB ほどあるので、小さくしてから上げる
@@ -151,7 +230,7 @@ jobs:
           fi
           ls -la uitest/run.mp4
           echo "xcodebuild exit $STATUS"
-          echo "STATUS=$STATUS" >> "$GITHUB_ENV"
+          echo "UITEST_STATUS=$STATUS" >> "$GITHUB_ENV"
 
       - name: Summary
         if: always()
@@ -208,6 +287,7 @@ jobs:
             OdaiCam/uitest/app.log
 
       - name: Result
+        if: always()
         run: |
-          echo "xcodebuild exit $STATUS"
-          test "$STATUS" = 0
+          echo "UI テスト ${UITEST_STATUS:-なし} / デモ ${DEMO_STATUS:-なし}"
+          test "${UITEST_STATUS:-1}" = 0 && test "${DEMO_STATUS:-1}" = 0

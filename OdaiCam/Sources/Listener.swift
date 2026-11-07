@@ -5,11 +5,12 @@ import Foundation
 /// 当てる人の声を聞き取り、いまのお題を言ったら知らせる。
 /// iPhone の音声認識（Speech）を端末の中だけで使う。お題が変わるたびに聞き直す
 final class Listener: @unchecked Sendable {
-    private let recognizer = SFSpeechRecognizer(locale: Locale(identifier: "ja-JP"))
+    /// 言葉ごとの聞き取り（山札の言葉に合わせる。一度作ったら使い回す）。lock で守る
+    private var recognizers: [String: SFSpeechRecognizer] = [:]
     private let lock = NSLock()
     private var request: SFSpeechAudioBufferRecognitionRequest?
     private var task: SFSpeechRecognitionTask?
-    private var target: [String] = []
+    private var target: [AnswerMatcher.Key] = []
     private var matched = false
 
     /// 聞き取った言葉（main で呼ぶ）
@@ -23,29 +24,45 @@ final class Listener: @unchecked Sendable {
         }
     }
 
-    /// 端末の中だけで聞き取れるか。できないときは声の判定を使わない（声を外に送らない）
-    var isAvailable: Bool { recognizer?.isAvailable == true && recognizer?.supportsOnDeviceRecognition == true }
+    /// 山札の言葉（"ja" か "en"）の聞き取り。"ja" 以外はすべて英語（アメリカ）で聞く
+    private func recognizer(for language: String) -> SFSpeechRecognizer? {
+        lock.withLock { () -> SFSpeechRecognizer? in
+            if let cached = recognizers[language] { return cached }
+            let made = SFSpeechRecognizer(locale: Locale(identifier: language == "ja" ? "ja-JP" : "en-US"))
+            if let made { recognizers[language] = made }
+            return made
+        }
+    }
 
-    /// 新しいお題で聞き直す。hints は山札の言葉（聞き取りやすくする）
-    func listen(for prompt: String, hints: [String]) {
+    /// その言葉を端末の中だけで聞き取れるか。できないときは声の判定を使わない（声を外に送らない）
+    func isAvailable(language: String) -> Bool {
+        guard let r = recognizer(for: language) else { return false }
+        return r.isAvailable && r.supportsOnDeviceRecognition
+    }
+
+    /// 新しいお題で聞き直す。hints は山札の言葉（聞き取りやすくする）。language は山札の言葉
+    func listen(for prompt: String, hints: [String], language: String = "ja") {
         stop()
-        guard let recognizer, isAvailable else { return }
+        guard let engine = self.recognizer(for: language), isAvailable(language: language) else { return }
         let request = SFSpeechAudioBufferRecognitionRequest()
         request.shouldReportPartialResults = true
         request.contextualStrings = Array(Set(hints + [prompt]))
         request.requiresOnDeviceRecognition = true
-        let key = AnswerMatcher.keys(for: prompt)
+        let keys = AnswerMatcher.keys(for: prompt, language: language)
         lock.withLock {
             self.request = request
-            self.target = key
+            self.target = keys
             self.matched = false
         }
-        task = recognizer.recognitionTask(with: request) { [weak self] result, _ in
+        task = engine.recognitionTask(with: request) { [weak self] result, _ in
             guard let self, let result else { return }
             let heard = result.bestTranscription.formattedString
             Task { @MainActor [onHeard] in onHeard?(heard) }
-            // 第一候補だけでなく、ほかの候補も見る
-            let candidates = result.transcriptions.map(\.formattedString)
+            // 第一候補だけでなく、ほかの候補も見る。認識の区切り（segments）を単語の切れ目に使う
+            let candidates: [[String]] = result.transcriptions.map { t in
+                let pieces = t.segments.map(\.substring)
+                return pieces.isEmpty ? [t.formattedString] : pieces
+            }
             let hit: Bool = lock.withLock {
                 guard !self.matched, AnswerMatcher.matches(candidates, keys: self.target) else { return false }
                 self.matched = true
@@ -70,55 +87,295 @@ final class Listener: @unchecked Sendable {
     }
 }
 
-/// 言い方の揺れ（漢字・カタカナ・ひらがな、空白、記号）をならして比べる
+/// 言ったことがお題と同じかを、単語の切れ目で比べる。
+///
+/// 1. お題も聞き取りも単語に分け、それぞれの読みをひらがなにする
+///    （漢字は CFStringTokenizer の読み（ローマ字）→ ひらがな。「象」も「ぞう」も「ゾウ」も「ぞう」）
+/// 2. 伸ばす音をそろえる（「ぞう」「ぞお」「ぞー」→「ぞー」）
+/// 3. 聞き取りの単語 1 つ、または続いた単語のまとまりが、お題の読みと同じなら正解。
+///    言葉の途中に含まれているだけ（「ぞうきん」の中の「ぞう」）では正解にしない
+///
+/// 短いお題（読みが 3 文字以下）は、単語のまとまりがぴったり同じときだけ。
+/// 長いお題は、小さい「ぁぃぅぇぉ」や伸ばす音の違いを無視し、単語の頭から始まっていれば後ろに何が続いてもよい。
+///
+/// 例（読みのならし方から追える結果。端末の辞書の切り方で変わることはある）:
+/// - お題「ゾウ」（ぞー、短い）
+///   - 「ぞう」→ [ぞー] 正解 ／「ゾウだ！」→ [ぞー][だ] 正解 ／「象」→ [ぞー] 正解
+///   - 「ぞうきん」→ [ぞーきん] 不正解（単語の途中）／「ぞうさんかな」→ [ぞー][さん][かな] 正解
+/// - お題「スキー」（すきー、短い）
+///   - 「スキー」正解 ／「好き」→ [すき] 不正解（伸ばす音が違う）
+/// - お題「カンガルー」（長い：かんがる）
+///   - 「カンガルー」「かんがるう」「カンガルーだよ」正解 ／「ね、カンガルー」→ [ね][かんがる…] 正解
+/// - お題「傘をさす」（長い：かさをさす、助詞を落とした かささす も受ける）
+///   - 「傘をさす」「傘さす」正解 ／「日傘をさす」→ [ひがさ][を][さす] 不正解（単語の途中から）
+/// - お題「DJ」（英字はそのまま dj、短い）→「DJ」正解 ／「DJだ」→ [dj][だ] 正解
+///
+/// 英語の山札は別の比べ方（englishWords・matchesEnglish）。
+/// 小文字にして記号で単語に分け、a・an・the を落とす。単語ごとに比べ、複数形（s・es・ies）の違いは気にしない。
+/// お題の単語が、聞き取りの中に同じ順で続いて出てくれば正解（単語の途中に含まれているだけでは正解にしない）。
+/// 短いお題（3 文字以下。Cat、Bee、DJ）は単語がぴったり同じときだけ（Cats も Catalog も不正解）
 enum AnswerMatcher {
-    /// お題の比べ方。かなにそろえたものと、読み（ローマ字）の 2 通り
-    static func keys(for prompt: String) -> [String] {
-        Array(Set([kana(prompt), reading(prompt)].filter { $0.count >= 2 }))
+    struct Key: Hashable {
+        /// ならした読み（英語は、ならした単語を空白でつないだもの）
+        let reading: String
+        /// 短いお題。単語のまとまりがぴったり同じときだけ正解
+        let short: Bool
+        /// 英語のお題（英語の比べ方を使う）
+        var english = false
     }
 
-    static func matches(_ candidates: [String], keys: [String]) -> Bool {
-        for c in candidates {
-            let forms = [kana(c), reading(c)]
-            if keys.contains(where: { key in forms.contains { $0.contains(key) } }) { return true }
+    /// これ以下の長さの読みは「短いお題」
+    static let shortLength = 3
+
+    /// 落としても意味が通る助詞（「傘をさす」→「傘さす」）
+    private static let particles: Set<String> = ["を", "の", "が", "に", "で", "へ", "と", "は"]
+
+    /// language は山札の言葉（"ja" 以外は英語として比べる）
+    static func keys(for prompt: String, language: String = "ja") -> [Key] {
+        if language != "ja" { return englishKeys(for: prompt) }
+        let tokens = words(prompt)
+        guard !tokens.isEmpty else { return [] }
+        let full = tokens.map(\.reading).joined()
+        if light(full).count <= shortLength {
+            return [Key(reading: light(full), short: true)]
+        }
+        var keys: Set<Key> = [Key(reading: strong(full), short: false)]
+        let dropped = tokens.filter { !particles.contains($0.surface) }.map(\.reading).joined()
+        if dropped != full, strong(dropped).count > shortLength {
+            keys.insert(Key(reading: strong(dropped), short: false))
+        }
+        return Array(keys)
+    }
+
+    /// candidates は聞き取りの候補ごとの区切り（認識の segments）。区切りの中もさらに単語に分ける
+    static func matches(_ candidates: [[String]], keys: [Key]) -> Bool {
+        let hasJapanese = keys.contains { !$0.english }
+        let hasEnglish = keys.contains { $0.english }
+        for pieces in candidates {
+            if hasJapanese {
+                let tokens = pieces.flatMap { words($0).map(\.reading) }
+                if keys.contains(where: { !$0.english && matches(tokens, key: $0) }) { return true }
+            }
+            if hasEnglish {
+                let tokens = pieces.flatMap { englishWords($0) }
+                if keys.contains(where: { $0.english && matchesEnglish(tokens, key: $0) }) { return true }
+            }
         }
         return false
     }
 
-    /// カタカナをひらがなに、英字を小文字にし、空白と記号を除く
-    static func kana(_ s: String) -> String {
-        let hira = s.applyingTransform(.hiraganaToKatakana, reverse: true) ?? s
-        return strip(hira.lowercased())
+    // MARK: 英語
+
+    /// 落とす冠詞
+    private static let articles: Set<String> = ["a", "an", "the"]
+
+    static func englishKeys(for prompt: String) -> [Key] {
+        var tokens = englishWords(prompt)
+        // 冠詞だけのお題はない想定だが、念のため落とす前の単語で比べる
+        if tokens.isEmpty { tokens = englishWords(prompt, keepArticles: true) }
+        guard !tokens.isEmpty else { return [] }
+        let short = tokens.joined().count <= shortLength
+        return [Key(reading: tokens.joined(separator: " "), short: short, english: true)]
     }
 
-    /// 漢字を含めて読みをローマ字にする（「寿司職人」も「すし職人」も sushishokunin）
-    static func reading(_ s: String) -> String {
+    /// 小文字にし、アクセント記号（Piñata の ñ）とアポストロフィ（Year's）を落として、英数字のまとまりごとに分ける。
+    /// T-Rex → [t, rex]、Wi-Fi → [wi, fi]、Phone at 1% → [phone, at, 1]。冠詞（a・an・the）は落とす
+    static func englishWords(_ s: String, keepArticles: Bool = false) -> [String] {
+        let folded = s.folding(options: [.caseInsensitive, .diacriticInsensitive], locale: Locale(identifier: "en_US"))
+            .lowercased()
+            .replacingOccurrences(of: "'", with: "")
+            .replacingOccurrences(of: "\u{2019}", with: "")
+        return folded.components(separatedBy: CharacterSet.alphanumerics.inverted)
+            .filter { !$0.isEmpty && (keepArticles || !articles.contains($0)) }
+    }
+
+    /// 同じ単語か。複数形の違い（cat・cats、box・boxes、puppy・puppies）は同じとみなす
+    static func sameWord(_ a: String, _ b: String) -> Bool {
+        if a == b { return true }
+        let (short, long) = a.count < b.count ? (a, b) : (b, a)
+        if long == short + "s" || long == short + "es" { return true }
+        if short.hasSuffix("y"), long == String(short.dropLast()) + "ies" { return true }
+        return false
+    }
+
+    /// tokens は聞き取りの単語（englishWords でならしたもの）
+    static func matchesEnglish(_ tokens: [String], key: Key) -> Bool {
+        let target = key.reading.split(separator: " ").map(String.init)
+        guard !target.isEmpty else { return false }
+        let joined = target.joined()
+        for i in tokens.indices {
+            if key.short {
+                // 単語 1 つか、続いた 3 つまでのまとまりがぴったり同じ（D.J. → [d][j] も dj）
+                var run = ""
+                for j in i..<min(tokens.count, i + 3) {
+                    run += tokens[j]
+                    if run == joined { return true }
+                }
+                continue
+            }
+            // お題の単語が同じ順で続いている
+            if i + target.count <= tokens.count,
+               zip(target, tokens[i..<(i + target.count)]).allSatisfy({ sameWord($0, $1) }) {
+                return true
+            }
+            // 区切り方の違い（Wi-Fi と WiFi、Push-ups と pushups）は、つなげて比べる
+            var run = ""
+            for j in i..<min(tokens.count, i + target.count + 2) {
+                run += tokens[j]
+                if sameWord(run, joined) { return true }
+            }
+        }
+        return false
+    }
+
+    /// 区切りのない文字列で比べる（確かめ用）
+    static func matches(texts: [String], keys: [Key]) -> Bool {
+        matches(texts.map { [$0] }, keys: keys)
+    }
+
+    /// tokens は単語ごとの読み（ならす前のひらがな）
+    static func matches(_ tokens: [String], key: Key) -> Bool {
+        for i in tokens.indices {
+            if key.short {
+                // 単語 1 つか、続いた 3 つまでのまとまりがぴったり同じ
+                var run = ""
+                for j in i..<min(tokens.count, i + 3) {
+                    run += tokens[j]
+                    if light(run) == key.reading { return true }
+                }
+            } else {
+                // 単語の頭から始まっていればよい（後ろの「だ」「だよ」や活用は気にしない）
+                if strong(tokens[i...].joined()).hasPrefix(key.reading) { return true }
+            }
+        }
+        return false
+    }
+
+    /// 単語に分け、それぞれの読みをひらがなにする。記号や空白は落とす
+    static func words(_ s: String) -> [(surface: String, reading: String)] {
         let cf = s as CFString
+        let ns = s as NSString
         let range = CFRange(location: 0, length: CFStringGetLength(cf))
         guard let tokenizer = CFStringTokenizerCreate(nil, cf, range, kCFStringTokenizerUnitWordBoundary,
-                                                      Locale(identifier: "ja_JP") as CFLocale) else { return strip(s) }
-        var out = ""
+                                                      Locale(identifier: "ja_JP") as CFLocale) else {
+            let r = hiragana(s, latin: nil)
+            return r.isEmpty ? [] : [(s, r)]
+        }
+        var out: [(surface: String, reading: String)] = []
         var type = CFStringTokenizerAdvanceToNextToken(tokenizer)
         while type.rawValue != 0 {
-            if let latin = CFStringTokenizerCopyCurrentTokenAttribute(tokenizer, kCFStringTokenizerAttributeLatinTranscription) as? String {
-                out += latin
-            } else {
-                let r = CFStringTokenizerGetCurrentTokenRange(tokenizer)
-                out += (s as NSString).substring(with: NSRange(location: r.location, length: r.length))
-            }
+            let r = CFStringTokenizerGetCurrentTokenRange(tokenizer)
+            let surface = ns.substring(with: NSRange(location: r.location, length: r.length))
+            let latin = CFStringTokenizerCopyCurrentTokenAttribute(tokenizer, kCFStringTokenizerAttributeLatinTranscription) as? String
+            let reading = hiragana(surface, latin: latin)
+            if !reading.isEmpty { out.append((surface, reading)) }
             type = CFStringTokenizerAdvanceToNextToken(tokenizer)
         }
-        // 長音や記号の揺れを消す（「ー」「・」、ローマ字の ^ など）
-        let latin = out.applyingTransform(.stripDiacritics, reverse: false) ?? out
-        return strip(latin.lowercased())
+        return out
     }
 
-    private static func strip(_ s: String) -> String {
-        String(s.unicodeScalars.filter { CharacterSet.alphanumerics.contains($0) || isKana($0) }.map(Character.init))
-            .replacingOccurrences(of: "ー", with: "")
+    /// 1 つの単語の読みをひらがなにする
+    static func hiragana(_ surface: String, latin: String?) -> String {
+        let text: String
+        if surface.unicodeScalars.allSatisfy(\.isASCII) {
+            // 英字（DJ、SOS など）はそのまま小文字で比べる
+            text = surface
+        } else if let latin, !latin.isEmpty {
+            // 「zō」のような長音の印を、ひらがなにできる綴りに直す
+            var l = latin.precomposedStringWithCanonicalMapping.lowercased()
+            for (from, to) in macrons { l = l.replacingOccurrences(of: from, with: to) }
+            text = l.applyingTransform(.latinToHiragana, reverse: false) ?? l
+        } else {
+            text = surface.applyingTransform(.hiraganaToKatakana, reverse: true) ?? surface
+        }
+        return clean(text.lowercased())
     }
 
-    private static func isKana(_ u: Unicode.Scalar) -> Bool {
-        (0x3040...0x30FF).contains(Int(u.value))
+    private static let macrons: [(String, String)] = [
+        ("ā", "aa"), ("ī", "ii"), ("ū", "uu"), ("ē", "ee"), ("ō", "ou"),
+        ("â", "aa"), ("î", "ii"), ("û", "uu"), ("ê", "ee"), ("ô", "ou"),
+    ]
+
+    /// 伸ばす音をそろえる。前の音と同じ母音の「あいうえお」、お段のあとの「う」、え段のあとの「い」を「ー」にする
+    /// （「ぞう」「ぞお」「ぞー」→「ぞー」、「けいき」「けえき」「けーき」→「けーき」、「すきい」→「すきー」）
+    static func light(_ s: String) -> String {
+        var out = ""
+        var last: Character?
+        for ch in s {
+            if ch == "ー" {
+                out.append("ー")
+                continue
+            }
+            if let v = last, isLong(ch, after: v) {
+                out.append("ー")
+                continue
+            }
+            out.append(ch)
+            last = vowel(of: ch)
+        }
+        return out
     }
+
+    /// 長いお題用。小さい「ぁぃぅぇぉ」を大きくし、伸ばす音を消す（「カンガルー」「かんがるう」→「かんがる」）
+    static func strong(_ s: String) -> String {
+        let big = String(s.map { smallVowels[$0] ?? $0 })
+        return light(big).replacingOccurrences(of: "ー", with: "")
+    }
+
+    private static let smallVowels: [Character: Character] = [
+        "ぁ": "あ", "ぃ": "い", "ぅ": "う", "ぇ": "え", "ぉ": "お", "ゎ": "わ",
+    ]
+
+    private static let rows: [(vowel: Character, kana: String)] = [
+        ("あ", "あかさたなはまやらわがざだばぱぁゃゎ"),
+        ("い", "いきしちにひみりぎじぢびぴぃ"),
+        ("う", "うくすつぬふむゆるぐずづぶぷぅゅゔ"),
+        ("え", "えけせてねへめれげぜでべぺぇ"),
+        ("お", "おこそとのほもよろをごぞどぼぽぉょ"),
+    ]
+
+    private static func vowel(of ch: Character) -> Character? {
+        rows.first(where: { $0.kana.contains(ch) })?.vowel
+    }
+
+    private static func isLong(_ ch: Character, after v: Character) -> Bool {
+        guard "あいうえお".contains(ch) else { return false }
+        return ch == v || (ch == "う" && v == "お") || (ch == "い" && v == "え")
+    }
+
+    /// ひらがな・英数字・「ー」だけ残す（カタカナが残っていればひらがなに）
+    private static func clean(_ s: String) -> String {
+        let hira = s.applyingTransform(.hiraganaToKatakana, reverse: true) ?? s
+        return String(hira.unicodeScalars.filter { u in
+            CharacterSet.alphanumerics.contains(u) || (0x3041...0x309F).contains(Int(u.value)) || u.value == 0x30FC
+        }.map(Character.init))
+    }
+
+    #if DEBUG
+    /// 確かめ用。外れた例を返す（空なら全部合っている）。端末の辞書を使うので、実機かシミュレータで呼ぶ
+    static func selfCheck() -> [String] {
+        let cases: [(prompt: String, said: String, expect: Bool)] = [
+            ("ゾウ", "ぞう", true), ("ゾウ", "ゾウだ！", true), ("ゾウ", "象", true),
+            ("ゾウ", "ぞうきん", false), ("ゾウ", "雑巾", false),
+            ("スキー", "スキー", true), ("スキー", "好き", false),
+            ("カンガルー", "かんがるう", true), ("カンガルー", "カンガルーだよ", true),
+            ("傘をさす", "傘さす", true), ("傘をさす", "傘をさす", true),
+            ("寿司職人", "すし職人", true), ("DJ", "DJ", true), ("カニ", "カニカマ", false),
+        ]
+        let english: [(prompt: String, said: String, expect: Bool)] = [
+            ("Cat", "cat", true), ("Cat", "a cat!", true), ("Cat", "catalog", false), ("Cat", "cats", false),
+            ("DJ", "D.J.", true), ("Gorilla", "the gorillas", true), ("Sea otter", "sea otters", true),
+            ("Seal", "sea lion", false), ("T-Rex", "t rex", true), ("Wi-Fi signal", "WiFi signal", true),
+            ("Push-ups", "pushups", true), ("New Year's resolution", "new years resolution", true),
+            ("Brushing teeth", "brushing", false), ("Piñata", "pinata", true),
+        ]
+        let ja = cases.compactMap { c in
+            matches(texts: [c.said], keys: keys(for: c.prompt)) == c.expect ? nil : "\(c.prompt) ← \(c.said)"
+        }
+        let en = english.compactMap { c in
+            matches(texts: [c.said], keys: keys(for: c.prompt, language: "en")) == c.expect ? nil : "\(c.prompt) ← \(c.said)"
+        }
+        return ja + en
+    }
+    #endif
 }
