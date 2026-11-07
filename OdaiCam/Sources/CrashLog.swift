@@ -34,7 +34,7 @@ enum CrashLog {
         let time = Date().formatted(date: .omitted, time: .standard)
         let list: [String] = lock.withLock {
             trail.append("\(time) \(event)")
-            if trail.count > 20 { trail.removeFirst(trail.count - 20) }
+            if trail.count > 60 { trail.removeFirst(trail.count - 60) }
             return trail
         }
         defaults.set(list, forKey: trailKey)

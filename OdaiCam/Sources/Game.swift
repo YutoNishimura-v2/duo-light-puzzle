@@ -296,6 +296,11 @@ final class Game {
                 guard gen == generation, !Task.isCancelled else { return }
                 highlightURL = made
                 deadline?.cancel()
+                // デモ（CI）では、できた動画を Documents にも残す（一時フォルダは試験の終わりに消えて、取り出せなかった）
+                if FakeCamera.isDemo, let docs = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first {
+                    let keep = docs.appendingPathComponent("highlight-demo-\(Int(Date().timeIntervalSince1970)).mp4")
+                    try? FileManager.default.copyItem(at: made, to: keep)
+                }
                 CrashLog.mark("種明かし：できた（\(Int(Date().timeIntervalSince(started))) 秒）")
             } catch {
                 guard gen == generation, !Task.isCancelled else { return }

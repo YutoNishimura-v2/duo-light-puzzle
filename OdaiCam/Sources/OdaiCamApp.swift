@@ -145,6 +145,9 @@ struct GuesserView: View {
             if phase == .results, let wipe { face = wipe }
             // 種明かしの書き出しはメモリを多く使うので、その前にしばりの絵と Core Image の作業場を手放す
             if phase == .results { effects.purge(vision: false) }
+            // 結果の画面ではカメラを使わない。止めて、書き出しに CPU とメモリを回す
+            // （止めずにいたら、シミュレータで 1 回目の書き出しが 200 秒を超えた）。録画の後片付けは先に積んであるので、その後に止まる
+            if phase == .results { camera.stop() } else if !cameraDenied { camera.start() }
         }
         // メモリが足りないと言われたら、しばりの絵と Vision の読み取りも手放す（次に使うとき作り直す）
         .onReceive(NotificationCenter.default.publisher(for: UIApplication.didReceiveMemoryWarningNotification)) { _ in
