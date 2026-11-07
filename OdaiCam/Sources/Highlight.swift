@@ -50,6 +50,10 @@ enum Highlight {
         var topIsSeen = false
         /// 直前が見えていた画面（＝種明かしの瞬間）
         var reveal = false
+        /// 実際の演技の札：正解なら黄色、パスなら灰色
+        var correct = false
+        /// つかみの 2 行目（下の半分の足元に出す）
+        var subcaption = ""
         var at: Double { time.start.seconds }
         var length: Double { time.duration.seconds }
     }
@@ -124,7 +128,7 @@ enum Highlight {
 
     /// score が nil なら正解の数を点数にする。overlay・useSeen は、試験で失敗の場所を絞るときだけ切る。
     /// language は帯の文字の言葉（山札の言葉。"ja" か "en"）。Clip.effect は呼ぶ側でこの言葉にしておく
-    static func make(raw: URL, seen: URL?, front: URL?, clips: [Clip], score: Int? = nil,
+    static func make(raw: URL, seen: URL?, front: URL?, clips: [Clip], score: Int? = nil, roundSeconds: Int? = nil,
                      overlay: Bool = true, useSeen: Bool = true, language: String = "ja") async throws -> URL {
         /// 帯の文字を language で引く（鍵は日本語）
         func word(_ key: String) -> String { Words.text(key, language: language) }
@@ -168,7 +172,9 @@ enum Highlight {
             let hasSeen = withSeen && seenSource != nil && clip.effect != nil
             let from = max(clip.start, to - (hasSeen ? realLength : realOnlyLength), 0)
             guard to - from >= 0.5 else { return nil }
-            var seenFor = hasSeen ? min(Self.seenLength, to - from, seenEnd - from) : 0
+            // のぞき穴の見えていた画面はほとんど黒いので短く
+            let seenMax = clip.effect == word("のぞき穴") ? 0.8 : Self.seenLength
+            var seenFor = hasSeen ? min(seenMax, to - from, seenEnd - from) : 0
             if seenFor < 0.4 { seenFor = 0 }
             return Plan(index: i, clip: clip, from: from, to: to, seenLength: seenFor)
         }
@@ -208,6 +214,8 @@ enum Highlight {
                 .map { $0.element }
             for i in byVisibility {
                 let c = clips[i]
+                // のぞき穴はほとんど黒い画面なので、最初の 1 コマ（SNS で止まってもらう所）には使わない
+                if c.effect == word("のぞき穴") { continue }
                 // 半分も映っていないなら、空の画面をつかみにしない（顔があれば顔、なければ上下に分けない）
                 if c.hookQuality.visibleFraction < 0.5 { break }
                 let e = min(c.end, rawEnd, seenEnd)
@@ -278,13 +286,15 @@ enum Highlight {
             }
             if ok {
                 try rawLane.put(range(hook.from, d), of: rawSource.track, at: cursor)
+                // つかみの文字は 2 行に分けて大きく：上の半分の下端に「見えてたのは」、画面の下端に「ほんとは」
                 pieces.append(Piece(kind: .hook,
                                     caption: !hook.topIsSeen
-                                        ? word("当てる人の顔↑　正解はコレ↓")
-                                        : hook.effect.map { String(format: word("見えてたのはコレ（%@）↑　正解はコレ↓"), $0) }
-                                            ?? word("見えてたのはコレ↑　正解はコレ↓"),
+                                        ? word("↑ 当てる人の顔")
+                                        : hook.effect.map { String(format: word("↑ みんなに見えてたのはコレ（%@）"), $0) }
+                                            ?? word("↑ みんなに見えてたのはコレ"),
                                     time: CMTimeRange(start: cursor, duration: d),
-                                    face: !hook.topIsSeen, split: true, topIsSeen: hook.topIsSeen))
+                                    face: !hook.topIsSeen, split: true, topIsSeen: hook.topIsSeen,
+                                    subcaption: word("↑ ほんとはコレ")))
                 cursor = cursor + d
             }
         }
@@ -305,9 +315,11 @@ enum Highlight {
             try rawLane.put(range(p.from, d), of: rawSource.track, at: cursor)
             putVoice(p.from, d, at: cursor)
             let face = putFace(p.from, d, at: cursor)
-            // 結果の印（○・パス）は帯に出すときだけ訳す。並べ替えは日本語の印のまま比べる
-            pieces.append(Piece(kind: .real, caption: String(format: word("お題：%@　%@"), p.clip.prompt, word(p.clip.outcome)),
-                                time: CMTimeRange(start: cursor, duration: d), face: face, split: face, reveal: reveal))
+            // 結果は「正解！」「パス」の文字で出す（○ は正解の意味に見えにくい）。並べ替えは日本語の印のまま比べる
+            let correct = p.clip.outcome == "○"
+            pieces.append(Piece(kind: .real,
+                                caption: String(format: word("お題：%@　%@"), p.clip.prompt, word(correct ? "正解！" : "パス")),
+                                time: CMTimeRange(start: cursor, duration: d), face: face, reveal: reveal, correct: correct))
             cursor = cursor + d
         }
         guard pieces.contains(where: { $0.kind == .real }) else { throw failure("使える場面がありません") }
@@ -424,9 +436,9 @@ enum Highlight {
         let full = CGRect(x: 0, y: 0, width: w, height: h)
         let top = CGRect(x: 0, y: 0, width: w, height: h / 2)
         let bottom = CGRect(x: 0, y: h / 2, width: w, height: h / 2)
-        // 見えていた画面の上に出す小さな顔の窓。上半分と同じ縦横比にして、種明かしでそのまま上半分へ広げる
-        let wipeWidth = w * 0.3
-        let wipe = CGRect(x: w * 0.03, y: w * 0.03, width: wipeWidth, height: wipeWidth * top.height / top.width)
+        // 当てる人の顔の小窓（BeReal の自撮りの窓と同じ縦長）。左上に置く
+        let wipeWidth = w * 0.28
+        let wipe = CGRect(x: w * 0.035, y: w * 0.035, width: wipeWidth, height: wipeWidth * 4 / 3)
 
         func layer(_ lane: Lane, _ source: Source, _ region: CGRect, focus: CGFloat, at: CMTime) -> AVMutableVideoCompositionLayerInstruction {
             let l = AVMutableVideoCompositionLayerInstruction(assetTrack: lane.track)
@@ -461,24 +473,11 @@ enum Highlight {
                     layers.append(layer(seenLane, seenSource, full, focus: 0.5, at: start))
                 }
             case .real:
+                // 主役は演じる人：実際の演技を全画面で。当てる人の顔は左上の小窓のまま
                 if piece.face, let frontSource, faceLane.used {
-                    // 当てる人の顔が主役：左上の小窓から上半分へ広げる
-                    let l = AVMutableVideoCompositionLayerInstruction(assetTrack: faceLane.track)
-                    let big = fill(frontSource, top, focusY: 0.45)
-                    l.setCropRectangle(big.crop, at: start)
-                    if piece.reveal {
-                        let small = fill(frontSource, wipe, focusY: 0.45)
-                        let grow = min(0.25, piece.length / 2)
-                        l.setTransformRamp(fromStart: small.transform, toEnd: big.transform,
-                                           timeRange: CMTimeRange(start: start, duration: cm(grow)))
-                    } else {
-                        l.setTransform(big.transform, at: start)
-                    }
-                    layers.append(l)
-                    layers.append(layer(rawLane, rawSource, bottom, focus: 0.42, at: start))
-                } else {
-                    layers.append(layer(rawLane, rawSource, full, focus: 0.5, at: start))
+                    layers.append(layer(faceLane, frontSource, wipe, focus: 0.45, at: start))
                 }
+                layers.append(layer(rawLane, rawSource, full, focus: 0.5, at: start))
             case .end:
                 if endHasRaw {
                     // 不透明度を毎コマ変えて、1 回目でも 30 fps で 1 コマずつ描かせる。
@@ -532,10 +531,28 @@ enum Highlight {
             let base = AVURLAsset(url: step1)
             do {
                 let points = score ?? clips.filter { $0.outcome == "○" }.count
+                // 締めの札に載せるもの：当てる人の顔の 1 枚、「60 秒で 3 問正解」、当てたお題、使ったしばり
+                let correctCount = clips.filter { $0.outcome == "○" }.count
+                let summary = roundSeconds.map { String(format: word("%lld 秒で %lld 問正解"), $0, correctCount) }
+                    ?? String(format: word("%lld 問正解"), correctCount)
+                let solved = clips.filter { $0.outcome == "○" }.map(\.prompt).prefix(4).joined(separator: "・")
+                let effects = Array(NSOrderedSet(array: chosen.compactMap(\.clip.effect))).compactMap { $0 as? String }
+                let detail = effects.isEmpty ? solved
+                    : solved + (solved.isEmpty ? "" : "\n") + String(format: word("しばり：%@"), effects.joined(separator: "・"))
+                var faceImage: CGImage?
+                if let frontSource, let best = byFun.first {
+                    let generator = AVAssetImageGenerator(asset: frontSource.asset)
+                    generator.appliesPreferredTrackTransform = true
+                    generator.maximumSize = CGSize(width: 480, height: 480)
+                    let at = max(0, min(clips[best].end - 0.2, faceEnd))
+                    faceImage = try? await generator.image(at: cm(at)).image
+                }
                 let parts = await overlayParts(size: renderSize, pieces: pieces, wipe: faceLane.used ? wipe : nil, score: points,
-                                               unit: word("点"))
+                                               unit: word("点"), face: faceImage, summary: summary, detail: detail,
+                                               tagline: word("お題カメラで遊んだよ"))
                 let overlaid = try await AVMutableVideoComposition.videoComposition(with: base, applyingCIFiltersWithHandler: { request in
-                    request.finish(with: parts.frame(request.sourceImage, at: request.compositionTime.seconds), context: nil)
+                    // 自前の作業場を使う（途中の絵を溜めない設定。書き出しが終われば一緒に手放される）
+                    request.finish(with: parts.frame(request.sourceImage, at: request.compositionTime.seconds), context: parts.context)
                 })
                 overlaid.frameDuration = CMTime(value: 1, timescale: 30)
                 guard let second = AVAssetExportSession(asset: base, presetName: AVAssetExportPresetHighestQuality) else {
@@ -651,6 +668,8 @@ enum Highlight {
             let span: Span
         }
         let extent: CGRect
+        /// 重ね書きの作業場。途中の絵を溜めない（重ね書きのあともメモリが 300MB ほど残っていたため）
+        let context = CIContext(options: [.cacheIntermediates: false, .name: "highlight-overlay"])
         /// 上下の分け目の黒線
         var seam: CIImage?
         var seamSpans: [Span] = []
@@ -711,7 +730,8 @@ enum Highlight {
 
     /// 文字と札の絵を描いておく。描くときは UIKit の座標（左上が原点）、置くときに Core Image の座標へ直す
     @MainActor
-    private static func overlayParts(size: CGSize, pieces: [Piece], wipe: CGRect?, score: Int, unit unitText: String) -> Overlay {
+    private static func overlayParts(size: CGSize, pieces: [Piece], wipe: CGRect?, score: Int, unit unitText: String,
+                                     face: CGImage? = nil, summary: String = "", detail: String = "", tagline: String = "") -> Overlay {
         let w = size.width, h = size.height
         let parts = Overlay(size: size)
         // 色はブランドの黄色ひとつだけ。種明かしの瞬間にだけ使う
@@ -741,8 +761,8 @@ enum Highlight {
             return CIImage(cgImage: cgImage).transformed(by: CGAffineTransform(translationX: r.minX, y: h - r.maxY))
         }
         /// 丸い札。centerY は上からの位置
-        func pill(_ text: String, yellow isYellow: Bool, centerY: CGFloat, piece: Piece) {
-            let height = h * 0.055
+        func pill(_ text: String, yellow isYellow: Bool, centerY: CGFloat, piece: Piece, scale: CGFloat = 1) {
+            let height = h * 0.055 * scale
             let color = isYellow ? UIColor.black : UIColor.white
             var font = UIFont.systemFont(ofSize: height * 0.46, weight: .heavy)
             var textWidth = ceil((text as NSString).size(withAttributes: [.font: font]).width)
@@ -790,12 +810,19 @@ enum Highlight {
             if piece.split { parts.seamSpans.append(Overlay.Span(piece)) }
             switch piece.kind {
             case .hook:
-                pill(piece.caption, yellow: piece.topIsSeen, centerY: h / 2, piece: piece)
+                // スクロール中でも読める大きさで 2 行に分ける。顔（上の半分の上・下の半分の上）には重ねず、
+                // 上の半分の下端と、画面の下端に置く
+                let big = h * 0.055 * 1.9
+                pill(piece.caption, yellow: true, centerY: h / 2 - big / 2 - h * 0.012, piece: piece, scale: 1.9)
+                pill(piece.subcaption, yellow: false, centerY: h - big / 2 - h * 0.035, piece: piece, scale: 1.9)
             case .seen:
                 if piece.face, wipe != nil { parts.borderSpans.append(Overlay.Span(piece)) }
-                pill(piece.caption, yellow: false, centerY: h * 0.8, piece: piece)
+                // 札は足元に置き、演じる人の顔を隠さない
+                pill(piece.caption, yellow: false, centerY: h * 0.9, piece: piece, scale: 1.3)
             case .real:
-                pill(piece.caption, yellow: true, centerY: piece.split ? h / 2 : h * 0.8, piece: piece)
+                if piece.face, wipe != nil { parts.borderSpans.append(Overlay.Span(piece)) }
+                // 正解は黄色、パスは灰色の札
+                pill(piece.caption, yellow: piece.correct, centerY: h * 0.9, piece: piece, scale: 1.3)
                 // 種明かしの瞬間に白く光らせる（0.7 から 0.2 秒で消える）
                 if piece.reveal { parts.flashes.append(piece.at) }
             case .end:
@@ -823,18 +850,60 @@ enum Highlight {
             parts.cardAt = end.at
             let full = CGRect(origin: .zero, size: size)
 
-            let logoHeight = h * 0.04
+            // 上から：当てる人の顔の丸 → 点数（ぽんと出る）→「60 秒で 3 問正解」→ 当てたお題・しばり → 白く大きなロゴと一言
+            let logoHeight = h * 0.07
             let logo = NSAttributedString(string: "OdaiCam.", attributes: [
                 .font: markFont(logoHeight * 0.72),
-                .foregroundColor: UIColor(white: 1, alpha: 0.6),
+                .foregroundColor: UIColor.white,
                 .kern: -logoHeight * 0.025,
+            ])
+            let centered = NSMutableParagraphStyle()
+            centered.alignment = .center
+            centered.lineSpacing = h * 0.006
+            let summaryText = NSAttributedString(string: summary, attributes: [
+                .font: UIFont.systemFont(ofSize: h * 0.032, weight: .heavy), .foregroundColor: yellow, .paragraphStyle: centered,
+            ])
+            let detailText = NSAttributedString(string: detail, attributes: [
+                .font: UIFont.systemFont(ofSize: h * 0.022, weight: .bold), .foregroundColor: UIColor(white: 1, alpha: 0.85),
+                .paragraphStyle: centered,
+            ])
+            let taglineText = NSAttributedString(string: tagline, attributes: [
+                .font: UIFont.systemFont(ofSize: h * 0.02, weight: .semibold), .foregroundColor: UIColor(white: 1, alpha: 0.7),
+                .paragraphStyle: centered,
             ])
             parts.card = draw(full) { cg in
                 cg.setFillColor(UIColor.black.cgColor)
                 cg.fill(full)
+                // 顔の丸（黄色の縁）。上から 9%〜
+                let d = w * 0.34
+                let circle = CGRect(x: (w - d) / 2, y: h * 0.09, width: d, height: d)
+                if let face {
+                    cg.saveGState()
+                    cg.addEllipse(in: circle)
+                    cg.clip()
+                    // 丸いっぱいに敷く（はみ出す分は切る）。UIKit の向きで描く
+                    let iw = CGFloat(face.width), ih = CGFloat(face.height)
+                    let s = max(d / iw, d / ih)
+                    let rect = CGRect(x: circle.midX - iw * s / 2, y: circle.midY - ih * s / 2, width: iw * s, height: ih * s)
+                    UIImage(cgImage: face).draw(in: rect)
+                    cg.restoreGState()
+                    cg.setStrokeColor(yellow.cgColor)
+                    cg.setLineWidth(w * 0.012)
+                    cg.strokeEllipse(in: circle.insetBy(dx: w * 0.006, dy: w * 0.006))
+                }
+                let textWidth = w * 0.86
+                func put(_ text: NSAttributedString, top: CGFloat) {
+                    guard text.length > 0 else { return }
+                    let box = text.boundingRect(with: CGSize(width: textWidth, height: h * 0.2),
+                                                options: [.usesLineFragmentOrigin], context: nil)
+                    text.draw(with: CGRect(x: (w - textWidth) / 2, y: top, width: textWidth, height: ceil(box.height)),
+                              options: [.usesLineFragmentOrigin], context: nil)
+                }
+                put(summaryText, top: h * 0.56)
+                put(detailText, top: h * 0.62)
                 let logoSize = logo.size()
-                // 下から 3 割の高さ（上から数えると 1 - 0.3 - 0.04）
-                logo.draw(at: CGPoint(x: (w - logoSize.width) / 2, y: h - h * 0.3 - logoHeight))
+                logo.draw(at: CGPoint(x: (w - logoSize.width) / 2, y: h * 0.8))
+                put(taglineText, top: h * 0.8 + logoHeight + h * 0.005)
             }
 
             let numberFont = markFont(h * 0.17)

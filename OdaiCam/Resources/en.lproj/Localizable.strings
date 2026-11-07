@@ -143,6 +143,15 @@
 "見えていたのは…（%@）" = "They saw… (%@)";
 "お題：%@　%@" = "Prompt: %@ %@";
 "○" = "✓";
+"↑ 当てる人の顔" = "↑ The guesser";
+"↑ みんなに見えてたのはコレ（%@）" = "↑ What everyone saw (%@)";
+"↑ みんなに見えてたのはコレ" = "↑ What everyone saw";
+"↑ ほんとはコレ" = "↑ What was really happening";
+"正解！" = "Got it!";
+"%lld 秒で %lld 問正解" = "%2$lld right in %1$lld seconds";
+"%lld 問正解" = "%lld right";
+"しばり：%@" = "Twist: %@";
+"お題カメラで遊んだよ" = "Played on OdaiCam";
 "作り直す" = "Try again";
 "録画を受け取れませんでした。もう一回遊んでください" = "The recording didn't come through. Please play another round.";
 "時間がかかりすぎたので止めました" = "This was taking too long, so we stopped.";

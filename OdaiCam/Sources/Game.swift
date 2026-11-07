@@ -36,6 +36,8 @@ final class Game {
     // 最初に開いたときは「動物」・60 秒・しばりなし（effectsOn = false）。主役は人そのもの、しばりはおまけ
     var deck = Deck.defaultForDevice
     var roundLength = 60.0
+    /// 直前のラウンドの実際の長さ（試験で短くしたときもその秒数。結果と種明かしの札に出す）
+    private(set) var playedLength = 60.0
     private(set) var turns: [Turn] = []
     private(set) var remaining = 0.0
     /// 直前の答え（当てる人に一瞬だけ見せる）
@@ -127,7 +129,8 @@ final class Game {
             nextPrompt()
             // 試験用：起動引数 -testRoundSeconds 8 で短くする
             let test = UserDefaults.standard.double(forKey: "testRoundSeconds")
-            let end = ProcessInfo.processInfo.systemUptime + (test > 0 ? test : roundLength)
+            playedLength = test > 0 ? test : roundLength
+            let end = ProcessInfo.processInfo.systemUptime + playedLength
             while !Task.isCancelled {
                 remaining = max(0, end - ProcessInfo.processInfo.systemUptime)
                 if remaining <= 0 { break }
@@ -291,7 +294,7 @@ final class Game {
             do {
                 let made = try await Self.makeWithRetry {
                     try await Highlight.make(raw: url, seen: recordings.seen, front: recordings.front, clips: clips, score: score,
-                                             overlay: overlay && !Self.fastExport, language: language)
+                                             roundSeconds: Int(playedLength.rounded()), overlay: overlay && !Self.fastExport, language: language)
                 }
                 guard gen == generation, !Task.isCancelled else { return }
                 highlightURL = made

@@ -1282,7 +1282,7 @@ struct ResultsView: View {
                     .accessibilityElement(children: .ignore)
                     .accessibilityLabel(String(localized: "\(game.score) 点") + (game.isNewBest ? String(localized: "、自己ベスト") : ""))
                     .accessibilityIdentifier("score")
-                    Text("\(game.deck.title) ・ \(Int(game.roundLength))秒").font(Theme.bold(15)).lineLimit(1)
+                    Text("\(game.deck.title) ・ \(Int(game.playedLength.rounded()))秒").font(Theme.bold(15)).lineLimit(1)
                 }
                 Text(verbatim: tally)
                     .font(.system(size: 13, weight: .medium))
