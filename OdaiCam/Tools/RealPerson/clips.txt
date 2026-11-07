@@ -7,5 +7,7 @@ squat|https://upload.wikimedia.org/wikipedia/commons/3/34/Conditioning_Drill_3-_
 jacks|https://upload.wikimedia.org/wikipedia/commons/5/57/Jumping_jacks_and_burpees.webm|0|CC BY-SA 4.0（Taco fleur, CC BY-SA 4.0, via Wikimedia Commons「Jumping jacks and burpees」）
 # 今どきのカラー映像：手前で 2 人が組んで踊り、まわりや後ろにも踊る人（パーティーで友だちが映り込むのに近い）
 square|https://upload.wikimedia.org/wikipedia/commons/3/3f/Square_dance_at_the_Concord_Scout_House%2C_April_2022.webm|12|CC BY-SA 4.0（Sdkb, CC BY-SA 4.0, via Wikimedia Commons「Square dance at the Concord Scout House, April 2022」）
+# 頭と肩だけが写る（スマホで自撮りする距離。縦に切り出すと肩の端が画面からはみ出す）。話しながら少し動く 1 人
+selfie|https://upload.wikimedia.org/wikipedia/commons/2/29/2017-01-07_President_Obama%27s_Weekly_Address.webm|20|Public domain（The White House、PD-USGov、Wikimedia Commons「2017-01-07 President Obama's Weekly Address」）
 # 2 人が踊り、後ろに大勢の客（古い白黒の映画。いちばん難しい例）
 grizzly|https://upload.wikimedia.org/wikipedia/commons/5/55/The_Grizzly_Bear_Dance_%281913%29.webm|14|Public domain（The Grizzly Bear Dance, 1913, Wikimedia Commons）

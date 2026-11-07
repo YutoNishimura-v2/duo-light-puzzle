@@ -62,6 +62,26 @@ var frameLog: [[String: Any]] = []
 var sheetRows: [(t: Double, panels: [(String, CGImage)])] = []
 var nextSheet = 0
 
+/// 着ぐるみで人形を出さなかったコマの見本（理由ごと）。元の絵に候補の関節を描いたものと、出した絵の縮小。
+/// 誤検出だけを隠したかを、あとで画像で確かめる（<名前>-hidden.png）。
+/// 多すぎるときは 1 つおきに間引き、間隔を倍にする（全体から均等に残る）
+struct HiddenShots {
+    var step = 1
+    var seen = 0
+    var shots: [(t: Double, raw: CGImage, suit: CGImage)] = []
+
+    mutating func add(t: Double, raw: () -> CGImage?, suit: () -> CGImage?) {
+        seen += 1
+        guard (seen - 1) % step == 0, let r = raw(), let s = suit() else { return }
+        shots.append((t, r, s))
+        if shots.count >= 24 {
+            shots = shots.enumerated().filter { $0.offset % 2 == 0 }.map(\.element)
+            step *= 2
+        }
+    }
+}
+var hiddenShots: [String: HiddenShots] = [:]
+
 // 左右に並べた動画（左：しばり、右：実写）を書く
 final class SideBySide {
     let writer: AVAssetWriter
@@ -149,13 +169,20 @@ while let sample = output.copyNextSampleBuffer() {
                 unitTrack.append(engine.lastJoints)
                 let decision = engine.lastDecision
                 decisions[decision, default: 0] += 1
-                if !r.visible { hiddenDecisions[decision, default: 0] += 1 }
+                if !r.visible {
+                    hiddenDecisions[decision, default: 0] += 1
+                    let candidate = engine.lastCandidate
+                    hiddenShots[decision, default: HiddenShots()].add(
+                        t: t, raw: { thumbnail(original, joints: candidate) }, suit: { r.image.flatMap { thumbnail($0, joints: [:]) } })
+                }
+                func rounded(_ v: CGFloat) -> Double { (Double(v) * 1000).rounded() / 1000 }
                 frameLog.append([
                     "t": (t * 1000).rounded() / 1000,
                     "visible": r.visible,
                     "decision": decision,
-                    "biggest_person": (Double(engine.lastBiggestPerson) * 1000).rounded() / 1000,
+                    "biggest_person": rounded(engine.lastBiggestPerson),
                     "people": engine.peopleBoxes.count,
+                    "boxes": engine.peopleBoxes.map { [rounded($0.minX), rounded($0.minY), rounded($0.width), rounded($0.height)] },
                     "candidate": Dictionary(uniqueKeysWithValues: engine.lastCandidate.map {
                         ($0.key.rawValue.rawValue, [Double($0.value.x), Double($0.value.y)])
                     }),
@@ -254,7 +281,69 @@ func sheet(_ rows: [(t: Double, panels: [(String, CGImage)])]) -> CGImage? {
     return ctx.makeImage()
 }
 
+/// 半分の大きさの縮小。joints があれば、関節を赤い点（顔は水色、首は黄色）で描き、首から各関節へ細い線を引く
+func thumbnail(_ image: CGImage, joints: [VNHumanBodyPoseObservation.JointName: CGPoint]) -> CGImage? {
+    let w = image.width / 2, h = image.height / 2
+    guard let ctx = CGContext(data: nil, width: w, height: h, bitsPerComponent: 8, bytesPerRow: 0,
+                              space: CGColorSpaceCreateDeviceRGB(),
+                              bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue) else { return nil }
+    ctx.draw(image, in: CGRect(x: 0, y: 0, width: w, height: h))
+    func px(_ p: CGPoint) -> CGPoint { CGPoint(x: p.x * CGFloat(w), y: p.y * CGFloat(h)) }
+    if let neck = joints[.neck] {
+        ctx.setStrokeColor(NSColor.red.withAlphaComponent(0.8).cgColor)
+        ctx.setLineWidth(1.5)
+        for p in joints.values { ctx.move(to: px(neck)); ctx.addLine(to: px(p)) }
+        ctx.strokePath()
+    }
+    let face: Set<VNHumanBodyPoseObservation.JointName> = [.nose, .leftEye, .rightEye, .leftEar, .rightEar]
+    for (joint, p) in joints {
+        let color: NSColor = joint == .neck ? .yellow : face.contains(joint) ? .cyan : .red
+        let r: CGFloat = joint == .neck ? 6 : 4
+        ctx.setFillColor(color.cgColor)
+        ctx.fillEllipse(in: CGRect(x: px(p).x - r, y: px(p).y - r, width: r * 2, height: r * 2))
+    }
+    return ctx.makeImage()
+}
+
+/// 人形を出さなかったコマの一覧：行＝理由（多い順）、各行に均等に選んだ 6 コマ（元＋関節｜出した絵）
+func hiddenSheet(_ groups: [String: HiddenShots], counts: [String: Int]) -> CGImage? {
+    let reasons = counts.keys.filter { groups[$0]?.shots.isEmpty == false }.sorted { counts[$0]! > counts[$1]! }
+    guard let sample = reasons.first.flatMap({ groups[$0]?.shots.first?.raw }) else { return nil }
+    let pw = CGFloat(sample.width), ph = CGFloat(sample.height)
+    let perRow = 6, gap: CGFloat = 6, label: CGFloat = 26, header: CGFloat = 34
+    let W = Int(CGFloat(perRow * 2) * (pw + gap) + gap)
+    let rowH = header + label + ph + gap
+    let H = Int(CGFloat(reasons.count) * rowH + gap)
+    guard let ctx = CGContext(data: nil, width: W, height: H, bitsPerComponent: 8, bytesPerRow: 0,
+                              space: CGColorSpaceCreateDeviceRGB(),
+                              bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue) else { return nil }
+    ctx.setFillColor(NSColor.black.cgColor)
+    ctx.fill(CGRect(x: 0, y: 0, width: W, height: H))
+    NSGraphicsContext.saveGraphicsState()
+    NSGraphicsContext.current = NSGraphicsContext(cgContext: ctx, flipped: false)
+    let big: [NSAttributedString.Key: Any] = [.font: NSFont.systemFont(ofSize: 22, weight: .heavy), .foregroundColor: NSColor.white]
+    let small: [NSAttributedString.Key: Any] = [.font: NSFont.systemFont(ofSize: 15, weight: .bold), .foregroundColor: NSColor.white]
+    for (ri, reason) in reasons.enumerated() {
+        let shots = groups[reason]!.shots
+        let picks = (0..<min(perRow, shots.count)).map { shots[$0 * shots.count / min(perRow, shots.count)] }
+        let top = CGFloat(H) - gap - CGFloat(ri) * rowH
+        ("理由 \(reason)：\(counts[reason]!) コマ（均等に \(picks.count) コマ。左＝元の絵と骨格の候補、右＝着ぐるみで出した絵）" as NSString)
+            .draw(at: CGPoint(x: gap + 4, y: top - header + 6), withAttributes: big)
+        for (i, shot) in picks.enumerated() {
+            for (j, image) in [shot.raw, shot.suit].enumerated() {
+                let x = gap + CGFloat(i * 2 + j) * (pw + gap)
+                (String(format: j == 0 ? "%.1f秒 元" : "%.1f秒 着ぐるみ", shot.t) as NSString)
+                    .draw(at: CGPoint(x: x + 2, y: top - header - label + 4), withAttributes: small)
+                ctx.draw(image, in: CGRect(x: x, y: top - header - label - ph, width: pw, height: ph))
+            }
+        }
+    }
+    NSGraphicsContext.restoreGraphicsState()
+    return ctx.makeImage()
+}
+
 if let s = sheet(sheetRows) { writePNG(s, outDir.appendingPathComponent("\(name)-sheet.png")) }
+if let s = hiddenSheet(hiddenShots, counts: hiddenDecisions) { writePNG(s, outDir.appendingPathComponent("\(name)-hidden.png")) }
 for row in sheetRows {
     for (title, image) in row.panels {
         writePNG(image, outDir.appendingPathComponent("\(name)-\(Int(row.t))s-\(title).png"))
