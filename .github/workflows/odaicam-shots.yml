@@ -141,11 +141,11 @@ jobs:
           set -uo pipefail
           DATA=$(xcrun simctl get_app_container "$UDID" io.github.yutonishimura-v2.odaicam data)
           mkdir -p demo/videos demo/frames
-          # 仕上がった動画だけ（1 回目の書き出しの途中の highlight-base は除く）
-          find "$DATA" -name 'highlight-*.mp4' ! -name 'highlight-base-*' -exec cp {} demo/videos/ \;
+          # 仕上がった動画だけ。アプリがデモのときに Documents に残したもの（ラウンドごとに 1 本、重複なし）
+          find "$DATA/Documents" -name 'highlight-demo-*.mp4' -exec cp {} demo/videos/ \;
           ls -la demo/videos
           i=0
-          for v in $(ls -tr demo/videos/highlight-*.mp4); do
+          for v in $(ls demo/videos/highlight-*.mp4); do
             i=$((i+1))
             D=$(ffprobe -v error -show_entries format=duration -of csv=p=0 "$v")
             echo "round$i: ${D}s"

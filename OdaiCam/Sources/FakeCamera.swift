@@ -54,7 +54,9 @@ final class FakeCamera: @unchecked Sendable {
 
     /// デモの顔の録画の設定
     var frontVideoSettings: [String: Any] {
-        [AVVideoCodecKey: AVVideoCodecType.h264, AVVideoWidthKey: Int(DemoFace.pixelSize.width), AVVideoHeightKey: Int(DemoFace.pixelSize.height)]
+        // B フレームなし・1 秒ごとに区切りのコマ（途中から読み出す小窓の頭が、緑に崩れて出ていた）
+        [AVVideoCodecKey: AVVideoCodecType.h264, AVVideoWidthKey: Int(DemoFace.pixelSize.width), AVVideoHeightKey: Int(DemoFace.pixelSize.height),
+         AVVideoCompressionPropertiesKey: [AVVideoAllowFrameReorderingKey: false, AVVideoMaxKeyFrameIntervalKey: 15]]
     }
 
     /// カメラのキューで呼ぶ
