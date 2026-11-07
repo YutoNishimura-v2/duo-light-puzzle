@@ -224,6 +224,15 @@ final class EffectEngine: @unchecked Sendable {
         bodyRequestStore = r
         return r
     }
+    private var peopleRequestStore: VNDetectHumanRectanglesRequest?
+    /// 1 人ずつの枠（全身）。骨格が後ろの小さい人か、影絵で主役だけを残すかを決めるのに使う
+    private var peopleRequest: VNDetectHumanRectanglesRequest {
+        if let r = peopleRequestStore { return r }
+        let r = VNDetectHumanRectanglesRequest()
+        r.upperBodyOnly = false
+        peopleRequestStore = r
+        return r
+    }
     private var personRequest: VNGeneratePersonSegmentationRequest {
         if let r = personRequestStore { return r }
         let r = VNGeneratePersonSegmentationRequest()
@@ -268,6 +277,7 @@ final class EffectEngine: @unchecked Sendable {
             if vision {
                 bodyRequestStore = nil
                 personRequestStore = nil
+                peopleRequestStore = nil
             }
             context.clearCaches()
         }
@@ -475,7 +485,8 @@ final class EffectEngine: @unchecked Sendable {
             found = true
         } else {
             let handler = VNImageRequestHandler(cvPixelBuffer: source)
-            try? handler.perform([personRequest])
+            try? handler.perform([personRequest, peopleRequest])
+            updatePeople(now: now)
             if let m = personRequest.results?.first?.pixelBuffer {
                 maskBuffer = m
                 found = Self.coverage(m) > Self.minCoverage
@@ -521,11 +532,56 @@ final class EffectEngine: @unchecked Sendable {
         return (mask, found)
     }
 
+    /// 1 人ずつの枠（0〜1、左下が原点）と、最後に誰かを見つけた時刻
+    private(set) var peopleBoxes: [CGRect] = []
+    private var peopleTime: TimeInterval = -.infinity
+
+    /// peopleRequest の結果を取り込む。見つからないコマは、1.2 秒までは直前の枠を使う（型抜きと同じ長さ）
+    private func updatePeople(now: TimeInterval) {
+        let boxes = (peopleRequest.results ?? []).map(\.boundingBox).filter { $0.height > 0.02 }
+        if !boxes.isEmpty {
+            peopleBoxes = boxes
+            peopleTime = now
+        } else if now - peopleTime >= 1.2 {
+            peopleBoxes = []
+        }
+    }
+
+    /// 画面でいちばん大きい人の高さ（0〜1）。誰も見つけていなければ 0
+    var biggestPersonHeight: CGFloat { peopleBoxes.map(\.height).max() ?? 0 }
+
+    /// 手前の人（いちばん大きい人の半分以上の高さの人）の枠を少し広げてまとめた範囲。人を見つけていなければ nil。
+    /// 型抜きは後ろの群衆まで拾い、影絵・背景のしばりで誰が演じているか分からなかった（square の 2・5 秒、2026-11-08 批評）
+    static let minPersonRatio: CGFloat = 0.5
+    private func foregroundPeopleMask(extent: CGRect) -> CIImage? {
+        let biggest = biggestPersonHeight
+        guard Self.usesVision, biggest > 0 else { return nil }
+        var mask = CIImage(color: .black).cropped(to: extent)
+        for box in peopleBoxes where box.height >= biggest * Self.minPersonRatio {
+            let pad = box.height * 0.08
+            let r = box.insetBy(dx: -pad, dy: -pad)
+            let rect = CGRect(x: extent.minX + r.minX * extent.width, y: extent.minY + r.minY * extent.height,
+                              width: r.width * extent.width, height: r.height * extent.height)
+            mask = CIImage(color: .white).cropped(to: rect.intersection(extent)).composited(over: mask)
+        }
+        return mask.applyingGaussianBlur(sigma: Double(extent.width * 0.02)).cropped(to: extent)
+    }
+
+    /// 型抜きを手前の人のまわりだけに絞る（人を見つけていなければそのまま）
+    private func keepForeground(_ mask: CIImage, extent: CGRect) -> CIImage {
+        guard let area = foregroundPeopleMask(extent: extent) else { return mask }
+        let keep = CIFilter.minimumCompositing()
+        keep.inputImage = mask
+        keep.backgroundImage = area
+        return keep.outputImage?.cropped(to: extent) ?? mask
+    }
+
     /// found は人の形が画面に十分あったか
     private func silhouette(source: CVPixelBuffer, input: CIImage, now: TimeInterval,
                             frameTime: TimeInterval) -> (image: CIImage?, found: Bool) {
         let person = personMask(source: source, input: input, now: now, frameTime: frameTime)
-        guard let mask = person.mask else { return (nil, false) }
+        guard let whole = person.mask else { return (nil, false) }
+        let mask = keepForeground(whole, extent: input.extent)
         let blend = CIFilter.blendWithMask()
         blend.inputImage = CIImage(color: CIColor(red: 0.05, green: 0.05, blue: 0.08)).cropped(to: input.extent)
         blend.backgroundImage = CIImage(color: CIColor(red: 0.96, green: 0.93, blue: 0.85)).cropped(to: input.extent)
@@ -551,7 +607,8 @@ final class EffectEngine: @unchecked Sendable {
             }
         }
         let person = personMask(source: source, input: input, now: now, frameTime: frameTime)
-        guard let mask = person.mask else { return (scene, false) }
+        guard let whole = person.mask else { return (scene, false) }
+        let mask = keepForeground(whole, extent: input.extent)
         // 型抜きは小さい絵を引き伸ばしたものなので、縁に元の部屋（明るい壁）の画素がにじみ、人の周りに白い縁が出ていた。
         // 型抜きを内側へ少し縮めてから、細くぼかす（縁は背景の色に溶ける）
         let erode = CIFilter.morphologyMinimum()
@@ -618,7 +675,8 @@ final class EffectEngine: @unchecked Sendable {
         var bodies: [Joints] = []
         if Self.usesVision, !(demo && now < bodyRetryAt) {
             let handler = VNImageRequestHandler(cvPixelBuffer: source)
-            try? handler.perform([bodyRequest])
+            try? handler.perform([bodyRequest, peopleRequest])
+            updatePeople(now: now)
             for body in bodyRequest.results ?? [] {
                 guard let points = try? body.recognizedPoints(.all) else { continue }
                 var sure: Joints = [:]
@@ -670,28 +728,58 @@ final class EffectEngine: @unchecked Sendable {
     /// - 使わないときは、holdSeconds までは直前の主役をそのまま、過ぎたら空（人形を出さない）
     /// 主役が使えるときは、一瞬だけ抜けた関節を直前の位置で補う（腕が抜けて手の点だけ浮くのを防ぐ）
     private func trustedBodies(_ bodies: [Joints], now: TimeInterval) -> [Joints] {
-        let recent = now - trustedMainTime < Self.holdSeconds
+        let recent = now - trustedMainTime < Self.holdSeconds && !trustedMain.isEmpty
         lastCandidate = bodies.first ?? [:]
-        if let main = bodies.first {
-            lastDecision = Self.implausibleReason(main)
-                ?? (!recent || Self.consistent(main, with: trustedMain) ? "ok" : "jump")
-        } else {
-            lastDecision = "no_body"
-        }
-        if var main = bodies.first, lastDecision == "ok" {
-            for name in main.keys { jointSeenAt[name] = now }
+        lastBiggestPerson = biggestPersonHeight
+        // 一瞬だけ見えなくなった関節は、判定の前に直前の位置で補う（腕立て・しゃがみで腰が数コマ抜け、人形が消えていた）
+        var main = bodies.first ?? [:]
+        if !main.isEmpty, recent {
             for (name, p) in trustedMain where main[name] == nil {
                 if let seen = jointSeenAt[name], now - seen < Self.jointCarrySeconds { main[name] = p }
+            }
+        }
+        if main.isEmpty {
+            lastDecision = "no_body"
+        } else if isBackgroundPerson(main) {
+            lastDecision = "background_person"
+        } else {
+            lastDecision = Self.implausibleReason(main)
+                ?? (!recent || Self.consistent(main, with: trustedMain) ? "ok" : "jump")
+        }
+        okStreak = lastDecision == "ok" ? okStreak + 1 : 0
+        // 新しく人形を出すのは、続けて acquireFrames コマ自然な骨格が取れてから（1 コマだけの誤検出に人形が付き、0.8 秒残っていた）
+        if lastDecision == "ok", recent || okStreak >= Self.acquireFrames {
+            for name in bodies[0].keys { jointSeenAt[name] = now }
+            // 腰が取れていないときは、補った腰を描く（胴と脚が離れた人形にしない）
+            if main[.root] == nil, main[.leftHip] == nil, main[.rightHip] == nil,
+               let neck = main[.neck] ?? Self.midpoint(main[.leftShoulder], main[.rightShoulder]) {
+                main[.root] = Self.hipCenter(main, neck: neck)
             }
             trustedMain = main
             trustedMainTime = now
             // 人形は演じている 1 人だけ。後ろや横の友だちにも人形が出ると、誰が演じているか分からなくなる（square の 8 秒）
             return [main]
         }
-        if recent, !trustedMain.isEmpty { return [trustedMain] }
-        trustedMain = [:]
+        // 後ろの人に乗り移ったら、直前の姿も残さずすぐ隠す（他人に付くより、隠すほうが自然）
+        if recent, lastDecision != "background_person" { return [trustedMain] }
+        if lastDecision != "ok" { trustedMain = [:] }
         return []
     }
+
+    /// 骨格が、画面でいちばん大きい人の半分の高さに届かない（手前の人を Vision が骨格で取れず、後ろの客に付いていた。
+    /// grizzly の 2・5 秒、2026-11-08 批評）。人の枠を見つけていなければ判定しない
+    private func isBackgroundPerson(_ j: Joints) -> Bool {
+        let biggest = biggestPersonHeight
+        guard biggest > 0, let box = Self.extent(j) else { return false }
+        return max(box.width, box.height) < biggest * Self.minPersonRatio
+    }
+
+    /// 点検用：直前のコマでいちばん大きい人の高さ（0〜1）
+    private(set) var lastBiggestPerson: CGFloat = 0
+    /// 続けて自然な骨格が取れたコマ数
+    private var okStreak = 0
+    /// 新しく人形を出すまでに要る、続けて自然な骨格が取れたコマ数
+    static let acquireFrames = 3
 
     /// 人の形として自然か：首（か両肩）と腰（か左右の腰）がある（腕だけの横棒を落とす）、胴の長さがほどほど、
     /// 手足の 1 本が体よりずっと長くない、脚が胴よりずっと短くない（斜めの巨大な人形を落とす）。
@@ -705,22 +793,24 @@ final class EffectEngine: @unchecked Sendable {
             return CGPoint(x: (a.x + b.x) / 2, y: (a.y + b.y) / 2)
         }
         guard let neck = j[.neck] ?? mid(j[.leftShoulder], j[.rightShoulder]) else { return "no_neck" }
-        guard let root = j[.root] ?? mid(j[.leftHip], j[.rightHip]) else { return "no_hip" }
+        guard let root = hipCenter(j, neck: neck) else { return "no_hip" }
         guard let box = extent(j) else { return "few_joints" }
         func length(_ a: CGPoint, _ b: CGPoint) -> CGFloat { hypot(a.x - b.x, a.y - b.y) }
         let torso = length(neck, root)
         let size = max(box.width, box.height)
-        // 胴が画面の 45% を超えるのは、別の人の頭と腰をつないだ斜めの巨大な人形（実写の grizzly・square の 2 秒）
-        if torso <= 0.02 { return "torso_tiny" }
+        // 胴が画面の 45% を超えるのは、別の人の頭と腰をつないだ斜めの巨大な人形（実写の grizzly・square の 2 秒）。
+        // 腕立て・しゃがみでは胴がカメラの方を向いて短く写るので、胴の短さは「ほぼ無い」ときだけ落とす
+        // （0.02・体の 0.18 倍では jacks・jump の正しい姿勢を落としていた。数字は Tools/RealPerson/analyze.py で決めた）
+        if torso <= 0.01 { return "torso_tiny" }
         if torso > 0.45 { return "torso_over_45pct" }
-        if torso < size * 0.18 { return "torso_short_for_body" }
+        if torso < size * 0.05 { return "torso_short_for_body" }
         // 手足の 1 本が体に比べて長すぎない（寝転ぶ・前に倒れる姿勢で胴が短く写っても落とさないよう、体の大きさとも比べる）
-        let reference = max(torso, size * 0.3)
+        let reference = max(torso, size * 0.4)
         let bones: [(VNHumanBodyPoseObservation.JointName, VNHumanBodyPoseObservation.JointName, CGFloat)] = [
-            (.leftShoulder, .leftElbow, 1.1), (.rightShoulder, .rightElbow, 1.1),
-            (.leftElbow, .leftWrist, 1.1), (.rightElbow, .rightWrist, 1.1),
-            (.leftHip, .leftKnee, 1.4), (.rightHip, .rightKnee, 1.4),
-            (.leftKnee, .leftAnkle, 1.4), (.rightKnee, .rightAnkle, 1.4),
+            (.leftShoulder, .leftElbow, 1.4), (.rightShoulder, .rightElbow, 1.4),
+            (.leftElbow, .leftWrist, 1.4), (.rightElbow, .rightWrist, 1.4),
+            (.leftHip, .leftKnee, 1.8), (.rightHip, .rightKnee, 1.8),
+            (.leftKnee, .leftAnkle, 1.8), (.rightKnee, .rightAnkle, 1.8),
         ]
         for (a, b, most) in bones {
             if let p = j[a], let q = j[b], length(p, q) > reference * most { return "long_bone" }
@@ -730,6 +820,25 @@ final class EffectEngine: @unchecked Sendable {
             if let hip, let knee, let ankle, length(hip, knee) + length(knee, ankle) < torso * 0.6 { return "short_leg" }
         }
         return nil
+    }
+
+    /// 2 点の真ん中（どちらかがなければ nil）
+    static func midpoint(_ a: CGPoint?, _ b: CGPoint?) -> CGPoint? {
+        guard let a, let b else { return nil }
+        return CGPoint(x: (a.x + b.x) / 2, y: (a.y + b.y) / 2)
+    }
+
+    /// 腰の中心：root、左右の腰の真ん中、片方の腰、どれもなければ首と膝の真ん中（腰だけ取れないコマを補う）
+    static func hipCenter(_ j: Joints, neck: CGPoint) -> CGPoint? {
+        func average(_ points: [CGPoint]) -> CGPoint? {
+            guard !points.isEmpty else { return nil }
+            let n = CGFloat(points.count)
+            return CGPoint(x: points.map(\.x).reduce(0, +) / n, y: points.map(\.y).reduce(0, +) / n)
+        }
+        if let root = j[.root] { return root }
+        if let hip = average([j[.leftHip], j[.rightHip]].compactMap { $0 }) { return hip }
+        guard let knee = average([j[.leftKnee], j[.rightKnee]].compactMap { $0 }) else { return nil }
+        return CGPoint(x: (neck.x + knee.x) / 2, y: (neck.y + knee.y) / 2)
     }
 
     /// 直前の主役と続いているか：大きさが 0.6〜1.6 倍の中で、中心が画面の 2 割より遠くへ飛んでいない

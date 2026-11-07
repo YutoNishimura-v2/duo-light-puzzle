@@ -154,6 +154,8 @@ while let sample = output.copyNextSampleBuffer() {
                     "t": (t * 1000).rounded() / 1000,
                     "visible": r.visible,
                     "decision": decision,
+                    "biggest_person": (Double(engine.lastBiggestPerson) * 1000).rounded() / 1000,
+                    "people": engine.peopleBoxes.count,
                     "candidate": Dictionary(uniqueKeysWithValues: engine.lastCandidate.map {
                         ($0.key.rawValue.rawValue, [Double($0.value.x), Double($0.value.y)])
                     }),
