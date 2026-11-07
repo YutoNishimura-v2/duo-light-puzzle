@@ -127,17 +127,20 @@ final class OdaiCamUITests: XCTestCase {
                 let correct = app.buttons["正解"]
                 XCTAssertTrue(correct.waitForExistence(timeout: 45), "デモ \(round)：プレイ画面が出ない")
                 // 4 秒ごとに答える（4 回に 1 回はパス）。ラウンドの終わり際（30 秒のうち最後の 8 秒ほど）は押さない
+                // 押すのはプレイが始まってから 18 秒まで。シミュレータが重いと 1 回の問い合わせに数秒かかり、
+                // 回数だけで区切ると終わり際に押して、同じ場所にある結果の「役を交代してもう一回」を押してしまった
+                let playStart = Date()
                 var n = 0
                 while correct.exists && app.state == .runningForeground && n < 5 {
                     sleep(4)
-                    guard correct.exists else { break }
+                    guard correct.exists, Date().timeIntervalSince(playStart) < 18 else { break }
                     n += 1
                     if n == 2 { shot("demo-\(round)-play") }
                     // ラウンドが終わる瞬間と重なることがあるので、残っているときだけ押す
                     tapIfPresent(n % 4 == 0 ? app.buttons["パス"] : correct)
                 }
                 XCTAssertEqual(app.state, .runningForeground, "デモ \(round)：遊んでいる間に落ちた")
-                XCTAssertTrue(app.buttons["ホームへ"].waitForExistence(timeout: 20), "デモ \(round)：結果が出ない")
+                XCTAssertTrue(app.buttons["ホームへ"].waitForExistence(timeout: 45), "デモ \(round)：結果が出ない")
                 // シミュレータでは 1080x1920 の書き出しが 2 回あるので遅い。
                 // アプリ側の上限（シミュレータ 200 秒）で打ち切り→作り直しまで見るので 7 分まで待つ
                 let deadline = Date().addingTimeInterval(420)

@@ -1208,6 +1208,8 @@ struct ResultsView: View {
     @State private var player = LoopPlayer()
     @State private var muted = false
     @State private var message: String?
+    /// 結果の画面が出た時刻（出た直後の押し間違いを防ぐ）
+    @State private var shownAt = Date()
 
     var body: some View {
         VStack(spacing: 0) {
@@ -1410,6 +1412,9 @@ struct ResultsView: View {
     /// もう一回（BeReal の白い「遅れて BeReal を投稿する」）
     private var again: some View {
         Button {
+            // 結果が出た直後の 1.5 秒は受け付けない。プレイの終わり際に「正解」を押した指が、
+            // 同じ場所に出るこのボタンに当たり、種明かしを見ないまま次のラウンドが始まっていた
+            guard Date().timeIntervalSince(shownAt) > 1.5 else { return }
             player.stop()
             game.startRound()
         } label: {
