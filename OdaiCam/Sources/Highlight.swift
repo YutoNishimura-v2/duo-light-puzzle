@@ -845,8 +845,14 @@ enum Highlight {
             .kern: -markHeight * 0.025,
         ])
         parts.mark = draw(CGRect(x: 0, y: h * 0.025 - pad, width: w, height: markHeight + pad * 2)) { cg in
-            cg.setShadow(offset: .zero, blur: shadowBlur, color: UIColor(white: 0, alpha: 0.7).cgColor)
             let textSize = markText.size()
+            // 明るい壁や影絵の生成り色の上では白い字が消えていたので、半透明の黒い下地を敷く
+            let plate = CGRect(x: (w - textSize.width) / 2 - markHeight * 0.4, y: pad - markHeight * 0.12,
+                               width: textSize.width + markHeight * 0.8, height: textSize.height + markHeight * 0.24)
+            cg.setFillColor(UIColor(white: 0, alpha: 0.38).cgColor)
+            cg.addPath(UIBezierPath(roundedRect: plate, cornerRadius: plate.height / 2).cgPath)
+            cg.fillPath()
+            cg.setShadow(offset: .zero, blur: shadowBlur / 2, color: UIColor(white: 0, alpha: 0.6).cgColor)
             markText.draw(at: CGPoint(x: (w - textSize.width) / 2, y: pad))
         }
 
@@ -887,7 +893,8 @@ enum Highlight {
                 cg.fill(full)
                 // 顔の丸（黄色の縁）。上から 9%〜
                 let d = w * 0.34
-                let circle = CGRect(x: (w - d) / 2, y: h * 0.09, width: d, height: d)
+                // 全体を下げて、上下の余白をそろえる（下の 2 割が空いていた）
+                let circle = CGRect(x: (w - d) / 2, y: h * 0.14, width: d, height: d)
                 if let face {
                     cg.saveGState()
                     cg.addEllipse(in: circle)
@@ -911,12 +918,12 @@ enum Highlight {
                               options: [.usesLineFragmentOrigin], context: nil)
                 }
                 // 中央に寄せて詰める：点数 → 正解数 → お題・しばり → 一言 → ロゴ → 合言葉
-                put(summaryText, top: h * 0.515)
-                put(detailText, top: h * 0.57)
-                put(taglineText, top: h * 0.665)
+                put(summaryText, top: h * 0.565)
+                put(detailText, top: h * 0.62)
+                put(taglineText, top: h * 0.715)
                 let logoSize = logo.size()
-                logo.draw(at: CGPoint(x: (w - logoSize.width) / 2, y: h * 0.7))
-                put(hashtagText, top: h * 0.7 + logoHeight + h * 0.008)
+                logo.draw(at: CGPoint(x: (w - logoSize.width) / 2, y: h * 0.75))
+                put(hashtagText, top: h * 0.75 + logoHeight + h * 0.008)
             }
 
             let numberFont = markFont(h * 0.17)
@@ -930,7 +937,7 @@ enum Highlight {
             let gap = w * 0.02
             let left = (w - numberWidth - gap - unitWidth) / 2
             // 数字と「点」の下端（文字の並ぶ線）をそろえる。上から 47% の高さ（下の「◯秒で◯問正解」に重ならないように）
-            let baseline = h * 0.47
+            let baseline = h * 0.52
             parts.number = draw(full) { _ in
                 number.draw(at: CGPoint(x: left, y: baseline - numberFont.ascender))
                 unit.draw(at: CGPoint(x: left + numberWidth + gap, y: baseline - unitFont.ascender))
