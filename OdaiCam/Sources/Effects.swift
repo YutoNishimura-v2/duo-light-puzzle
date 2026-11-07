@@ -62,9 +62,10 @@ enum MosaicLevel: String, CaseIterable, Identifiable, Sendable {
     /// 1 マスの大きさ（画面の幅に対する割合）
     var blockFraction: CGFloat {
         switch self {
-        case .coarse: 0.16
-        case .normal: 0.09
-        case .fine: 0.045
+        // いちばん粗くても人の形が分かる大きさにする（0.16 は色の四角が並ぶだけで、壊れた画面に見えた）
+        case .coarse: 0.085
+        case .normal: 0.06
+        case .fine: 0.035
         }
     }
 }
@@ -458,6 +459,14 @@ final class EffectEngine: @unchecked Sendable {
                 maskBuffer = m
                 found = Self.coverage(m) > Self.minCoverage
             }
+            // 切り抜きに失敗したコマは、0.6 秒までは直前の形を使い続ける（影絵や着ぐるみが一瞬真っ黒・空にならないように）
+            if found {
+                lastGoodMask = maskBuffer
+                lastGoodMaskTime = now
+            } else if let good = lastGoodMask, now - lastGoodMaskTime < 0.6 {
+                maskBuffer = good
+                found = true
+            }
             if demo {
                 if found {
                     lastPersonMask = maskBuffer
@@ -571,6 +580,10 @@ final class EffectEngine: @unchecked Sendable {
         }
         return all > 0 ? Double(on) / Double(all) : 0
     }
+
+    /// 直前にうまく取れた人の型抜き（切り抜きに失敗したコマの代わり）
+    private var lastGoodMask: CVPixelBuffer?
+    private var lastGoodMaskTime: TimeInterval = 0
 
     typealias Joints = [VNHumanBodyPoseObservation.JointName: CGPoint]
     /// 前のコマの関節（なめらかに動かすため、新しい位置と混ぜる）
