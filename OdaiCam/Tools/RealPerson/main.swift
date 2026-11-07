@@ -81,6 +81,8 @@ struct HiddenShots {
     }
 }
 var hiddenShots: [String: HiddenShots] = [:]
+/// 着ぐるみで、人形か隠すクマが出たコマの数
+var bearFrames = 0
 
 // 左右に並べた動画（左：しばり、右：実写）を書く
 final class SideBySide {
@@ -169,6 +171,8 @@ while let sample = output.copyNextSampleBuffer() {
                 unitTrack.append(engine.lastJoints)
                 let decision = engine.lastDecision
                 decisions[decision, default: 0] += 1
+                // 人形か、人形を出せないときの隠すクマのどちらかが出たコマ（着ぐるみらしく見えたコマ）
+                if r.visible || engine.lastCoverDrawn { bearFrames += 1 }
                 if !r.visible {
                     hiddenDecisions[decision, default: 0] += 1
                     let candidate = engine.lastCandidate
@@ -386,6 +390,7 @@ var summary: [String: Any] = [
     "costume_figure_jumps": figureJumps,
     "costume_decisions": decisions,
     "costume_hidden_by": hiddenDecisions,
+    "costume_bear_shown": jointTrack.isEmpty ? 0 : (Double(bearFrames) / Double(jointTrack.count) * 1000).rounded() / 1000,
     "joint_jitter_px_median": (pct(0.5) * 10).rounded() / 10,
     "joint_jitter_px_p95": (pct(0.95) * 10).rounded() / 10,
     "frame_height_px": sheetRows.first?.panels.first.map { $0.1.height } ?? 0,
