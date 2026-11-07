@@ -8,10 +8,10 @@ import VideoToolbox
 /// 当てる人に見せる映りのしばり（おまけ。基本はしばりなしで、人そのものを見せる）。
 /// 並びはホームのモード列の順。背景を変えるもの → 姿を変えるもの
 enum Effect: String, CaseIterable, Identifiable, Sendable {
-    // 姿を変えるもの（棒人間・モザイク・着ぐるみ）を先に、背景 → そのほかの順
-    case stick, mosaic, costume
+    // 姿を変えるもの（棒人間・モザイク・着ぐるみ・影絵）を先に、背景 → そのほかの順
+    case stick, mosaic, costume, silhouette
     case space, sea, classroom, stage
-    case silhouette, delay, peephole
+    case delay, peephole
 
     var id: String { rawValue }
 

@@ -28,6 +28,7 @@ enum CompareShots {
             }
             EffectEngine.mosaicLevel = .normal
             add("着ぐるみ", .costume)
+            add("影絵", .silhouette)
             for (title, image) in panels {
                 write(UIImage(cgImage: image), to: dir.appendingPathComponent("pose\(i + 1)-\(title).png"))
             }

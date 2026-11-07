@@ -55,9 +55,28 @@ final class Game {
     /// 聞き取った言葉（当てる人に小さく見せる）
     private(set) var heard = ""
     /// 見え方しばり（おまけ）。オンのとき、当てる人はカメラ越しのしばられた画面だけで当てる
-    var effectsOn = false
+    /// 最後に選んだモードを覚えておき、次に開いたときの最初の設定にする（どのモードでも最初の設定にできる）。
+    /// 試験（偽カメラ）では覚えたものを使わず、いつもしばりなしから始める
+    var effectsOn = Game.savedMode.on {
+        didSet { saveMode() }
+    }
     /// nil ならおまかせ（お題ごとにくじ）
-    var fixedEffect: Effect?
+    var fixedEffect: Effect? = Game.savedMode.effect {
+        didSet { saveMode() }
+    }
+
+    private static var savedMode: (on: Bool, effect: Effect?) {
+        guard !FakeCamera.isOn, let raw = UserDefaults.standard.string(forKey: "mode") else { return (false, nil) }
+        if raw == "none" { return (false, nil) }
+        if raw == "random" { return (true, nil) }
+        return Effect(rawValue: raw).map { (true, $0) } ?? (false, nil)
+    }
+
+    private func saveMode() {
+        guard !FakeCamera.isOn else { return }
+        let raw = !effectsOn ? "none" : (fixedEffect?.rawValue ?? "random")
+        UserDefaults.standard.set(raw, forKey: "mode")
+    }
     /// 内側のカメラで当てる人を見張る（顔を上げて本人を見たら減点）
     var cheatGuard = true
     /// 減点したカンニングの数（1 回目の注意は入らない）

@@ -561,11 +561,17 @@ enum Highlight {
                 }
                 second.videoComposition = overlaid
                 second.shouldOptimizeForNetworkUse = true
-                // 帯の重ね書きが 25 秒で終わらなければ打ち切り、帯なしの動画を出す（0 バイトのまま待ち続けたことがある）
+                // 帯の重ね書きが上限で終わらなければ打ち切り、帯なしの動画を出す（0 バイトのまま待ち続けたことがある）。
+                // シミュレータは 1080x1920 の重ね書きが遅く、25 秒で打ち切られて帯なしの動画になったので長めにする
+                #if targetEnvironment(simulator)
+                let overlayLimit = 70.0
+                #else
+                let overlayLimit = 25.0
+                #endif
                 let watchdog2 = Task {
-                    try? await Task.sleep(for: .seconds(25))
+                    try? await Task.sleep(for: .seconds(overlayLimit))
                     if !Task.isCancelled {
-                        CrashLog.mark("ハイライト：帯の重ね書きが 25 秒で終わらず打ち切り")
+                        CrashLog.mark("ハイライト：帯の重ね書きが \(Int(overlayLimit)) 秒で終わらず打ち切り")
                         second.cancelExport()
                     }
                 }
