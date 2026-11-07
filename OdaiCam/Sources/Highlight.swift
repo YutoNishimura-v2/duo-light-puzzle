@@ -543,9 +543,13 @@ enum Highlight {
                 let points = score ?? clips.filter { $0.outcome == "○" }.count
                 // 締めの札に載せるもの：当てる人の顔の 1 枚、「60 秒で 3 問正解」、当てたお題、使ったしばり
                 let correctCount = clips.filter { $0.outcome == "○" }.count
-                let summary = roundSeconds.map { String(format: word("%lld 秒で %lld 問正解"), $0, correctCount) }
+                // 0 点は「失敗」ではなく笑いどころ。大きな一言にし、挑んだお題を並べる
+                let summary = correctCount == 0 ? word("全滅！ 伝わらなさすぎ")
+                    : roundSeconds.map { String(format: word("%lld 秒で %lld 問正解"), $0, correctCount) }
                     ?? String(format: word("%lld 問正解"), correctCount)
-                let solved = clips.filter { $0.outcome == "○" }.map(\.prompt).prefix(4).joined(separator: "・")
+                let solved = correctCount == 0
+                    ? String(format: word("挑んだお題：%@"), clips.map(\.prompt).prefix(4).joined(separator: "・"))
+                    : clips.filter { $0.outcome == "○" }.map(\.prompt).prefix(4).joined(separator: "・")
                 let effects = Array(NSOrderedSet(array: chosen.compactMap(\.clip.effect))).compactMap { $0 as? String }
                 let detail = effects.isEmpty ? solved
                     : solved + (solved.isEmpty ? "" : "\n") + String(format: word("しばり：%@"), effects.joined(separator: "・"))
