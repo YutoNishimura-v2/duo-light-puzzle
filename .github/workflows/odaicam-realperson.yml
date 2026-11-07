@@ -52,7 +52,7 @@ jobs:
             sleep 5
             if curl -fsSL --retry 6 --retry-delay 20 -A "OdaiCamCI/1.0 (https://github.com/YutoNishimura-v2)" -o "$RUNNER_TEMP/$name.src" "$url"; then
               # 縦長 9:16 の真ん中を切り出し、540x960・30 コマ/秒・10 秒（アプリのしばりと同じ大きさ）
-              ffmpeg -y -loglevel error -ss "$start" -t 10 -i "$RUNNER_TEMP/$name.src" \
+              ffmpeg -nostdin -y -loglevel error -ss "$start" -t 10 -i "$RUNNER_TEMP/$name.src" \
                 -vf "crop='min(iw,ih*9/16)':'min(ih,iw*16/9)',scale=540:960,fps=30,format=yuv420p" -an -c:v libx264 -crf 20 \
                 "clips/${name}.mp4" || echo "変換に失敗: ${name}"
             else

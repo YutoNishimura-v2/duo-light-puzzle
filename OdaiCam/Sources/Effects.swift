@@ -624,6 +624,7 @@ final class EffectEngine: @unchecked Sendable {
                 bodies.append(sure)
             }
             if demo, !found { bodyRetryAt = now + Self.demoVisionRetry }
+            bodies = Self.mainBodies(bodies, previous: smoothedJoints)
         }
         if !found, demo {
             bodies = [DemoActor.joints(at: frameTime)]
@@ -640,6 +641,38 @@ final class EffectEngine: @unchecked Sendable {
             bodies[0] = first
         }
         return (bodies, found)
+    }
+
+    /// 関節の範囲（0〜1）。関節が 3 つ未満なら nil
+    static func extent(_ joints: Joints) -> CGRect? {
+        guard joints.count >= 3 else { return nil }
+        let xs = joints.values.map(\.x), ys = joints.values.map(\.y)
+        return CGRect(x: xs.min()!, y: ys.min()!, width: xs.max()! - xs.min()!, height: ys.max()! - ys.min()!)
+    }
+
+    /// 演じている人だけを残す。実写で試すと、後ろの人や関節の少ない誤検出にも人形が出て、
+    /// 大きさがばらばらのクマが何体も重なっていた（odaicam-realperson、2026-11-07）。
+    /// - 関節が minJoints 未満のものは捨てる
+    /// - いちばん大きい人の半分より小さい人は捨てる（後ろの客）
+    /// - 主役（先頭）は、前のコマの主役にいちばん近い人。大きさが最大の 6 割に満たなければ最大の人に替える
+    ///   （先頭が入れ替わると、なめらかにする処理が別の人と混ざって大きく跳ねていた）
+    static func mainBodies(_ bodies: [Joints], previous: Joints) -> [Joints] {
+        let sized = bodies.filter { $0.count >= minJoints }.compactMap { b in extent(b).map { (b, $0) } }
+        guard let biggest = sized.map({ max($0.1.height, $0.1.width) }).max(), biggest > 0 else { return [] }
+        let kept = sized.filter { max($0.1.height, $0.1.width) >= biggest * 0.5 }
+        func center(_ r: CGRect) -> CGPoint { CGPoint(x: r.midX, y: r.midY) }
+        var mainIndex = kept.indices.max { max(kept[$0].1.height, kept[$0].1.width) < max(kept[$1].1.height, kept[$1].1.width) } ?? 0
+        if let prev = extent(previous) {
+            let p = center(prev)
+            let near = kept.indices.min { a, b in
+                hypot(center(kept[a].1).x - p.x, center(kept[a].1).y - p.y) < hypot(center(kept[b].1).x - p.x, center(kept[b].1).y - p.y)
+            }
+            if let near, max(kept[near].1.height, kept[near].1.width) >= biggest * 0.6 { mainIndex = near }
+        }
+        guard kept.indices.contains(mainIndex) else { return [] }
+        var result = [kept[mainIndex].0]
+        for (i, k) in kept.enumerated() where i != mainIndex { result.append(k.0) }
+        return result
     }
 
     /// 骨組みの人形（棒人間）と着ぐるみの描き方
@@ -661,6 +694,12 @@ final class EffectEngine: @unchecked Sendable {
         var unit = w / 10
         if let l = p(.leftShoulder), let r = p(.rightShoulder) { unit = max(hypot(l.x - r.x, l.y - r.y), w / 20) }
         else if let neck, let root { unit = max(hypot(neck.x - root.x, neck.y - root.y) * 0.6, w / 20) }
+        // 肩の位置がずれて肩幅が大きく出ると、体より大きな頭のクマになっていた（実写の点検）。
+        // 体の縦の長さ（頭から足まで、見えている関節の範囲）の 3 割までに抑える
+        if let box = extent(points) {
+            let body = max(box.height * h, box.width * w)
+            if body > 0 { unit = min(unit, max(body * 0.3, w / 40)) }
+        }
         // 頭の上の向き（首→鼻。なければ真上）
         var up = CGVector(dx: 0, dy: 1)
         if let neck, let nose = p(.nose) {
