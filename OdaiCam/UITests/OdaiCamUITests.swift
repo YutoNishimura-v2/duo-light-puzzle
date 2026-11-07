@@ -9,7 +9,9 @@ final class OdaiCamUITests: XCTestCase {
     /// 1 ラウンド遊ぶモード。背景はどれも同じ処理なので宇宙だけ（ラウンドが増えると CI の 20 分に収まらない）
     static let roundModes: Set<String> = ["しばりなし", "宇宙", "棒人間", "影絵", "モザイク", "3秒遅れ", "のぞき穴", "おまかせ"]
     /// 1 ラウンドの秒数（起動引数で短くする）
-    static let roundSeconds = 15
+    // 15 秒では、CI の重いシミュレータで画面写真と配置の確認をしている間にラウンドが終わり、
+    // 「パス」を押す前に結果の画面になって落ちた（run 42328558975）
+    static let roundSeconds = 25
     /// シミュレータの言葉に関係なく、アプリを日本語で動かす（ボタンは日本語の名前で探すため。山札も日本語になる）
     static let japanese = ["-AppleLanguages", "(ja)", "-AppleLocale", "ja_JP"]
 

@@ -151,6 +151,7 @@
 "%lld 問正解" = "%lld right";
 "しばり：%@" = "Twist: %@";
 "お題カメラで遊んだよ" = "Played on OdaiCam";
+"#お題カメラ" = "#OdaiCam";
 "作り直す" = "Try again";
 "録画を受け取れませんでした。もう一回遊んでください" = "The recording didn't come through. Please play another round.";
 "時間がかかりすぎたので止めました" = "This was taking too long, so we stopped.";

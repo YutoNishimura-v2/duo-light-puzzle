@@ -460,11 +460,12 @@ enum Highlight {
             switch piece.kind {
             case .hook:
                 if piece.topIsSeen, let seenSource, seenLane.used {
-                    layers.append(layer(seenLane, seenSource, top, focus: 0.42, at: start))
+                    // 半分の高さに収めると縦の半分しか入らない。頭と腕（何をしているかが決まる所）が入るよう、上寄りを切り出す
+                    layers.append(layer(seenLane, seenSource, top, focus: 0.12, at: start))
                 } else if let frontSource, faceLane.used {
                     layers.append(layer(faceLane, frontSource, top, focus: 0.45, at: start))
                 }
-                layers.append(layer(rawLane, rawSource, bottom, focus: 0.42, at: start))
+                layers.append(layer(rawLane, rawSource, bottom, focus: 0.12, at: start))
             case .seen:
                 if piece.face, let frontSource, faceLane.used {
                     layers.append(layer(faceLane, frontSource, wipe, focus: 0.45, at: start))
@@ -549,7 +550,7 @@ enum Highlight {
                 }
                 let parts = await overlayParts(size: renderSize, pieces: pieces, wipe: faceLane.used ? wipe : nil, score: points,
                                                unit: word("点"), face: faceImage, summary: summary, detail: detail,
-                                               tagline: word("お題カメラで遊んだよ"))
+                                               tagline: word("お題カメラで遊んだよ"), hashtag: word("#お題カメラ"))
                 let overlaid = try await AVMutableVideoComposition.videoComposition(with: base, applyingCIFiltersWithHandler: { request in
                     // 自前の作業場を使う（途中の絵を溜めない設定。書き出しが終われば一緒に手放される）
                     request.finish(with: parts.frame(request.sourceImage, at: request.compositionTime.seconds), context: parts.context)
@@ -683,6 +684,8 @@ enum Highlight {
         /// 上の中央のロゴ。markUntil から先は消す
         var mark: CIImage?
         var markUntil = Double.infinity
+        /// ロゴを出し始める秒（つかみの終わり）
+        var markFrom = 0.0
         /// 最後の札：黒地とロゴ、その上にぽんと出る点数
         var card: CIImage?
         var number: CIImage?
@@ -712,7 +715,8 @@ enum Highlight {
             }
             // コマの時刻は秒の丸めで札の始まりのわずかに手前になることがあるので、半コマ分ゆるくする
             let showCard = card != nil && t + Self.slack >= cardAt
-            if t + Self.slack < markUntil || card == nil { put(mark) }
+            // つかみの間はロゴを出さない（上の段の人の頭に重なるため）
+            if (t + Self.slack < markUntil || card == nil) && t >= markFrom { put(mark) }
             if showCard, let card {
                 // 札は黒地の不透明な絵なので、薄く混ぜずにすぱっと切り替える（最初のコマから点数が見える）。
                 // 点数だけ小さくぽんと出す
@@ -731,7 +735,8 @@ enum Highlight {
     /// 文字と札の絵を描いておく。描くときは UIKit の座標（左上が原点）、置くときに Core Image の座標へ直す
     @MainActor
     private static func overlayParts(size: CGSize, pieces: [Piece], wipe: CGRect?, score: Int, unit unitText: String,
-                                     face: CGImage? = nil, summary: String = "", detail: String = "", tagline: String = "") -> Overlay {
+                                     face: CGImage? = nil, summary: String = "", detail: String = "", tagline: String = "",
+                                     hashtag: String = "") -> Overlay {
         let w = size.width, h = size.height
         let parts = Overlay(size: size)
         // 色はブランドの黄色ひとつだけ。種明かしの瞬間にだけ使う
@@ -811,6 +816,7 @@ enum Highlight {
             if piece.split { parts.seamSpans.append(Overlay.Span(piece)) }
             switch piece.kind {
             case .hook:
+                parts.markFrom = max(parts.markFrom, piece.at + piece.length - Overlay.slack)
                 // スクロール中でも読める大きさで 2 行に分ける。顔（上の半分の上・下の半分の上）には重ねず、
                 // 上の半分の下端と、画面の下端に置く
                 let big = h * 0.055 * 1.7
@@ -869,8 +875,12 @@ enum Highlight {
                 .paragraphStyle: centered,
             ])
             let taglineText = NSAttributedString(string: tagline, attributes: [
-                .font: UIFont.systemFont(ofSize: h * 0.02, weight: .semibold), .foregroundColor: UIColor(white: 1, alpha: 0.7),
+                .font: UIFont.systemFont(ofSize: h * 0.026, weight: .heavy), .foregroundColor: UIColor.white,
                 .paragraphStyle: centered,
+            ])
+            // 見た人が検索できる合言葉
+            let hashtagText = NSAttributedString(string: hashtag, attributes: [
+                .font: UIFont.systemFont(ofSize: h * 0.024, weight: .bold), .foregroundColor: yellow, .paragraphStyle: centered,
             ])
             parts.card = draw(full) { cg in
                 cg.setFillColor(UIColor.black.cgColor)
@@ -900,11 +910,13 @@ enum Highlight {
                     text.draw(with: CGRect(x: (w - textWidth) / 2, y: top, width: textWidth, height: ceil(box.height)),
                               options: [.usesLineFragmentOrigin], context: nil)
                 }
-                put(summaryText, top: h * 0.56)
-                put(detailText, top: h * 0.62)
+                // 中央に寄せて詰める：点数 → 正解数 → お題・しばり → 一言 → ロゴ → 合言葉
+                put(summaryText, top: h * 0.515)
+                put(detailText, top: h * 0.57)
+                put(taglineText, top: h * 0.665)
                 let logoSize = logo.size()
-                logo.draw(at: CGPoint(x: (w - logoSize.width) / 2, y: h * 0.8))
-                put(taglineText, top: h * 0.8 + logoHeight + h * 0.005)
+                logo.draw(at: CGPoint(x: (w - logoSize.width) / 2, y: h * 0.7))
+                put(hashtagText, top: h * 0.7 + logoHeight + h * 0.008)
             }
 
             let numberFont = markFont(h * 0.17)
