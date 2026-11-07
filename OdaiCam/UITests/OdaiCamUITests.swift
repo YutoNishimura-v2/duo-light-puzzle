@@ -200,10 +200,22 @@ final class OdaiCamUITests: XCTestCase {
         // 動画ができると「保存」「共有」が押せる。できなければ「動画を作れませんでした」
         let failed = app.descendants(matching: .any)
             .matching(NSPredicate(format: "label CONTAINS '動画を作れませんでした'")).firstMatch
-        let deadline = Date().addingTimeInterval(240)
+        var deadline = Date().addingTimeInterval(240)
         var ready = false
+        var retried = false
         while Date() < deadline {
             if app.buttons["共有"].exists || (app.buttons["保存"].exists && app.buttons["保存"].isEnabled) { ready = true; break }
+            // 上限で打ち切られたら、使う人と同じく「作り直す」を 1 回だけ押して待つ
+            // （遅い CI のランナーで、シミュレータの上限 200 秒に届いたことがある：run 42362309519）
+            if failed.exists, !retried, app.buttons["作り直す"].exists {
+                print("UIテスト：\(name) 作り直す を押す")
+                shot("\(name)-retry")
+                tapIfPresent(app.buttons["作り直す"])
+                retried = true
+                deadline = Date().addingTimeInterval(240)
+                sleep(2)
+                continue
+            }
             if failed.exists { break }
             if app.state != .runningForeground {
                 XCTFail("\(name)：動画を作っている間に落ちた")
