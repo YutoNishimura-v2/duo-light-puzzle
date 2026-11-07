@@ -55,6 +55,8 @@ struct GuesserView: View {
     @State private var showHowTo = false
     @State private var editingDeck = false
     @State private var started = false
+    /// 結果の画面でカメラを止めているか
+    @State private var cameraStopped = false
     /// おまかせのとき、ホームで見え方を 2 秒ごとに切り替える番号
     @State private var previewCycle = 0
 
@@ -147,7 +149,14 @@ struct GuesserView: View {
             if phase == .results { effects.purge(vision: false) }
             // 結果の画面ではカメラを使わない。止めて、書き出しに CPU とメモリを回す
             // （止めずにいたら、シミュレータで 1 回目の書き出しが 200 秒を超えた）。録画の後片付けは先に積んであるので、その後に止まる
-            if phase == .results { camera.stop() } else if !cameraDenied { camera.start() }
+            // 動かし直すのは、止めていた結果の画面から出るときだけ（カウントダウン→プレイでは呼ばない）
+            if phase == .results {
+                camera.stop()
+                cameraStopped = true
+            } else if cameraStopped, !cameraDenied {
+                camera.start()
+                cameraStopped = false
+            }
         }
         // メモリが足りないと言われたら、しばりの絵と Vision の読み取りも手放す（次に使うとき作り直す）
         .onReceive(NotificationCenter.default.publisher(for: UIApplication.didReceiveMemoryWarningNotification)) { _ in
@@ -198,7 +207,8 @@ struct GuesserView: View {
             innerReady = inner
             if inner { camera.alignInner() } else { game.cheatGuard = false }
             CrashLog.mark("カメラ準備（内側 \(inner ? "あり" : "なし")）")
-            applyPreview(previewEffect)
+            // ホームの見え方はホームにいるときだけ当てる（プレイ中に当てると、1 問目のしばりが消えていた）
+            if game.phase == .menu { applyPreview(previewEffect) }
         }
         // デモの合成の顔はカンニングの見張りに通さない（誤って減点しないように）
         let watchesFace = !FakeCamera.isDemo
