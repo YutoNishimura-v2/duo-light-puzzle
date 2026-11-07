@@ -206,8 +206,14 @@ enum Highlight {
         func visibility(_ clip: Clip) -> Int { Int((clip.hookQuality.visibleFraction * 20).rounded()) }
         var hook: (from: Double, length: Double, topIsSeen: Bool, effect: String?)?
         if seenSource != nil {
+            // つかみはそのラウンドで一番強い場面から：着ぐるみ → 影絵 → モザイク → 棒人間 → そのほか。
+            // 同じなら、人がよく映っていた順・面白い順
+            let strongest = [word("着ぐるみ"), word("影絵"), word("モザイク"), word("棒人間")]
+            func strength(_ clip: Clip) -> Int { clip.effect.flatMap { strongest.firstIndex(of: $0) } ?? strongest.count }
             let byVisibility = byFun.filter { clips[$0].effect != nil }.enumerated()
                 .sorted { a, b in
+                    let sa = strength(clips[a.element]), sb = strength(clips[b.element])
+                    if sa != sb { return sa < sb }
                     let va = visibility(clips[a.element]), vb = visibility(clips[b.element])
                     return va != vb ? va > vb : a.offset < b.offset
                 }
@@ -217,7 +223,7 @@ enum Highlight {
                 // のぞき穴はほとんど黒い画面なので、最初の 1 コマ（SNS で止まってもらう所）には使わない
                 if c.effect == word("のぞき穴") { continue }
                 // 半分も映っていないなら、空の画面をつかみにしない（顔があれば顔、なければ上下に分けない）
-                if c.hookQuality.visibleFraction < 0.5 { break }
+                if c.hookQuality.visibleFraction < 0.5 { continue }
                 let e = min(c.end, rawEnd, seenEnd)
                 let s = max(c.start, e - hookLength, 0)
                 if e - s >= 0.6 { hook = (s, e - s, true, c.effect); break }

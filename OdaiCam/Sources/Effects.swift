@@ -97,6 +97,9 @@ final class SeenLog: @unchecked Sendable {
         lock.withLock { samples.removeAll() }
     }
 
+    /// いちばん古い記録の時刻（なければ nil）
+    var firstTime: TimeInterval? { lock.withLock { samples.first?.t } }
+
     func add(_ t: TimeInterval, visible: Bool) {
         lock.withLock {
             if let last = samples.last {

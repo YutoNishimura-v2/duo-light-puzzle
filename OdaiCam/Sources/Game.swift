@@ -248,6 +248,13 @@ final class Game {
             let from = max(t.start, to - Highlight.realLength)
             let seen = quality(t, from, min(from + Highlight.seenLength, to))
             let hook = quality(t, max(t.start, end - Highlight.hookLength), end)
+            // 調べもの：各ラウンドの 1 問目が「人が映っていない」で外れていたので、お題ごとの映り方を残す
+            if let e = t.effect {
+                let first = EffectEngine.seenLog.firstTime.map { String(format: "%.2f", $0 - (base ?? 0)) } ?? "なし"
+                CrashLog.mark(String(format: "映り方：%@ %@ 区間 %.2f〜%.2f 秒 映った割合 %.2f 途切れ最長 %.2f 秒（記録の最初 %@ 秒）",
+                                     t.prompt, e.name, from, min(from + Highlight.seenLength, to),
+                                     seen.visibleFraction, seen.longestEmpty, first))
+            }
             return Highlight.Clip(prompt: t.prompt, outcome: outcome.rawValue, effect: t.effect?.label(language: language),
                                   start: t.start, end: end,
                                   seenQuality: seen, hookQuality: hook)
