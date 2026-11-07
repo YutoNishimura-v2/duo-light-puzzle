@@ -1284,6 +1284,8 @@ final class EffectEngine: @unchecked Sendable {
         // 人の枠が取れないコマ（ぶれた白黒の grizzly で 2 割）は、人の型抜きの範囲を枠の代わりにする
         var box = peopleBoxes.max { $0.height < $1.height }
         if box == nil, person.found, let buffer = lastGoodMask { box = Self.maskBounds(buffer) }
+        // 画面の 1/4 に満たない枠は、床の影や遠くの人（grizzly の 4.2 秒で床に小さなクマが出ていた）。使わずに直前のクマを残す
+        if let b = box, b.height < Self.minCoverHeight { box = nil }
         let face = Self.usesVision ? biggestFace(source: source, in: box) : nil
         var figure = Self.coverFigure(face: face, box: box, size: extent.size)
         // 人も顔も見つからないコマは、1.2 秒までは直前のクマを残す（型抜きと同じ長さ。ぶれたコマで本人が一瞬素のまま出ていた）
@@ -1353,6 +1355,8 @@ final class EffectEngine: @unchecked Sendable {
                       width: CGFloat(maxX - minX + 4) / CGFloat(w), height: CGFloat(maxY - minY + 4) / CGFloat(h))
     }
 
+    /// 隠すクマを付ける人の枠の、いちばん小さい高さ（画面に対する割合）
+    static let minCoverHeight: CGFloat = 0.25
     /// 直前に描いた隠すクマと、その時刻
     private var lastCover: Joints?
     private var lastCoverTime: TimeInterval = -.infinity
@@ -1367,7 +1371,9 @@ final class EffectEngine: @unchecked Sendable {
         let request = faceRequestStore ?? VNDetectFaceRectanglesRequest()
         faceRequestStore = request
         try? VNImageRequestHandler(cvPixelBuffer: source).perform([request])
+        // 小さな顔は後ろの客（grizzly の上のほうに小さなクマの頭が出ていた）。画面の幅の 8% 以上だけ
         let faces = (request.results ?? []).map(\.boundingBox).filter { face in
+            guard face.width >= 0.08 else { return false }
             guard let box else { return true }
             return box.insetBy(dx: -box.width * 0.1, dy: -box.height * 0.1).contains(CGPoint(x: face.midX, y: face.midY))
         }
