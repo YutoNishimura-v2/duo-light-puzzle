@@ -330,6 +330,17 @@ final class EffectEngine: @unchecked Sendable {
         }
     }
 
+    /// 見比べ用：1 枚の絵にしばりをかけて返す（nil はしばりなし）。どのキューから呼んでもよいが、同時には呼ばない
+    func still(_ effect: Effect?, source: CVPixelBuffer, frameTime: TimeInterval) -> CGImage? {
+        let input = Self.downscaled(CIImage(cvPixelBuffer: source))
+        var output = input
+        if let effect {
+            smoothedJoints = [:]
+            output = render(effect, input: input, source: source, now: frameTime, elapsed: 0, frameTime: frameTime).image
+        }
+        return context.createCGImage(output.cropped(to: input.extent), from: input.extent)
+    }
+
     /// main が画面を受け取った（main で呼ぶ）
     private func frameDelivered() {
         lock.withLock { frameInFlight = false }

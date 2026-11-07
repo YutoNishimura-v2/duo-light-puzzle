@@ -233,6 +233,8 @@ struct GuesserView: View {
             // 試験用：許可を求めず、偽のカメラだけ動かす（声の判定は使わない）
             game.voiceJudge = false
             camera.start()
+            // デモでは、しばりの見比べの画像を書き出しておく（CI が取り出して本人に見せる）
+            if FakeCamera.isDemo { DispatchQueue.global(qos: .utility).async { CompareShots.make() } }
             return
         }
         var granted = AVCaptureDevice.authorizationStatus(for: .video) == .authorized
@@ -521,8 +523,9 @@ struct HomeView: View {
                     } else if Shot.name != nil, game.effectsOn {
                         SampleSeen(effect: game.fixedEffect ?? .space)
                     }
-                    VStack {
+                    VStack(spacing: 10) {
                         Spacer()
+                        if mode == .fixed(.mosaic) { mosaicPicker }
                         hint
                     }
                     .padding(14)
@@ -545,6 +548,31 @@ struct HomeView: View {
             .frame(maxWidth: .infinity)
             .background(Color.black.ignoresSafeArea(edges: .bottom))
         }
+    }
+
+    @State private var mosaicLevel = EffectEngine.mosaicLevel
+
+    /// モザイクの粗さを 3 段から選ぶ（モザイクを選んだときだけ、ファインダーの下に出す）
+    private var mosaicPicker: some View {
+        HStack(spacing: 6) {
+            ForEach(MosaicLevel.allCases) { level in
+                Button {
+                    mosaicLevel = level
+                    EffectEngine.mosaicLevel = level
+                    UserDefaults.standard.set(level.rawValue, forKey: "mosaicLevel")
+                } label: {
+                    Text(level.label)
+                        .font(.system(size: 13, weight: .bold))
+                        .foregroundStyle(mosaicLevel == level ? .black : .white)
+                        .padding(.horizontal, 14)
+                        .frame(height: 32)
+                        .background(mosaicLevel == level ? Theme.accent : Theme.chip, in: Capsule())
+                }
+                .buttonStyle(PressStyle())
+                .accessibilityLabel(String(localized: "モザイクの粗さ") + " " + level.label)
+            }
+        }
+        .sensoryFeedback(.selection, trigger: mosaicLevel)
     }
 
     /// ファインダーの下の 1 行（初めての人には遊び方をひとことで）

@@ -143,6 +143,10 @@ jobs:
           mkdir -p demo/videos demo/frames
           # 仕上がった動画だけ。アプリがデモのときに Documents に残したもの（ラウンドごとに 1 本、重複なし）
           find "$DATA/Documents" -name 'highlight-demo-*.mp4' -exec cp {} demo/videos/ \;
+          # しばりの見比べの画像（同じ人・同じポーズ：そのまま／棒人間／モザイク 3 段／着ぐるみ）
+          mkdir -p demo/compare
+          cp "$DATA/Documents/compare/"*.png demo/compare/ 2>/dev/null || true
+          ls demo/compare
           ls -la demo/videos
           i=0
           for v in $(ls demo/videos/highlight-*.mp4); do
@@ -196,6 +200,7 @@ jobs:
           path: |
             OdaiCam/demo/videos
             OdaiCam/demo/frames
+            OdaiCam/demo/compare
             OdaiCam/demo/attachments
             OdaiCam/demo/crashes
             OdaiCam/demo/usage.csv
