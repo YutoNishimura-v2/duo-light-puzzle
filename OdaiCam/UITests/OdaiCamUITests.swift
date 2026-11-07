@@ -86,6 +86,8 @@ final class OdaiCamUITests: XCTestCase {
             tapMode(mode)
             sleep(1)
             guard Self.roundModes.contains(mode) else { continue }
+            // 落ちたときに、どのモードのラウンドだったかが CI の記録（xcodebuild.log）で分かるように書き出す
+            print("UIテスト：ラウンド開始 モード=\(mode)")
             XCTContext.runActivity(named: "ラウンド：\(mode)") { _ in
                 app.buttons["あそぶ"].tap()
                 playRound(mode)
