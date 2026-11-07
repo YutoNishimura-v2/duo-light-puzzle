@@ -290,8 +290,8 @@ enum Highlight {
                 pieces.append(Piece(kind: .hook,
                                     caption: !hook.topIsSeen
                                         ? word("↑ 当てる人の顔")
-                                        : hook.effect.map { String(format: word("↑ みんなに見えてたのはコレ（%@）"), $0) }
-                                            ?? word("↑ みんなに見えてたのはコレ"),
+                                        // しばりの名前は次の場面の札に出るので、ここは短く大きく
+                                        : word("↑ みんなに見えてたのはコレ"),
                                     time: CMTimeRange(start: cursor, duration: d),
                                     face: !hook.topIsSeen, split: true, topIsSeen: hook.topIsSeen,
                                     subcaption: word("↑ ほんとはコレ")))
@@ -762,14 +762,15 @@ enum Highlight {
         }
         /// 丸い札。centerY は上からの位置
         func pill(_ text: String, yellow isYellow: Bool, centerY: CGFloat, piece: Piece, scale: CGFloat = 1) {
-            let height = h * 0.055 * scale
+            var height = h * 0.055 * scale
             let color = isYellow ? UIColor.black : UIColor.white
             var font = UIFont.systemFont(ofSize: height * 0.46, weight: .heavy)
             var textWidth = ceil((text as NSString).size(withAttributes: [.font: font]).width)
-            // 長いお題は字を小さくして収める
-            let maxText = w * 0.9 - height
-            if textWidth > maxText {
-                font = UIFont.systemFont(ofSize: font.pointSize * maxText / textWidth, weight: .heavy)
+            // 長いお題は字を小さくして収める。札も字に合わせて低くする（大きな札に小さな字が浮かないように）
+            if textWidth > w * 0.92 - height {
+                let shrink = (w * 0.92) / (textWidth + height)
+                height *= shrink
+                font = UIFont.systemFont(ofSize: height * 0.46, weight: .heavy)
                 textWidth = ceil((text as NSString).size(withAttributes: [.font: font]).width)
             }
             let width = textWidth + height
@@ -812,9 +813,9 @@ enum Highlight {
             case .hook:
                 // スクロール中でも読める大きさで 2 行に分ける。顔（上の半分の上・下の半分の上）には重ねず、
                 // 上の半分の下端と、画面の下端に置く
-                let big = h * 0.055 * 1.9
-                pill(piece.caption, yellow: true, centerY: h / 2 - big / 2 - h * 0.012, piece: piece, scale: 1.9)
-                pill(piece.subcaption, yellow: false, centerY: h - big / 2 - h * 0.035, piece: piece, scale: 1.9)
+                let big = h * 0.055 * 1.7
+                pill(piece.caption, yellow: true, centerY: h / 2 - big / 2 - h * 0.012, piece: piece, scale: 1.7)
+                pill(piece.subcaption, yellow: false, centerY: h - big / 2 - h * 0.035, piece: piece, scale: 1.7)
             case .seen:
                 if piece.face, wipe != nil { parts.borderSpans.append(Overlay.Span(piece)) }
                 // 札は足元に置き、演じる人の顔を隠さない
