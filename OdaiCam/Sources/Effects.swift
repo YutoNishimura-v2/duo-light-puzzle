@@ -676,15 +676,17 @@ final class EffectEngine: @unchecked Sendable {
             }
             trustedMain = main
             trustedMainTime = now
-            return [main] + bodies.dropFirst().filter { Self.plausible($0) }
+            // 人形は演じている 1 人だけ。後ろや横の友だちにも人形が出ると、誰が演じているか分からなくなる（square の 8 秒）
+            return [main]
         }
         if recent, !trustedMain.isEmpty { return [trustedMain] }
         trustedMain = [:]
         return []
     }
 
-    /// 人の形として自然か：首（か両肩）と腰（か左右の腰）があり、胴の長さがほどほどで、
-    /// 全体が横に潰れていない（横棒）・手足の 1 本が胴よりずっと長くない（斜めの巨大な人形）
+    /// 人の形として自然か：首（か両肩）と腰（か左右の腰）がある（腕だけの横棒を落とす）、胴の長さがほどほど、
+    /// 手足の 1 本が体よりずっと長くない、脚が胴よりずっと短くない（斜めの巨大な人形を落とす）。
+    /// 横に寝た姿勢は落とさない（1 回目は横長の骨格を落としていて、腕立ての姿勢で人形が消えた）
     static func plausible(_ j: Joints) -> Bool {
         func mid(_ a: CGPoint?, _ b: CGPoint?) -> CGPoint? {
             guard let a, let b else { return nil }
@@ -693,9 +695,13 @@ final class EffectEngine: @unchecked Sendable {
         guard let neck = j[.neck] ?? mid(j[.leftShoulder], j[.rightShoulder]),
               let root = j[.root] ?? mid(j[.leftHip], j[.rightHip]),
               let box = extent(j) else { return false }
-        let torso = hypot(neck.x - root.x, neck.y - root.y)
+        func length(_ a: CGPoint, _ b: CGPoint) -> CGFloat { hypot(a.x - b.x, a.y - b.y) }
+        let torso = length(neck, root)
         let size = max(box.width, box.height)
-        guard torso > 0.02, torso >= size * 0.18, box.height >= box.width * 0.35 else { return false }
+        // 胴が画面の 45% を超えるのは、別の人の頭と腰をつないだ斜めの巨大な人形（実写の grizzly・square の 2 秒）
+        guard torso > 0.02, torso <= 0.45, torso >= size * 0.18 else { return false }
+        // 手足の 1 本が体に比べて長すぎない（寝転ぶ・前に倒れる姿勢で胴が短く写っても落とさないよう、体の大きさとも比べる）
+        let reference = max(torso, size * 0.3)
         let bones: [(VNHumanBodyPoseObservation.JointName, VNHumanBodyPoseObservation.JointName, CGFloat)] = [
             (.leftShoulder, .leftElbow, 1.1), (.rightShoulder, .rightElbow, 1.1),
             (.leftElbow, .leftWrist, 1.1), (.rightElbow, .rightWrist, 1.1),
@@ -703,7 +709,11 @@ final class EffectEngine: @unchecked Sendable {
             (.leftKnee, .leftAnkle, 1.4), (.rightKnee, .rightAnkle, 1.4),
         ]
         for (a, b, most) in bones {
-            if let p = j[a], let q = j[b], hypot(p.x - q.x, p.y - q.y) > torso * most { return false }
+            if let p = j[a], let q = j[b], length(p, q) > reference * most { return false }
+        }
+        // 脚が見えているなら、胴に比べて短すぎない（斜めの巨大な人形は、長い胴の先に短い脚がついていた）
+        for (hip, knee, ankle) in [(j[.leftHip], j[.leftKnee], j[.leftAnkle]), (j[.rightHip], j[.rightKnee], j[.rightAnkle])] {
+            if let hip, let knee, let ankle, length(hip, knee) + length(knee, ankle) < torso * 0.6 { return false }
         }
         return true
     }
