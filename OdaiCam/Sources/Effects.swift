@@ -477,8 +477,13 @@ final class EffectEngine: @unchecked Sendable {
         }
         let person = personMask(source: source, input: input, now: now, frameTime: frameTime)
         guard let mask = person.mask else { return (scene, false) }
-        // 縁を少しだけぼかして、切り抜きのギザギザを目立たなくする
-        let soft = mask.clampedToExtent().applyingGaussianBlur(sigma: 1.5).cropped(to: input.extent)
+        // 型抜きは小さい絵を引き伸ばしたものなので、縁に元の部屋（明るい壁）の画素がにじみ、人の周りに白い縁が出ていた。
+        // 型抜きを内側へ少し縮めてから、細くぼかす（縁は背景の色に溶ける）
+        let erode = CIFilter.morphologyMinimum()
+        erode.inputImage = mask.clampedToExtent()
+        erode.radius = Float(max(1.5, input.extent.width * 0.004))
+        let shrunk = erode.outputImage ?? mask.clampedToExtent()
+        let soft = shrunk.applyingGaussianBlur(sigma: 1.0).cropped(to: input.extent)
         let blend = CIFilter.blendWithMask()
         blend.inputImage = input
         blend.backgroundImage = scene
