@@ -36,6 +36,8 @@ final class Game {
     // 最初に開いたときは「動物」・60 秒・しばりなし（effectsOn = false）。主役は人そのもの、しばりはおまけ
     var deck = Deck.defaultForDevice
     var roundLength = 60.0
+    /// 直前のラウンドの実際の長さ（試験で短くしたときもその秒数。結果と種明かしの札に出す）
+    private(set) var playedLength = 60.0
     private(set) var turns: [Turn] = []
     private(set) var remaining = 0.0
     /// 直前の答え（当てる人に一瞬だけ見せる）
@@ -53,9 +55,28 @@ final class Game {
     /// 聞き取った言葉（当てる人に小さく見せる）
     private(set) var heard = ""
     /// 見え方しばり（おまけ）。オンのとき、当てる人はカメラ越しのしばられた画面だけで当てる
-    var effectsOn = false
+    /// 最後に選んだモードを覚えておき、次に開いたときの最初の設定にする（どのモードでも最初の設定にできる）。
+    /// 試験（偽カメラ）では覚えたものを使わず、いつもしばりなしから始める
+    var effectsOn = Game.savedMode.on {
+        didSet { saveMode() }
+    }
     /// nil ならおまかせ（お題ごとにくじ）
-    var fixedEffect: Effect?
+    var fixedEffect: Effect? = Game.savedMode.effect {
+        didSet { saveMode() }
+    }
+
+    private static var savedMode: (on: Bool, effect: Effect?) {
+        guard !FakeCamera.isOn, let raw = UserDefaults.standard.string(forKey: "mode") else { return (false, nil) }
+        if raw == "none" { return (false, nil) }
+        if raw == "random" { return (true, nil) }
+        return Effect(rawValue: raw).map { (true, $0) } ?? (false, nil)
+    }
+
+    private func saveMode() {
+        guard !FakeCamera.isOn else { return }
+        let raw = !effectsOn ? "none" : (fixedEffect?.rawValue ?? "random")
+        UserDefaults.standard.set(raw, forKey: "mode")
+    }
     /// 内側のカメラで当てる人を見張る（顔を上げて本人を見たら減点）
     var cheatGuard = true
     /// 減点したカンニングの数（1 回目の注意は入らない）
@@ -100,6 +121,7 @@ final class Game {
         isNewBest = false
         // 前のラウンドの種明かし作りは止める（新しいラウンドに古い動画が出ないように。メモリも手放す）
         generation += 1
+        demoRound += 1
         buildTask?.cancel()
         buildTask = nil
         deadline?.cancel()
@@ -127,7 +149,8 @@ final class Game {
             nextPrompt()
             // 試験用：起動引数 -testRoundSeconds 8 で短くする
             let test = UserDefaults.standard.double(forKey: "testRoundSeconds")
-            let end = ProcessInfo.processInfo.systemUptime + (test > 0 ? test : roundLength)
+            playedLength = test > 0 ? test : roundLength
+            let end = ProcessInfo.processInfo.systemUptime + playedLength
             while !Task.isCancelled {
                 remaining = max(0, end - ProcessInfo.processInfo.systemUptime)
                 if remaining <= 0 { break }
@@ -225,6 +248,13 @@ final class Game {
             let from = max(t.start, to - Highlight.realLength)
             let seen = quality(t, from, min(from + Highlight.seenLength, to))
             let hook = quality(t, max(t.start, end - Highlight.hookLength), end)
+            // 調べもの：各ラウンドの 1 問目が「人が映っていない」で外れていたので、お題ごとの映り方を残す
+            if let e = t.effect {
+                let first = EffectEngine.seenLog.firstTime.map { String(format: "%.2f", $0 - (base ?? 0)) } ?? "なし"
+                CrashLog.mark(String(format: "映り方：%@ %@ 区間 %.2f〜%.2f 秒 映った割合 %.2f 途切れ最長 %.2f 秒（記録の最初 %@ 秒）",
+                                     t.prompt, e.name, from, min(from + Highlight.seenLength, to),
+                                     seen.visibleFraction, seen.longestEmpty, first))
+            }
             return Highlight.Clip(prompt: t.prompt, outcome: outcome.rawValue, effect: t.effect?.label(language: language),
                                   start: t.start, end: end,
                                   seenQuality: seen, hookQuality: hook)
@@ -251,6 +281,8 @@ final class Game {
     @ObservationIgnored private var rebuild: ((Bool) -> Void)?
     /// いまのラウンドの番号。古いラウンドの書き出しが、あとから新しいラウンドの結果を書き換えないように
     @ObservationIgnored private var generation = 0
+    /// デモでラウンドごとにしばりの順をずらす
+    @ObservationIgnored private var demoRound = -1
     @ObservationIgnored private var buildTask: Task<Void, Never>?
     @ObservationIgnored private var deadline: Task<Void, Never>?
 
@@ -291,7 +323,7 @@ final class Game {
             do {
                 let made = try await Self.makeWithRetry {
                     try await Highlight.make(raw: url, seen: recordings.seen, front: recordings.front, clips: clips, score: score,
-                                             overlay: overlay && !Self.fastExport, language: language)
+                                             roundSeconds: Int(playedLength.rounded()), overlay: overlay && !Self.fastExport, language: language)
                 }
                 guard gen == generation, !Task.isCancelled else { return }
                 highlightURL = made
@@ -399,12 +431,21 @@ final class Game {
         if voiceJudge { onPrompt?(prompt) }
     }
 
-    /// おまかせなら、直前と同じにならないようにくじで選ぶ
+    /// おまかせの中心：姿を変えるしばり（着ぐるみ・影絵・モザイク・棒人間）。ほかのしばりより 3 倍出やすくする
+    static let figureEffects: [Effect] = [.costume, .silhouette, .mosaic, .stick]
+
+    /// おまかせなら、直前と同じにならないようにくじで選ぶ。
+    /// デモ（CI）では、ラウンドの 1 問目から姿を変えるしばりを順に出す（種明かし動画に着ぐるみなどが必ず入るように）
     private func nextEffect() -> Effect? {
         guard effectsOn else { return nil }
         if let fixedEffect { return fixedEffect }
         let last = turns.last?.effect
-        return Effect.allCases.filter { $0 != last }.randomElement()
+        if FakeCamera.isDemo {
+            let order = Self.figureEffects
+            return order[(turns.count + demoRound) % order.count]
+        }
+        let pool = Effect.allCases.flatMap { Self.figureEffects.contains($0) ? [$0, $0, $0] : [$0] }
+        return pool.filter { $0 != last }.randomElement()
     }
 
     private func finishRound() {

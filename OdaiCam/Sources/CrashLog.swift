@@ -33,13 +33,26 @@ enum CrashLog {
     static func mark(_ event: String) {
         let time = Date().formatted(date: .omitted, time: .standard)
         let list: [String] = lock.withLock {
-            trail.append("\(time) \(event)")
+            // iOS がメモリ不足で落とすときの基準の量（phys_footprint）も添える
+            trail.append("\(time) [\(footprintMB) MB] \(event)")
             if trail.count > 60 { trail.removeFirst(trail.count - 60) }
             return trail
         }
         defaults.set(list, forKey: trailKey)
         // 試験の記録（CI の app.log）でも追えるように、端末のログにも出す
         NSLog("OdaiCam足跡: %@", event)
+    }
+
+    /// いまアプリが使っているメモリ（MB）。iOS の判定と同じ phys_footprint
+    static var footprintMB: Int {
+        var info = task_vm_info_data_t()
+        var count = mach_msg_type_number_t(MemoryLayout<task_vm_info_data_t>.size / MemoryLayout<natural_t>.size)
+        let result = withUnsafeMutablePointer(to: &info) {
+            $0.withMemoryRebound(to: integer_t.self, capacity: Int(count)) {
+                task_info(mach_task_self_, task_flavor_t(TASK_VM_INFO), $0, &count)
+            }
+        }
+        return result == KERN_SUCCESS ? Int(info.phys_footprint / 1_048_576) : -1
     }
 
     /// 裏に回ったら、正常に終わったとみなす（iOS はふつう、裏に回ったアプリを黙って終わらせる）

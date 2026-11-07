@@ -5,11 +5,13 @@ import XCTest
 final class OdaiCamUITests: XCTestCase {
     /// ホームのモード列（左から順に押す。押すと中央に寄るので、隣は画面の中にある）
     /// 起動したときはしばりなし（先頭）が選ばれている
-    static let modes = ["しばりなし", "宇宙", "海", "教室", "ステージ", "棒人間", "影絵", "モザイク", "3秒遅れ", "のぞき穴", "おまかせ"]
+    static let modes = ["しばりなし", "棒人間", "モザイク", "着ぐるみ", "影絵", "宇宙", "海", "教室", "ステージ", "3秒遅れ", "のぞき穴", "おまかせ"]
     /// 1 ラウンド遊ぶモード。背景はどれも同じ処理なので宇宙だけ（ラウンドが増えると CI の 20 分に収まらない）
-    static let roundModes: Set<String> = ["しばりなし", "宇宙", "棒人間", "影絵", "モザイク", "3秒遅れ", "のぞき穴", "おまかせ"]
+    static let roundModes: Set<String> = ["しばりなし", "宇宙", "棒人間", "着ぐるみ", "影絵", "モザイク", "3秒遅れ", "のぞき穴", "おまかせ"]
     /// 1 ラウンドの秒数（起動引数で短くする）
-    static let roundSeconds = 15
+    // 15 秒では、CI の重いシミュレータで画面写真と配置の確認をしている間にラウンドが終わり、
+    // 「パス」を押す前に結果の画面になって落ちた（run 42328558975）
+    static let roundSeconds = 25
     /// シミュレータの言葉に関係なく、アプリを日本語で動かす（ボタンは日本語の名前で探すため。山札も日本語になる）
     static let japanese = ["-AppleLanguages", "(ja)", "-AppleLocale", "ja_JP"]
 
@@ -242,7 +244,15 @@ final class OdaiCamUITests: XCTestCase {
     /// ある・押せるときだけ押す（ラウンドの終わりと重なっても落ちないように）
     @MainActor
     private func tapIfPresent(_ element: XCUIElement) {
-        if element.exists && element.isHittable { element.tap() }
+        // 「ある」を確かめてから押すまでの間にラウンドが終わると、element.tap() はボタンを探し直して失敗する
+        // （run 42355012053 の test2Rounds）。位置を先に読み、アプリ全体の座標で押す（消えていても失敗にしない）。
+        // 結果の画面の「役を交代してもう一回」は出てから 1.5 秒は効かないので、同じ場所を押しても次へ進まない
+        guard element.exists, element.isHittable else { return }
+        let frame = element.frame
+        guard !frame.isEmpty else { return }
+        app.coordinate(withNormalizedOffset: .zero)
+            .withOffset(CGVector(dx: frame.midX, dy: frame.midY))
+            .tap()
     }
 
     /// ボタンの中心が、画面の中心から ±5% 以内にあるか

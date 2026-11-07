@@ -55,6 +55,8 @@ struct GuesserView: View {
     @State private var showHowTo = false
     @State private var editingDeck = false
     @State private var started = false
+    /// 結果の画面でカメラを止めているか
+    @State private var cameraStopped = false
     /// おまかせのとき、ホームで見え方を 2 秒ごとに切り替える番号
     @State private var previewCycle = 0
 
@@ -147,7 +149,14 @@ struct GuesserView: View {
             if phase == .results { effects.purge(vision: false) }
             // 結果の画面ではカメラを使わない。止めて、書き出しに CPU とメモリを回す
             // （止めずにいたら、シミュレータで 1 回目の書き出しが 200 秒を超えた）。録画の後片付けは先に積んであるので、その後に止まる
-            if phase == .results { camera.stop() } else if !cameraDenied { camera.start() }
+            // 動かし直すのは、止めていた結果の画面から出るときだけ（カウントダウン→プレイでは呼ばない）
+            if phase == .results {
+                camera.stop()
+                cameraStopped = true
+            } else if cameraStopped, !cameraDenied {
+                camera.start()
+                cameraStopped = false
+            }
         }
         // メモリが足りないと言われたら、しばりの絵と Vision の読み取りも手放す（次に使うとき作り直す）
         .onReceive(NotificationCenter.default.publisher(for: UIApplication.didReceiveMemoryWarningNotification)) { _ in
@@ -169,7 +178,7 @@ struct GuesserView: View {
     private var previewEffect: Effect? {
         guard game.phase == .menu, game.effectsOn else { return nil }
         if let fixed = game.fixedEffect { return fixed }
-        let cycle: [Effect] = [.space, .silhouette, .sea, .mosaic, .stage, .stick, .classroom, .peephole]
+        let cycle: [Effect] = [.stick, .mosaic, .costume, .space, .silhouette, .sea, .stage, .classroom, .peephole]
         return cycle[previewCycle % cycle.count]
     }
 
@@ -198,7 +207,8 @@ struct GuesserView: View {
             innerReady = inner
             if inner { camera.alignInner() } else { game.cheatGuard = false }
             CrashLog.mark("カメラ準備（内側 \(inner ? "あり" : "なし")）")
-            applyPreview(previewEffect)
+            // ホームの見え方はホームにいるときだけ当てる（プレイ中に当てると、1 問目のしばりが消えていた）
+            if game.phase == .menu { applyPreview(previewEffect) }
         }
         // デモの合成の顔はカンニングの見張りに通さない（誤って減点しないように）
         let watchesFace = !FakeCamera.isDemo
@@ -233,6 +243,8 @@ struct GuesserView: View {
             // 試験用：許可を求めず、偽のカメラだけ動かす（声の判定は使わない）
             game.voiceJudge = false
             camera.start()
+            // デモでは、しばりの見比べの画像を書き出しておく（CI が取り出して本人に見せる）
+            if FakeCamera.isDemo { DispatchQueue.global(qos: .utility).async { CompareShots.make() } }
             return
         }
         var granted = AVCaptureDevice.authorizationStatus(for: .video) == .authorized
@@ -521,8 +533,9 @@ struct HomeView: View {
                     } else if Shot.name != nil, game.effectsOn {
                         SampleSeen(effect: game.fixedEffect ?? .space)
                     }
-                    VStack {
+                    VStack(spacing: 10) {
                         Spacer()
+                        if mode == .fixed(.mosaic) { mosaicPicker }
                         hint
                     }
                     .padding(14)
@@ -545,6 +558,31 @@ struct HomeView: View {
             .frame(maxWidth: .infinity)
             .background(Color.black.ignoresSafeArea(edges: .bottom))
         }
+    }
+
+    @State private var mosaicLevel = EffectEngine.mosaicLevel
+
+    /// モザイクの粗さを 3 段から選ぶ（モザイクを選んだときだけ、ファインダーの下に出す）
+    private var mosaicPicker: some View {
+        HStack(spacing: 6) {
+            ForEach(MosaicLevel.allCases) { level in
+                Button {
+                    mosaicLevel = level
+                    EffectEngine.mosaicLevel = level
+                    UserDefaults.standard.set(level.rawValue, forKey: "mosaicLevel")
+                } label: {
+                    Text(level.label)
+                        .font(.system(size: 13, weight: .bold))
+                        .foregroundStyle(mosaicLevel == level ? .black : .white)
+                        .padding(.horizontal, 14)
+                        .frame(height: 32)
+                        .background(mosaicLevel == level ? Theme.accent : Theme.chip, in: Capsule())
+                }
+                .buttonStyle(PressStyle())
+                .accessibilityLabel(String(localized: "モザイクの粗さ") + " " + level.label)
+            }
+        }
+        .sensoryFeedback(.selection, trigger: mosaicLevel)
     }
 
     /// ファインダーの下の 1 行（初めての人には遊び方をひとことで）
@@ -1282,7 +1320,7 @@ struct ResultsView: View {
                     .accessibilityElement(children: .ignore)
                     .accessibilityLabel(String(localized: "\(game.score) 点") + (game.isNewBest ? String(localized: "、自己ベスト") : ""))
                     .accessibilityIdentifier("score")
-                    Text("\(game.deck.title) ・ \(Int(game.roundLength))秒").font(Theme.bold(15)).lineLimit(1)
+                    Text("\(game.deck.title) ・ \(Int(game.playedLength.rounded()))秒").font(Theme.bold(15)).lineLimit(1)
                 }
                 Text(verbatim: tally)
                     .font(.system(size: 13, weight: .medium))
@@ -1337,13 +1375,8 @@ struct ResultsView: View {
                 .padding(24)
             } else {
                 SampleScene().blur(radius: 30).opacity(0.6)
-                VStack(spacing: 10) {
-                    Image(systemName: "eye.slash").font(.system(size: 34, weight: .semibold))
-                    Text("種明かしをつくっています").font(Theme.bold(17))
-                    Text("見えていた画面と、本当の演技を並べています").font(.system(size: 13, weight: .medium))
-                        .foregroundStyle(.white.opacity(0.75))
-                    ProgressView().tint(.white).padding(.top, 4)
-                }
+                // 待つ間も盛り上がりを切らさない：このラウンドのお題と結果を 1 つずつ大きく流す
+                WaitingRecap(turns: game.turns.compactMap { t in t.outcome.map { (prompt: t.prompt, outcome: $0) } })
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -1422,6 +1455,47 @@ struct ResultsView: View {
         }
         .buttonStyle(PillButtonStyle(height: 54))
         .accessibilityLabel("役を交代してもう一回")
+    }
+}
+
+/// 種明かしを待つ間の画面：このラウンドのお題を 1.4 秒ずつ、結果（正解！・パス）と一緒に大きく出す
+struct WaitingRecap: View {
+    let turns: [(prompt: String, outcome: Game.Outcome)]
+    static let step = 1.4
+
+    var body: some View {
+        VStack(spacing: 14) {
+            Text("このラウンドのお題").font(.system(size: 13, weight: .bold)).foregroundStyle(.white.opacity(0.75))
+            if turns.isEmpty {
+                Image(systemName: "eye.slash").font(.system(size: 34, weight: .semibold))
+            } else {
+                TimelineView(.periodic(from: .now, by: Self.step)) { context in
+                    let i = Int(context.date.timeIntervalSinceReferenceDate / Self.step) % turns.count
+                    let turn = turns[i]
+                    VStack(spacing: 10) {
+                        Text(verbatim: turn.prompt)
+                            .font(Theme.bold(34)).lineLimit(1).minimumScaleFactor(0.5)
+                        Text(turn.outcome == .correct ? "正解！" : "パス")
+                            .font(.system(size: 15, weight: .heavy))
+                            .foregroundStyle(turn.outcome == .correct ? .black : .white)
+                            .padding(.horizontal, 14).frame(height: 30)
+                            .background(turn.outcome == .correct ? Theme.accent : Color.white.opacity(0.2), in: Capsule())
+                        Text(verbatim: "\(i + 1) / \(turns.count)")
+                            .font(.system(size: 12, weight: .semibold)).foregroundStyle(.white.opacity(0.6))
+                    }
+                    .id(i)
+                    .transition(.scale(scale: 0.85).combined(with: .opacity))
+                    .animation(.spring(duration: 0.35), value: i)
+                }
+                .frame(height: 120)
+            }
+            HStack(spacing: 8) {
+                ProgressView().tint(.white)
+                Text("種明かしをつくっています").font(.system(size: 13, weight: .semibold))
+            }
+            .padding(.top, 6)
+        }
+        .padding(.horizontal, 20)
     }
 }
 

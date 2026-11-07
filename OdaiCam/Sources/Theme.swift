@@ -88,6 +88,7 @@ extension Effect {
         case .stick: "figure.stand"
         case .silhouette: "person.fill"
         case .mosaic: "square.grid.3x3.fill"
+        case .costume: "teddybear.fill"
         case .delay: "clock.arrow.circlepath"
         case .peephole: "circle.dashed"
         }
@@ -99,9 +100,10 @@ extension Effect {
         case .sea: String(localized: "海の中にいるように見える")
         case .classroom: String(localized: "黒板の前に立って見える")
         case .stage: String(localized: "スポットライトのステージに立つ")
-        case .stick: String(localized: "骨組みの線だけが見える")
+        case .stick: String(localized: "顔つきの棒人間が同じ動きをする")
+        case .costume: String(localized: "クマの着ぐるみが同じ動きをする")
         case .silhouette: String(localized: "真っ黒な影だけが見える")
-        case .mosaic: String(localized: "粗いモザイクが少しずつ晴れる")
+        case .mosaic: String(localized: "選んだ粗さのモザイクで見える")
         case .delay: String(localized: "3 秒前の動きが見える")
         case .peephole: String(localized: "小さな丸い窓だけがうろつく")
         }

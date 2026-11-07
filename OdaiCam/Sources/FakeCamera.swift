@@ -49,7 +49,8 @@ final class FakeCamera: @unchecked Sendable {
     var videoSettings: [String: Any] {
         // B フレームを使わない（符号化が前後のコマを抱えておく分のメモリが要らない）
         [AVVideoCodecKey: AVVideoCodecType.h264, AVVideoWidthKey: Int(size.width), AVVideoHeightKey: Int(size.height),
-         AVVideoCompressionPropertiesKey: [AVVideoAllowFrameReorderingKey: false]]
+         // 1 秒ごとに区切りのコマ（途中から読み出すつかみの頭が、緑に崩れて出ていた）
+         AVVideoCompressionPropertiesKey: [AVVideoAllowFrameReorderingKey: false, AVVideoMaxKeyFrameIntervalKey: 30]]
     }
 
     /// デモの顔の録画の設定
@@ -210,6 +211,21 @@ final class FakeCamera: @unchecked Sendable {
     }
 
     // MARK: デモ
+
+    /// 見比べ用：時刻 t の部屋と役者を、新しい画素の箱に描く（同じ人・同じポーズを各しばりにかけるため）
+    static func demoFrame(at t: TimeInterval) -> CVPixelBuffer? {
+        let size = DemoActor.pixelSize
+        var pool: CVPixelBufferPool?
+        guard let pb = makeBuffer(&pool, width: Int(size.width), height: Int(size.height)) else { return nil }
+        CVPixelBufferLockBaseAddress(pb, [])
+        defer { CVPixelBufferUnlockBaseAddress(pb, []) }
+        guard let ctx = context(pb) else { return nil }
+        if let room = DemoActor.room() { ctx.draw(room, in: CGRect(origin: .zero, size: size)) }
+        ctx.scaleBy(x: DemoActor.pixelScale, y: DemoActor.pixelScale)
+        DemoActor.draw(DemoActor.body(at: t), in: ctx, mask: false)
+        DemoActor.vignette(ctx)
+        return pb
+    }
 
     /// デモ：部屋で演じる人の 1 コマ（時刻 t の姿勢）
     private func drawActor(t: TimeInterval) -> CVPixelBuffer? {
