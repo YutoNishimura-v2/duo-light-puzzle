@@ -18,7 +18,10 @@ enum CompareShots {
             guard let source = FakeCamera.demoFrame(at: t) else { continue }
             var panels: [(String, CGImage)] = []
             func add(_ title: String, _ effect: Effect?) {
-                if let image = engine.still(effect, source: source, frameTime: t) { panels.append((title, image)) }
+                // 1 枚ごとに一時的な絵を手放す（手放さないと型抜きの画素の箱が足りなくなり、影絵が真っ黒になった）
+                autoreleasepool {
+                    if let image = engine.still(effect, source: source, frameTime: t) { panels.append((title, image)) }
+                }
             }
             add("そのまま", nil)
             add("棒人間", .stick)
