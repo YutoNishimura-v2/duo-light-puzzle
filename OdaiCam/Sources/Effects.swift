@@ -727,6 +727,9 @@ final class EffectEngine: @unchecked Sendable {
                     first[name] = CGPoint(x: (p.x + q.x) / 2, y: (p.y + q.y) / 2)
                 }
             }
+            // 首だけ混ぜて腰は混ぜない、のように片方だけ動くと、腕立てで短く写った胴がつぶれて崩れた人形になっていた
+            // （jacks で 5 コマ）。混ぜて不自然になったら、混ぜる前の姿を描く
+            if !Self.plausible(first), Self.plausible(bodies[0]) { first = bodies[0] }
             smoothedJoints = first
             bodies[0] = first
         } else {
@@ -1155,6 +1158,11 @@ final class EffectEngine: @unchecked Sendable {
                    width: $0.width * size.width, height: $0.height * size.height)
         } : nil
         let paint = !joints.bodies.isEmpty && (area != nil || !Self.usesVision || FakeCamera.isDemo)
+        if joints.bodies.isEmpty {
+            // 人形を出さないコマで元の映像をそのまま返すと、当てる人に本人が素のまま見えて種明かしが成り立たない
+            // （実写の grizzly で着ぐるみの 2・5・8 秒が「そのまま」と同じ絵だった、2026-11-08 批評）。人をモザイクで隠す
+            return (hiddenPeople(source: source, input: input, now: now, frameTime: frameTime), joints.found)
+        }
         if paint, let mask = personMask(source: source, input: input, now: now, frameTime: frameTime).mask {
             let grow = CIFilter.morphologyMaximum()
             grow.inputImage = mask.clampedToExtent()
@@ -1184,6 +1192,42 @@ final class EffectEngine: @unchecked Sendable {
         let suit = CIImage(cvPixelBuffer: pb).transformed(by: CGAffineTransform(translationX: input.extent.minX, y: input.extent.minY))
         return (suit.composited(over: base), joints.found)
     }
+
+    /// 人形を出せないコマの着ぐるみ：人の形（少し太らせた型抜き）と人の枠の中だけ粗いモザイクにする。
+    /// 人を見つけられないときは画面全体をモザイクにする（本人が素のまま映るよりよい）
+    private func hiddenPeople(source: CVPixelBuffer, input: CIImage, now: TimeInterval, frameTime: TimeInterval) -> CIImage {
+        let pixellate = CIFilter.pixellate()
+        pixellate.inputImage = input.clampedToExtent()
+        pixellate.scale = Float(max(input.extent.width * Self.hiddenMosaicFraction, 4))
+        pixellate.center = CGPoint(x: input.extent.midX, y: input.extent.midY)
+        guard let mosaic = pixellate.outputImage?.cropped(to: input.extent) else { return input }
+        // 型抜きだけでは、大きく写ってぶれた本人を取りこぼした（grizzly で真ん中の小さな塊だけが隠れた）。
+        // 1 人ずつの枠（少し広げる）も隠す。誰も見つからなければ全体
+        let extent = input.extent
+        let person = personMask(source: source, input: input, now: now, frameTime: frameTime)
+        guard !peopleBoxes.isEmpty || person.found else { return mosaic }
+        var cover = CIImage(color: .black).cropped(to: extent)
+        if person.found, let mask = person.mask {
+            let grow = CIFilter.morphologyMaximum()
+            grow.inputImage = mask.clampedToExtent()
+            grow.radius = Float(max(4, extent.width * 0.03))
+            cover = (grow.outputImage ?? mask).cropped(to: extent)
+        }
+        for box in peopleBoxes {
+            let r = box.insetBy(dx: -box.width * 0.08, dy: -box.height * 0.08)
+            let pixels = CGRect(x: extent.minX + r.minX * extent.width, y: extent.minY + r.minY * extent.height,
+                                width: r.width * extent.width, height: r.height * extent.height).intersection(extent)
+            cover = CIImage(color: .white).cropped(to: pixels).composited(over: cover)
+        }
+        let blend = CIFilter.blendWithMask()
+        blend.inputImage = mosaic
+        blend.backgroundImage = input
+        blend.maskImage = cover.applyingGaussianBlur(sigma: 3).cropped(to: extent)
+        return blend.outputImage?.cropped(to: extent) ?? mosaic
+    }
+
+    /// 人形を出せないコマで人を隠すモザイクの粗さ（画面の幅に対する 1 マスの大きさ）
+    static let hiddenMosaicFraction: CGFloat = 0.08
 
     // MARK: 下ごしらえ
 

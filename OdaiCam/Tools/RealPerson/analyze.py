@@ -24,7 +24,7 @@ Joints = dict[str, Point]
 DEFAULTS: dict[str, float] = {
     "torso_max": 0.45,        # torso longer than this (fraction of frame) -> giant diagonal figure
     "torso_tiny": 0.01,       # torso shorter than this -> no torso at all
-    "torso_min_ratio": 0.08,  # torso shorter than this x body size -> arms-only bar
+    "torso_min_ratio": 0.05,  # torso shorter than this x body size -> arms-only bar
     "arm": 1.4,
     "leg": 1.8,
     "short_leg": 0.6,
@@ -206,7 +206,12 @@ def replay(frames: list[dict], p: dict[str, float],
             if d != "ok":
                 trusted = {}
             why[d] += 1
-        smoothed = smooth(drawn, smoothed) if drawn else {}
+        if drawn:
+            mixed = smooth(drawn, smoothed)
+            # bodyJoints: if mixing broke a plausible pose, draw the unmixed one
+            smoothed = drawn if reason(mixed, p) and not reason(drawn, p) else mixed
+        else:
+            smoothed = {}
         if track is not None:
             track.append(smoothed)
     return shown / max(len(frames), 1), why
