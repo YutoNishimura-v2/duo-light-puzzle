@@ -65,8 +65,15 @@ final class Game {
         didSet { saveMode() }
     }
 
+    /// 初めて開いたとき（まだモードを選んでいない）の最初の設定。
+    /// 【仮 2026-11-07】本人の判断待ちの「主役のモード」を、批評役のおすすめ「おまかせ」で仮に入れている。
+    /// 本人が決めたらここだけ差し替える（しばりなし＝(false, nil)、着ぐるみ＝(true, .costume) など）
+    static let firstRunMode: (on: Bool, effect: Effect?) = (true, nil)
+
     private static var savedMode: (on: Bool, effect: Effect?) {
-        guard !FakeCamera.isOn, let raw = UserDefaults.standard.string(forKey: "mode") else { return (false, nil) }
+        // 試験（偽カメラ）はいつもしばりなしから始める（UI テストはしばりなしを先頭として順に押す）
+        if FakeCamera.isOn { return (false, nil) }
+        guard let raw = UserDefaults.standard.string(forKey: "mode") else { return firstRunMode }
         if raw == "none" { return (false, nil) }
         if raw == "random" { return (true, nil) }
         return Effect(rawValue: raw).map { (true, $0) } ?? (false, nil)
@@ -394,8 +401,9 @@ final class Game {
         switch shot {
         case "countdown": phase = .countdown(3)
         case "play":
-            // 主役は人そのもの（しばりなし）
-            turns.append(Turn(prompt: en ? "Koala" : "コアラ", effect: nil, start: 40))
+            // 最初の設定（firstRunMode、【仮】おまかせ）のまま。おまかせなら姿のしばりがかかったお題を見せる
+            let shown: Effect? = effectsOn ? (fixedEffect ?? .costume) : nil
+            turns.append(Turn(prompt: en ? "Koala" : "コアラ", effect: shown, start: 40))
             phase = .playing
         case "home-bg":
             // 背景を宇宙に変えたホーム

@@ -1,7 +1,12 @@
 @preconcurrency import AVFoundation
 import CoreImage
 import CoreImage.CIFilterBuiltins
+// Mac の点検の道具（Tools/RealPerson）でも同じファイルをそのまま使う。Mac では UIColor の代わりを道具の側で用意する
+#if canImport(UIKit)
 import UIKit
+#else
+import AppKit
+#endif
 import Vision
 import VideoToolbox
 
@@ -344,6 +349,17 @@ final class EffectEngine: @unchecked Sendable {
         }
         return context.createCGImage(output.cropped(to: input.extent), from: input.extent)
     }
+
+    /// 続けて流すコマに、しばりを 1 枚かける（関節のなめらかさを前のコマから引き継ぐ）。
+    /// Mac の点検の道具（Tools/RealPerson）が本物の人の動画で使う。アプリでは使わない
+    func sequenceFrame(_ effect: Effect, source: CVPixelBuffer, frameTime: TimeInterval) -> (image: CGImage?, visible: Bool) {
+        let input = Self.downscaled(CIImage(cvPixelBuffer: source))
+        let rendered = render(effect, input: input, source: source, now: frameTime, elapsed: frameTime, frameTime: frameTime)
+        return (context.createCGImage(rendered.image.cropped(to: input.extent), from: input.extent), rendered.visible)
+    }
+
+    /// 直前のコマの関節（1 人目、なめらかにしたあと。0〜1、左下が原点）。点検の道具が震えを測るのに使う
+    var lastJoints: Joints { smoothedJoints }
 
     /// main が画面を受け取った（main で呼ぶ）
     private func frameDelivered() {

@@ -106,7 +106,12 @@ jobs:
         run: |
           set -uo pipefail
           mkdir -p demo
-          # アプリの CPU とメモリ（RSS、MB）を 2 秒ごとに記録
+          # 共有（保存・TikTok）を試すので、写真への追加を先に許可しておく
+          xcrun simctl privacy "$UDID" grant photos-add io.github.yutonishimura-v2.odaicam || true
+          xcrun simctl privacy "$UDID" grant photos io.github.yutonishimura-v2.odaicam || true
+          # アプリの CPU とメモリ（RSS、MB）を 2 秒ごとに記録。
+          # RSS はこの Mac から見たシミュレータの処理の大きさで、共有の部品や GPU の代わりの分まで入る（実機の値とは比べられない）。
+          # iOS がメモリ不足の判断に使う量（phys_footprint）は、アプリが残す足跡（footprints.txt）の方を見る
           ( echo "sec,cpu_percent,rss_mb" > demo/usage.csv
             T=0
             while true; do
@@ -132,7 +137,9 @@ jobs:
           if rows:
               cpu = [float(r["cpu_percent"]) for r in rows]; mem = [float(r["rss_mb"]) for r in rows]
               print(f"## デモ 10 ラウンド続けたときの重さ（{len(rows)} 点、2 秒ごと）")
-              print(f"CPU 平均 {sum(cpu)/len(cpu):.0f}% / 最大 {max(cpu):.0f}%　メモリ 最初 {mem[0]:.0f} MB / 最大 {max(mem):.0f} MB / 最後 {mem[-1]:.0f} MB")
+              print(f"CPU 平均 {sum(cpu)/len(cpu):.0f}% / 最大 {max(cpu):.0f}%")
+              print(f"シミュレータの処理の RSS（参考。共有の部品・GPU の代わりの分を含み、実機とは比べられない）：最初 {mem[0]:.0f} MB / 最大 {max(mem):.0f} MB / 最後 {mem[-1]:.0f} MB")
+              print("アプリのメモリ（phys_footprint、iOS が見る量）は下の「10 ラウンドの安定性」を見る")
           PY
 
       - name: Reveal video frames
@@ -194,6 +201,30 @@ jobs:
           cat demo/footprints.txt || true
           # 10 ラウンドの安定性：ラウンドの終わりと種明かしのできあがりの、iOS が見るメモリ量（phys_footprint）
           { echo "## 10 ラウンドの安定性（phys_footprint）"; grep -E "ラウンド終了|種明かし：できた|打ち切り|失敗" demo/footprints.txt | sed 's/^/- /'; } >> "$GITHUB_STEP_SUMMARY" || true
+          python3 - <<'PY' | tee -a "$GITHUB_STEP_SUMMARY" || true
+          import re
+          mb = [int(m.group(1)) for line in open("demo/footprints.txt") for m in [re.search(r"\[(\d+) MB\]", line)] if m]
+          if mb:
+              print(f"phys_footprint：最大 {max(mb)} MB / 最後 {mb[-1]} MB（{len(mb)} 点）")
+          PY
+          # 共有の確かめ：「保存」「TikTok」で写真に入った動画の縦横・長さ・音
+          mkdir -p demo/shared
+          MEDIA="$HOME/Library/Developer/CoreSimulator/Devices/$UDID/data/Media/DCIM"
+          find "$MEDIA" -type f \( -iname '*.mp4' -o -iname '*.mov' \) -exec cp {} demo/shared/ \; 2>/dev/null || true
+          {
+            echo "## 共有（写真に保存された動画）"
+            n=0
+            for v in demo/shared/*; do
+              [ -f "$v" ] || continue
+              n=$((n+1))
+              V=$(ffprobe -v error -select_streams v:0 -show_entries stream=width,height,codec_name -of csv=p=0 "$v")
+              A=$(ffprobe -v error -select_streams a:0 -show_entries stream=codec_name,channels -of csv=p=0 "$v")
+              D=$(ffprobe -v error -show_entries format=duration -of csv=p=0 "$v")
+              echo "- $(basename "$v")：映像 ${V}／音 ${A:-なし}／${D} 秒"
+            done
+            echo "写真に入った動画：$n 本（保存と TikTok で 2 本の見込み）"
+          } | tee -a "$GITHUB_STEP_SUMMARY" | tee demo/shared/summary.txt
+          grep "UIテスト：共有" demo/xcodebuild.log | tee -a "$GITHUB_STEP_SUMMARY" || true
 
       - uses: actions/upload-artifact@v4
         if: always()
@@ -207,6 +238,7 @@ jobs:
             OdaiCam/demo/crashes
             OdaiCam/demo/usage.csv
             OdaiCam/demo/footprints.txt
+            OdaiCam/demo/shared
             OdaiCam/demo/ps-raw.txt
             OdaiCam/demo/xcodebuild.log
             OdaiCam/demo/app.log

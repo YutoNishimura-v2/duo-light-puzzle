@@ -538,7 +538,8 @@ struct HomeView: View {
         }
     }
 
-    /// しばりなしが先頭（主役は人そのもの）。しばりはおまけで、背景 → 姿の順、おまかせは最後
+    /// しばりなしが先頭、背景 → 姿の順、おまかせは最後（UI テストはこの順に押す）。
+    /// 最初に選ばれているのは Game.firstRunMode（【仮】おまかせ）で、開いたときにその項目まで中央に寄せる
     private let modes: [Mode] = [.none] + Effect.allCases.map { .fixed($0) } + [.random]
     private static let lengths: [Double] = [30, 60, 90]
 

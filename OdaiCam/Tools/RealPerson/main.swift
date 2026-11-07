@@ -1,0 +1,272 @@
+// 本物の人の動画に、アプリと同じしばり（Sources/Effects.swift）を Mac の本物の Vision でかけて、出来を確かめる道具。
+// シミュレータの Vision は人を見つけないので、CI ではこの道具で「人の体についてくるか」を見る。
+//
+// 使い方: realperson <縦長の動画.mp4> <出力フォルダ> <名前>
+//   出力: <名前>-sheet.png（3 つの時刻 × しばり）, <名前>-costume.mp4（着ぐるみ｜実写 を左右に並べた動画）,
+//         <名前>-stick.mp4, <名前>.json（見つけた割合・関節の震え）
+import AppKit
+import AVFoundation
+import CoreImage
+import Vision
+
+let args = CommandLine.arguments
+guard args.count >= 4 else {
+    print("使い方: realperson <動画> <出力フォルダ> <名前>")
+    exit(2)
+}
+let inputURL = URL(fileURLWithPath: args[1])
+let outDir = URL(fileURLWithPath: args[2])
+let name = args[3]
+try? FileManager.default.createDirectory(at: outDir, withIntermediateDirectories: true)
+
+/// 見るしばり（姿を変えるもの 4 つと、背景の代表に宇宙）
+let effects: [Effect] = [.stick, .costume, .silhouette, .space, .mosaic]
+let sheetTimes: [Double] = [2.0, 5.0, 8.0]
+
+// MARK: 動画を 1 コマずつ読む
+
+let asset = AVURLAsset(url: inputURL)
+guard let track = try await asset.loadTracks(withMediaType: .video).first else {
+    print("動画のトラックがない: \(inputURL.path)")
+    exit(1)
+}
+let reader = try AVAssetReader(asset: asset)
+let output = AVAssetReaderTrackOutput(track: track, outputSettings: [
+    kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_32BGRA,
+    kCVPixelBufferIOSurfacePropertiesKey as String: [String: Any](),
+])
+output.alwaysCopiesSampleData = false
+reader.add(output)
+guard reader.startReading() else {
+    print("読めない: \(reader.error?.localizedDescription ?? "?")")
+    exit(1)
+}
+
+let engines = Dictionary(uniqueKeysWithValues: effects.map { ($0, EffectEngine()) })
+let context = CIContext()
+
+struct Stat {
+    var frames = 0
+    var visible = 0
+}
+var stats: [Effect: Stat] = [:]
+/// 着ぐるみの関節の位置（コマごと、画素）。震えを測る
+var jointTrack: [[VNHumanBodyPoseObservation.JointName: CGPoint]] = []
+var sheetRows: [(t: Double, panels: [(String, CGImage)])] = []
+var nextSheet = 0
+
+// 左右に並べた動画（左：しばり、右：実写）を書く
+final class SideBySide {
+    let writer: AVAssetWriter
+    let input: AVAssetWriterInput
+    let adaptor: AVAssetWriterInputPixelBufferAdaptor
+    let size: CGSize
+    var started = false
+
+    init?(url: URL, panel: CGSize) {
+        try? FileManager.default.removeItem(at: url)
+        guard let w = try? AVAssetWriter(outputURL: url, fileType: .mp4) else { return nil }
+        size = CGSize(width: panel.width * 2, height: panel.height)
+        input = AVAssetWriterInput(mediaType: .video, outputSettings: [
+            AVVideoCodecKey: AVVideoCodecType.h264,
+            AVVideoWidthKey: Int(size.width), AVVideoHeightKey: Int(size.height),
+        ])
+        input.expectsMediaDataInRealTime = false
+        // 書き始める前に作る（アプリで落ちた原因と同じ決まり）
+        adaptor = AVAssetWriterInputPixelBufferAdaptor(assetWriterInput: input, sourcePixelBufferAttributes: [
+            kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_32BGRA,
+            kCVPixelBufferWidthKey as String: Int(size.width), kCVPixelBufferHeightKey as String: Int(size.height),
+        ])
+        w.add(input)
+        writer = w
+    }
+
+    func append(left: CGImage, right: CGImage, at time: CMTime) {
+        if !started {
+            writer.startWriting()
+            writer.startSession(atSourceTime: time)
+            started = true
+        }
+        guard let pool = adaptor.pixelBufferPool else { return }
+        var pb: CVPixelBuffer?
+        CVPixelBufferPoolCreatePixelBuffer(nil, pool, &pb)
+        guard let pb else { return }
+        CVPixelBufferLockBaseAddress(pb, [])
+        if let ctx = CGContext(data: CVPixelBufferGetBaseAddress(pb), width: Int(size.width), height: Int(size.height),
+                               bitsPerComponent: 8, bytesPerRow: CVPixelBufferGetBytesPerRow(pb),
+                               space: CGColorSpaceCreateDeviceRGB(),
+                               bitmapInfo: CGImageAlphaInfo.premultipliedFirst.rawValue | CGBitmapInfo.byteOrder32Little.rawValue) {
+            let half = size.width / 2
+            ctx.draw(left, in: CGRect(x: 0, y: 0, width: half, height: size.height))
+            ctx.draw(right, in: CGRect(x: half, y: 0, width: half, height: size.height))
+        }
+        CVPixelBufferUnlockBaseAddress(pb, [])
+        while !input.isReadyForMoreMediaData { usleep(2000) }
+        adaptor.append(pb, withPresentationTime: time)
+    }
+
+    func finish() async {
+        guard started else { return }
+        input.markAsFinished()
+        await writer.finishWriting()
+    }
+}
+
+var costumeVideo: SideBySide?
+var stickVideo: SideBySide?
+var firstTime: Double?
+
+while let sample = output.copyNextSampleBuffer() {
+    guard let pb = CMSampleBufferGetImageBuffer(sample) else { continue }
+    let pts = CMSampleBufferGetPresentationTimeStamp(sample)
+    if firstTime == nil { firstTime = pts.seconds }
+    let t = pts.seconds - (firstTime ?? 0)
+    autoreleasepool {
+        // 元の絵（しばりと同じ大きさに縮めたもの）
+        let raw = CIImage(cvPixelBuffer: pb)
+        let long = max(raw.extent.width, raw.extent.height)
+        let s = min(1, EffectEngine.longSide / long)
+        let small = raw.transformed(by: CGAffineTransform(scaleX: s, y: s))
+        guard let original = context.createCGImage(small, from: small.extent) else { return }
+
+        var images: [Effect: CGImage] = [:]
+        for effect in effects {
+            guard let engine = engines[effect] else { continue }
+            let r = engine.sequenceFrame(effect, source: pb, frameTime: t)
+            stats[effect, default: Stat()].frames += 1
+            if r.visible { stats[effect, default: Stat()].visible += 1 }
+            if let image = r.image { images[effect] = image }
+            if effect == .costume {
+                let w = CGFloat(original.width), h = CGFloat(original.height)
+                jointTrack.append(engine.lastJoints.mapValues { CGPoint(x: $0.x * w, y: $0.y * h) })
+            }
+        }
+        let panel = CGSize(width: original.width, height: original.height)
+        if costumeVideo == nil {
+            costumeVideo = SideBySide(url: outDir.appendingPathComponent("\(name)-costume.mp4"), panel: panel)
+            stickVideo = SideBySide(url: outDir.appendingPathComponent("\(name)-stick.mp4"), panel: panel)
+        }
+        if let c = images[.costume] { costumeVideo?.append(left: c, right: original, at: pts) }
+        if let c = images[.stick] { stickVideo?.append(left: c, right: original, at: pts) }
+
+        if nextSheet < sheetTimes.count, t >= sheetTimes[nextSheet] {
+            var panels: [(String, CGImage)] = [("そのまま", original)]
+            if let i = images[.stick] { panels.append(("棒人間", i)) }
+            if let i = images[.costume] {
+                panels.append(("着ぐるみ", i))
+                if let o = overlay(i, on: original) { panels.append(("着ぐるみ×実写", o)) }
+            }
+            if let i = images[.silhouette] { panels.append(("影絵", i)) }
+            if let i = images[.space] {
+                panels.append(("宇宙", i))
+                if let z = headZoom(i, joints: jointTrack.last ?? [:]) { panels.append(("宇宙（頭の拡大）", z)) }
+            }
+            if let i = images[.mosaic] { panels.append(("モザイク", i)) }
+            sheetRows.append((t, panels))
+            nextSheet += 1
+        }
+    }
+}
+await costumeVideo?.finish()
+await stickVideo?.finish()
+
+// MARK: 画像を作る
+
+/// しばりの絵を実写の上に半分の濃さで重ねる（手足が体からずれていないかを見る）
+func overlay(_ top: CGImage, on base: CGImage) -> CGImage? {
+    let w = base.width, h = base.height
+    guard let ctx = CGContext(data: nil, width: w, height: h, bitsPerComponent: 8, bytesPerRow: 0,
+                              space: CGColorSpaceCreateDeviceRGB(),
+                              bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue) else { return nil }
+    let rect = CGRect(x: 0, y: 0, width: w, height: h)
+    ctx.draw(base, in: rect)
+    ctx.setAlpha(0.5)
+    ctx.draw(top, in: rect)
+    return ctx.makeImage()
+}
+
+/// 頭のまわりを 2.5 倍に拡大（髪の縁がガタガタしていないかを見る）。関節がなければ上の真ん中
+func headZoom(_ image: CGImage, joints: [VNHumanBodyPoseObservation.JointName: CGPoint]) -> CGImage? {
+    let w = CGFloat(image.width), h = CGFloat(image.height)
+    // 関節は左下が原点、CGImage の切り抜きは左上が原点
+    let head = joints[.nose] ?? joints[.neck] ?? CGPoint(x: w / 2, y: h * 0.8)
+    let cw = w / 2.5, ch = h / 2.5
+    var r = CGRect(x: head.x - cw / 2, y: (h - head.y) - ch / 2, width: cw, height: ch)
+    r.origin.x = max(0, min(w - cw, r.origin.x))
+    r.origin.y = max(0, min(h - ch, r.origin.y))
+    return image.cropping(to: r.integral)
+}
+
+func writePNG(_ image: CGImage, _ url: URL) {
+    let rep = NSBitmapImageRep(cgImage: image)
+    try? rep.representation(using: .png, properties: [:])?.write(to: url)
+}
+
+/// 見出しつきの一覧（行＝時刻、列＝しばり）
+func sheet(_ rows: [(t: Double, panels: [(String, CGImage)])]) -> CGImage? {
+    guard let first = rows.first?.panels.first?.1 else { return nil }
+    let pw = CGFloat(first.width) / 2, ph = CGFloat(first.height) / 2
+    let label: CGFloat = 44, gap: CGFloat = 8
+    let columns = rows.map(\.panels.count).max() ?? 1
+    let W = Int(CGFloat(columns) * (pw + gap) + gap), H = Int(CGFloat(rows.count) * (ph + label + gap) + gap)
+    guard let ctx = CGContext(data: nil, width: W, height: H, bitsPerComponent: 8, bytesPerRow: 0,
+                              space: CGColorSpaceCreateDeviceRGB(),
+                              bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue) else { return nil }
+    ctx.setFillColor(NSColor.black.cgColor)
+    ctx.fill(CGRect(x: 0, y: 0, width: W, height: H))
+    let ns = NSGraphicsContext(cgContext: ctx, flipped: false)
+    NSGraphicsContext.saveGraphicsState()
+    NSGraphicsContext.current = ns
+    let attrs: [NSAttributedString.Key: Any] = [.font: NSFont.systemFont(ofSize: 22, weight: .heavy),
+                                                .foregroundColor: NSColor.white]
+    for (ri, row) in rows.enumerated() {
+        // 上の行から並べる（CGContext は左下が原点）
+        let top = CGFloat(H) - gap - CGFloat(ri) * (ph + label + gap)
+        for (ci, (title, image)) in row.panels.enumerated() {
+            let x = gap + CGFloat(ci) * (pw + gap)
+            (String(format: "%@  %.0f秒", title, row.t) as NSString).draw(at: CGPoint(x: x + 4, y: top - 32), withAttributes: attrs)
+            // 拡大の絵は縦横比が同じなので、同じ枠に入れる
+            ctx.draw(image, in: CGRect(x: x, y: top - label - ph, width: pw, height: ph))
+        }
+    }
+    NSGraphicsContext.restoreGraphicsState()
+    return ctx.makeImage()
+}
+
+if let s = sheet(sheetRows) { writePNG(s, outDir.appendingPathComponent("\(name)-sheet.png")) }
+for row in sheetRows {
+    for (title, image) in row.panels {
+        writePNG(image, outDir.appendingPathComponent("\(name)-\(Int(row.t))s-\(title).png"))
+    }
+}
+
+// MARK: 数字
+
+/// 関節の震え：同じ関節の位置の 2 階差分（p[t+1] − 2p[t] + p[t−1]）の大きさ。動きそのものではなく、コマごとのガタつき
+var accel: [Double] = []
+if jointTrack.count >= 3 {
+    for i in 1..<(jointTrack.count - 1) {
+        for (joint, p) in jointTrack[i] {
+            guard let a = jointTrack[i - 1][joint], let b = jointTrack[i + 1][joint] else { continue }
+            accel.append(Double(hypot(b.x - 2 * p.x + a.x, b.y - 2 * p.y + a.y)))
+        }
+    }
+}
+accel.sort()
+func pct(_ q: Double) -> Double { accel.isEmpty ? -1 : accel[min(accel.count - 1, Int(Double(accel.count) * q))] }
+let framesWithBody = jointTrack.filter { $0.count >= EffectEngine.minJoints }.count
+
+var summary: [String: Any] = [
+    "name": name,
+    "frames": jointTrack.count,
+    "costume_frames_with_body": framesWithBody,
+    "joint_jitter_px_median": (pct(0.5) * 10).rounded() / 10,
+    "joint_jitter_px_p95": (pct(0.95) * 10).rounded() / 10,
+    "frame_height_px": sheetRows.first?.panels.first.map { $0.1.height } ?? 0,
+]
+for (effect, s) in stats {
+    summary["visible_\(effect.rawValue)"] = s.frames > 0 ? (Double(s.visible) / Double(s.frames) * 1000).rounded() / 1000 : 0
+}
+let json = try JSONSerialization.data(withJSONObject: summary, options: [.prettyPrinted, .sortedKeys])
+try json.write(to: outDir.appendingPathComponent("\(name).json"))
+print(String(data: json, encoding: .utf8) ?? "")

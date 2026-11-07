@@ -165,11 +165,39 @@ final class OdaiCamUITests: XCTestCase {
                 XCTAssertTrue(app.buttons["共有"].exists, "デモ \(round)：種明かし動画ができない")
                 sleep(3)
                 shot("demo-\(round)-results")
+                // 1 回目だけ共有の流れを通す：「保存」で写真に入り、「TikTok」も保存してからアプリを開こうとする
+                // （シミュレータに TikTok はないので「アプリが見つかりません」になる）。CI が写真の動画の縦横・長さ・音を調べる
+                if round == 1 { checkShare() }
             }
         }
     }
 
     // MARK: 下ごしらえ
+
+    /// 結果の画面の「保存」「TikTok」を押し、文言が変わるのを確かめる
+    @MainActor
+    private func checkShare() {
+        func message(_ text: String) -> XCUIElement {
+            app.staticTexts.matching(NSPredicate(format: "label == %@", text)).firstMatch
+        }
+        let save = app.buttons["保存"]
+        XCTAssertTrue(save.waitForExistence(timeout: 5), "共有：保存のボタンがない")
+        tapIfPresent(save)
+        // 写真の許可は CI が先に与えておく。もし許可の確認が出たら、使う人と同じく許可する
+        let springboard = XCUIApplication(bundleIdentifier: "com.apple.springboard")
+        let allow = springboard.alerts.buttons.matching(NSPredicate(format: "(label CONTAINS '許可' AND NOT label CONTAINS 'しない') OR (label CONTAINS 'Allow' AND NOT label CONTAINS 'Don')")).firstMatch
+        if allow.waitForExistence(timeout: 3) { allow.tap() }
+        XCTAssertTrue(message("保存しました").waitForExistence(timeout: 20), "共有：保存しましたが出ない")
+        print("UIテスト：共有 保存 OK")
+        shot("demo-share-saved")
+        tapIfPresent(app.buttons["TikTok"])
+        let opened = message("保存しました（アプリが見つかりません）").waitForExistence(timeout: 20)
+        // 本物の TikTok があれば開く（このときはアプリが後ろに回るので、前に戻す）
+        if app.state != .runningForeground { app.activate() }
+        print("UIテスト：共有 TikTok \(opened ? "保存してアプリなしの文言" : "文言なし")")
+        XCTAssertTrue(opened || app.state == .runningForeground, "共有：TikTok を押したあと戻れない")
+        shot("demo-share-tiktok")
+    }
 
     /// カウントダウン → プレイ（正解とパス）→ 結果 → 動画ができるまで
     @MainActor

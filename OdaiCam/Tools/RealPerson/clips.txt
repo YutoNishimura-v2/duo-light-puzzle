@@ -1,0 +1,3 @@
+# 本物の人の動画（odaicam-realperson.yml が CI で落として使う。リポジトリには入れない）
+# 1 行 1 本：名前|URL|始める秒|使用許諾と作者
+grizzly|https://upload.wikimedia.org/wikipedia/commons/5/55/The_Grizzly_Bear_Dance_%281913%29.webm|14|Public domain（The Grizzly Bear Dance, 1913, Wikimedia Commons）
