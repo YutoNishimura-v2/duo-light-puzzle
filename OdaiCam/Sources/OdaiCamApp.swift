@@ -1337,13 +1337,8 @@ struct ResultsView: View {
                 .padding(24)
             } else {
                 SampleScene().blur(radius: 30).opacity(0.6)
-                VStack(spacing: 10) {
-                    Image(systemName: "eye.slash").font(.system(size: 34, weight: .semibold))
-                    Text("種明かしをつくっています").font(Theme.bold(17))
-                    Text("見えていた画面と、本当の演技を並べています").font(.system(size: 13, weight: .medium))
-                        .foregroundStyle(.white.opacity(0.75))
-                    ProgressView().tint(.white).padding(.top, 4)
-                }
+                // 待つ間も盛り上がりを切らさない：このラウンドのお題と結果を 1 つずつ大きく流す
+                WaitingRecap(turns: game.turns.compactMap { t in t.outcome.map { (prompt: t.prompt, outcome: $0) } })
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -1422,6 +1417,47 @@ struct ResultsView: View {
         }
         .buttonStyle(PillButtonStyle(height: 54))
         .accessibilityLabel("役を交代してもう一回")
+    }
+}
+
+/// 種明かしを待つ間の画面：このラウンドのお題を 1.4 秒ずつ、結果（正解！・パス）と一緒に大きく出す
+struct WaitingRecap: View {
+    let turns: [(prompt: String, outcome: Game.Outcome)]
+    static let step = 1.4
+
+    var body: some View {
+        VStack(spacing: 14) {
+            Text("このラウンドのお題").font(.system(size: 13, weight: .bold)).foregroundStyle(.white.opacity(0.75))
+            if turns.isEmpty {
+                Image(systemName: "eye.slash").font(.system(size: 34, weight: .semibold))
+            } else {
+                TimelineView(.periodic(from: .now, by: Self.step)) { context in
+                    let i = Int(context.date.timeIntervalSinceReferenceDate / Self.step) % turns.count
+                    let turn = turns[i]
+                    VStack(spacing: 10) {
+                        Text(verbatim: turn.prompt)
+                            .font(Theme.bold(34)).lineLimit(1).minimumScaleFactor(0.5)
+                        Text(turn.outcome == .correct ? "正解！" : "パス")
+                            .font(.system(size: 15, weight: .heavy))
+                            .foregroundStyle(turn.outcome == .correct ? .black : .white)
+                            .padding(.horizontal, 14).frame(height: 30)
+                            .background(turn.outcome == .correct ? Theme.accent : Color.white.opacity(0.2), in: Capsule())
+                        Text(verbatim: "\(i + 1) / \(turns.count)")
+                            .font(.system(size: 12, weight: .semibold)).foregroundStyle(.white.opacity(0.6))
+                    }
+                    .id(i)
+                    .transition(.scale(scale: 0.85).combined(with: .opacity))
+                    .animation(.spring(duration: 0.35), value: i)
+                }
+                .frame(height: 120)
+            }
+            HStack(spacing: 8) {
+                ProgressView().tint(.white)
+                Text("種明かしをつくっています").font(.system(size: 13, weight: .semibold))
+            }
+            .padding(.top, 6)
+        }
+        .padding(.horizontal, 20)
     }
 }
 
