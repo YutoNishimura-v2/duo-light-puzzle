@@ -47,14 +47,14 @@ jobs:
           # 1 行 1 本：名前|URL|始める秒|使用許諾と作者
           grep -v '^#' Tools/RealPerson/clips.txt | while IFS='|' read -r name url start license; do
             [ -n "$name" ] || continue
-            echo "== $name（$license）"
+            echo "== ${name}（${license}）"
             if curl -fsSL --retry 3 -A "OdaiCamCI/1.0 (https://github.com/YutoNishimura-v2)" -o "$RUNNER_TEMP/$name.src" "$url"; then
               # 縦長 9:16 の真ん中を切り出し、540x960・30 コマ/秒・10 秒（アプリのしばりと同じ大きさ）
               ffmpeg -y -loglevel error -ss "$start" -t 10 -i "$RUNNER_TEMP/$name.src" \
                 -vf "crop='min(iw,ih*9/16)':'min(ih,iw*16/9)',scale=540:960,fps=30,format=yuv420p" -an -c:v libx264 -crf 20 \
-                "clips/$name.mp4" || echo "変換に失敗: $name"
+                "clips/${name}.mp4" || echo "変換に失敗: ${name}"
             else
-              echo "取れなかった: $name"
+              echo "取れなかった: ${name}"
             fi
           done
           ls -la clips
@@ -79,7 +79,7 @@ jobs:
           print(f"| {s['name']} | {p('visible_stick')} | {p('visible_costume')} | {p('visible_silhouette')} | {p('visible_space')} | {s['joint_jitter_px_median']}／{s['joint_jitter_px_p95']}（{s['frame_height_px']}px の画面） |")
           PY
             else
-              echo "点検に失敗: $n"; FAIL=1
+              echo "点検に失敗: ${n}"; FAIL=1
             fi
           done
           echo "割合は 10 秒のうち人を見つけてしばりがかかったコマの割合。震えは着ぐるみの関節の位置の 2 階差分（なめらかにしたあと）" >> "$GITHUB_STEP_SUMMARY"
