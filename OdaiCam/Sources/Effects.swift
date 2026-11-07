@@ -345,6 +345,8 @@ final class EffectEngine: @unchecked Sendable {
         var output = input
         if let effect {
             smoothedJoints = [:]
+            trustedMain = [:]
+            trustedMainTime = -.infinity
             output = render(effect, input: input, source: source, now: frameTime, elapsed: 0, frameTime: frameTime).image
         }
         return context.createCGImage(output.cropped(to: input.extent), from: input.extent)
@@ -478,11 +480,12 @@ final class EffectEngine: @unchecked Sendable {
                 maskBuffer = m
                 found = Self.coverage(m) > Self.minCoverage
             }
-            // 切り抜きに失敗したコマは、0.6 秒までは直前の形を使い続ける（影絵や着ぐるみが一瞬真っ黒・空にならないように）
+            // 切り抜きに失敗したコマは、1.2 秒までは直前の形を使い続ける（影絵や着ぐるみが一瞬真っ黒・空にならないように。
+            // 0.6 秒では、何人も映る実写で影絵が空になるコマが残った）
             if found {
                 lastGoodMask = maskBuffer
                 lastGoodMaskTime = now
-            } else if let good = lastGoodMask, now - lastGoodMaskTime < 0.6 {
+            } else if let good = lastGoodMask, now - lastGoodMaskTime < 1.2 {
                 maskBuffer = good
                 found = true
             }
@@ -625,6 +628,8 @@ final class EffectEngine: @unchecked Sendable {
             }
             if demo, !found { bodyRetryAt = now + Self.demoVisionRetry }
             bodies = Self.mainBodies(bodies, previous: smoothedJoints)
+            bodies = trustedBodies(bodies, now: now)
+            found = !bodies.isEmpty
         }
         if !found, demo {
             bodies = [DemoActor.joints(at: frameTime)]
@@ -639,8 +644,85 @@ final class EffectEngine: @unchecked Sendable {
             }
             smoothedJoints = first
             bodies[0] = first
+        } else {
+            // 人形を出さないコマ：次に見つけた人を前の主役と比べない
+            smoothedJoints = [:]
         }
         return (bodies, found)
+    }
+
+    /// 最後に信じてよかった主役の関節と、その時刻・関節ごとに最後に見えた時刻
+    private var trustedMain: Joints = [:]
+    private var trustedMainTime: TimeInterval = -.infinity
+    private var jointSeenAt: [VNHumanBodyPoseObservation.JointName: TimeInterval] = [:]
+    /// 骨格があやしいコマで、直前の主役の姿を保つ長さ（秒）。これを過ぎたら人形を隠す
+    static let holdSeconds: TimeInterval = 0.8
+    /// 一瞬だけ見えなくなった関節を、直前の位置で補う長さ（秒）
+    static let jointCarrySeconds: TimeInterval = 0.3
+
+    /// 何人も映る実写で、主役が後ろの小さい人に飛ぶ・横棒になる・巨大な斜めのクマになる崩れがあった
+    /// （odaicam-realperson の grizzly、2026-11-07 批評）。あやしい骨格は使わず、直前の姿を保つか隠す。
+    /// - 主役（先頭）が人の形として不自然（plausible が偽）なら使わない
+    /// - 直前の主役から大きさが急に変わった・急に遠くへ飛んだときも使わない（holdSeconds の間だけ）
+    /// - 使わないときは、holdSeconds までは直前の主役をそのまま、過ぎたら空（人形を出さない）
+    /// 主役が使えるときは、一瞬だけ抜けた関節を直前の位置で補う（腕が抜けて手の点だけ浮くのを防ぐ）
+    private func trustedBodies(_ bodies: [Joints], now: TimeInterval) -> [Joints] {
+        let recent = now - trustedMainTime < Self.holdSeconds
+        if var main = bodies.first, Self.plausible(main),
+           !recent || Self.consistent(main, with: trustedMain) {
+            for name in main.keys { jointSeenAt[name] = now }
+            for (name, p) in trustedMain where main[name] == nil {
+                if let seen = jointSeenAt[name], now - seen < Self.jointCarrySeconds { main[name] = p }
+            }
+            trustedMain = main
+            trustedMainTime = now
+            return [main] + bodies.dropFirst().filter { Self.plausible($0) }
+        }
+        if recent, !trustedMain.isEmpty { return [trustedMain] }
+        trustedMain = [:]
+        return []
+    }
+
+    /// 人の形として自然か：首（か両肩）と腰（か左右の腰）があり、胴の長さがほどほどで、
+    /// 全体が横に潰れていない（横棒）・手足の 1 本が胴よりずっと長くない（斜めの巨大な人形）
+    static func plausible(_ j: Joints) -> Bool {
+        func mid(_ a: CGPoint?, _ b: CGPoint?) -> CGPoint? {
+            guard let a, let b else { return nil }
+            return CGPoint(x: (a.x + b.x) / 2, y: (a.y + b.y) / 2)
+        }
+        guard let neck = j[.neck] ?? mid(j[.leftShoulder], j[.rightShoulder]),
+              let root = j[.root] ?? mid(j[.leftHip], j[.rightHip]),
+              let box = extent(j) else { return false }
+        let torso = hypot(neck.x - root.x, neck.y - root.y)
+        let size = max(box.width, box.height)
+        guard torso > 0.02, torso >= size * 0.18, box.height >= box.width * 0.35 else { return false }
+        let bones: [(VNHumanBodyPoseObservation.JointName, VNHumanBodyPoseObservation.JointName, CGFloat)] = [
+            (.leftShoulder, .leftElbow, 1.1), (.rightShoulder, .rightElbow, 1.1),
+            (.leftElbow, .leftWrist, 1.1), (.rightElbow, .rightWrist, 1.1),
+            (.leftHip, .leftKnee, 1.4), (.rightHip, .rightKnee, 1.4),
+            (.leftKnee, .leftAnkle, 1.4), (.rightKnee, .rightAnkle, 1.4),
+        ]
+        for (a, b, most) in bones {
+            if let p = j[a], let q = j[b], hypot(p.x - q.x, p.y - q.y) > torso * most { return false }
+        }
+        return true
+    }
+
+    /// 直前の主役と続いているか：大きさが 0.6〜1.6 倍の中で、中心が画面の 2 割より遠くへ飛んでいない
+    static func consistent(_ j: Joints, with previous: Joints) -> Bool {
+        guard let now = extent(j), let before = extent(previous) else { return true }
+        let a = max(now.width, now.height), b = max(before.width, before.height)
+        guard b > 0 else { return true }
+        let ratio = a / b
+        let jump = hypot(now.midX - before.midX, now.midY - before.midY)
+        return ratio >= 0.6 && ratio <= 1.6 && jump <= 0.2
+    }
+
+    /// 主役の体のまわり（0〜1）。着ぐるみで毛の色を塗る範囲を、ここに絞る
+    var trustedMainArea: CGRect? {
+        guard let box = Self.extent(trustedMain) else { return nil }
+        let pad = max(box.width, box.height) * 0.22
+        return box.insetBy(dx: -pad, dy: -pad)
     }
 
     /// 関節の範囲（0〜1）。関節が 3 つ未満なら nil
@@ -687,6 +769,16 @@ final class EffectEngine: @unchecked Sendable {
         func mid(_ a: CGPoint?, _ b: CGPoint?) -> CGPoint? {
             guard let a, let b else { return a ?? b }
             return CGPoint(x: (a.x + b.x) / 2, y: (a.y + b.y) / 2)
+        }
+        // 手足の先は、つながる関節（肘か肩・膝か腰）があるときだけ描く（腕が抜けて手の点だけ浮かないように）
+        func attached(_ name: VNHumanBodyPoseObservation.JointName) -> Bool {
+            switch name {
+            case .leftWrist: return points[.leftElbow] != nil || points[.leftShoulder] != nil
+            case .rightWrist: return points[.rightElbow] != nil || points[.rightShoulder] != nil
+            case .leftAnkle: return points[.leftKnee] != nil || points[.leftHip] != nil
+            case .rightAnkle: return points[.rightKnee] != nil || points[.rightHip] != nil
+            default: return true
+            }
         }
         let neck = p(.neck) ?? mid(p(.leftShoulder), p(.rightShoulder))
         let root = p(.root) ?? mid(p(.leftHip), p(.rightHip))
@@ -761,7 +853,7 @@ final class EffectEngine: @unchecked Sendable {
                 if let q = p(name) { ctx.fillEllipse(in: CGRect(x: q.x - line * 0.42, y: q.y - line * 0.42, width: line * 0.84, height: line * 0.84)) }
             }
             for name: VNHumanBodyPoseObservation.JointName in [.leftWrist, .rightWrist, .leftAnkle, .rightAnkle] {
-                guard let q = p(name) else { continue }
+                guard let q = p(name), attached(name) else { continue }
                 let r = line * 0.85
                 ctx.setFillColor(edge); ctx.fillEllipse(in: CGRect(x: q.x - r, y: q.y - r, width: r * 2, height: r * 2))
                 ctx.setFillColor(yellow); ctx.fillEllipse(in: CGRect(x: q.x - r * 0.72, y: q.y - r * 0.72, width: r * 1.44, height: r * 1.44))
@@ -795,7 +887,7 @@ final class EffectEngine: @unchecked Sendable {
             }
             // 手足の先はクリーム色の肉球
             for name: VNHumanBodyPoseObservation.JointName in [.leftWrist, .rightWrist, .leftAnkle, .rightAnkle] {
-                guard let q = p(name) else { continue }
+                guard let q = p(name), attached(name) else { continue }
                 let r = line * 0.62
                 ctx.setFillColor(furDark); ctx.fillEllipse(in: CGRect(x: q.x - r * 1.1, y: q.y - r * 1.1, width: r * 2.2, height: r * 2.2))
                 ctx.setFillColor(cream); ctx.fillEllipse(in: CGRect(x: q.x - r * 0.8, y: q.y - r * 0.8, width: r * 1.6, height: r * 1.6))
@@ -884,12 +976,19 @@ final class EffectEngine: @unchecked Sendable {
         let joints = bodyJoints(source: source, now: now, frameTime: frameTime)
         let size = input.extent.size
         var base = input
-        // 人の形を少し太らせた型抜きで、元の人を毛の色で隠す（着ぐるみの下から本人がはみ出さないように）
-        if let mask = personMask(source: source, input: input, now: now, frameTime: frameTime).mask {
+        // 人の形を少し太らせた型抜きで、元の人を毛の色で隠す（着ぐるみの下から本人がはみ出さないように）。
+        // 塗るのは人形を描く人の体のまわりだけ。型抜きは床の荷物・影・後ろの人も拾い、着ぐるみのない茶色のしみになっていた
+        // （実写の点検の jacks の足元・grizzly の 2 人目、2026-11-07 批評）。人形を出さないコマは塗らない
+        let area: CGRect? = Self.usesVision && !trustedMain.isEmpty ? trustedMainArea.map {
+            CGRect(x: input.extent.minX + $0.minX * size.width, y: input.extent.minY + $0.minY * size.height,
+                   width: $0.width * size.width, height: $0.height * size.height)
+        } : nil
+        let paint = !joints.bodies.isEmpty && (area != nil || !Self.usesVision || FakeCamera.isDemo)
+        if paint, let mask = personMask(source: source, input: input, now: now, frameTime: frameTime).mask {
             let grow = CIFilter.morphologyMaximum()
             grow.inputImage = mask.clampedToExtent()
             grow.radius = Float(max(3, size.width * 0.012))
-            let fat = (grow.outputImage ?? mask).applyingGaussianBlur(sigma: 2).cropped(to: input.extent)
+            let fat = (grow.outputImage ?? mask).applyingGaussianBlur(sigma: 2).cropped(to: area ?? input.extent)
             let blend = CIFilter.blendWithMask()
             blend.inputImage = CIImage(color: CIColor(red: 0.55, green: 0.36, blue: 0.22)).cropped(to: input.extent)
             blend.backgroundImage = input

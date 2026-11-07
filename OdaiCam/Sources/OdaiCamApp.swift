@@ -737,9 +737,9 @@ struct HomeView: View {
         }
         .frame(height: 46)
         // 端で途中まで見える項目は消えるまでぼかす（「モザイ」のように切れて見えないように）
-        .mask(LinearGradient(stops: [.init(color: .clear, location: 0), .init(color: .clear, location: 0.08),
-                                     .init(color: .black, location: 0.3), .init(color: .black, location: 0.7),
-                                     .init(color: .clear, location: 0.92), .init(color: .clear, location: 1)],
+        // ぼかすのは端の 1 割だけ（3 割までぼかしていたら、端の「3秒遅れ」がほとんど読めなかった。2026-11-07 批評）
+        .mask(LinearGradient(stops: [.init(color: .clear, location: 0), .init(color: .black, location: 0.1),
+                                     .init(color: .black, location: 0.9), .init(color: .clear, location: 1)],
                              startPoint: .leading, endPoint: .trailing))
         .sensoryFeedback(.selection, trigger: mode)
     }

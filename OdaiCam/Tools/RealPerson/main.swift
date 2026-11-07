@@ -255,11 +255,26 @@ if jointTrack.count >= 3 {
 accel.sort()
 func pct(_ q: Double) -> Double { accel.isEmpty ? -1 : accel[min(accel.count - 1, Int(Double(accel.count) * q))] }
 let framesWithBody = jointTrack.filter { $0.count >= EffectEngine.minJoints }.count
+/// 崩れた人形のコマ：人の形として不自然な骨格（横棒・斜めの巨大な人形）を描いたコマの数
+let brokenFrames = jointTrack.filter { !$0.isEmpty && !EffectEngine.plausible($0) }.count
+/// 人形の飛び：前のコマから大きさが 0.6〜1.6 倍を外れた・中心が画面の 2 割より飛んだコマの数（別の人に乗り移った）
+var figureJumps = 0
+if jointTrack.count >= 2 {
+    let w = CGFloat(sheetRows.first?.panels.first?.1.width ?? 1), h = CGFloat(sheetRows.first?.panels.first?.1.height ?? 1)
+    func unit(_ j: [VNHumanBodyPoseObservation.JointName: CGPoint]) -> [VNHumanBodyPoseObservation.JointName: CGPoint] {
+        j.mapValues { CGPoint(x: $0.x / w, y: $0.y / h) }
+    }
+    for i in 1..<jointTrack.count where !jointTrack[i].isEmpty && !jointTrack[i - 1].isEmpty {
+        if !EffectEngine.consistent(unit(jointTrack[i]), with: unit(jointTrack[i - 1])) { figureJumps += 1 }
+    }
+}
 
 var summary: [String: Any] = [
     "name": name,
     "frames": jointTrack.count,
     "costume_frames_with_body": framesWithBody,
+    "costume_broken_frames": brokenFrames,
+    "costume_figure_jumps": figureJumps,
     "joint_jitter_px_median": (pct(0.5) * 10).rounded() / 10,
     "joint_jitter_px_p95": (pct(0.95) * 10).rounded() / 10,
     "frame_height_px": sheetRows.first?.panels.first.map { $0.1.height } ?? 0,
