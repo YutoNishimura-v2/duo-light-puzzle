@@ -79,6 +79,7 @@ jobs:
           s = json.load(open(sys.argv[1]))
           p = lambda k: f"{s.get(k, 0)*100:.0f}%"
           print(f"| {s['name']} | {p('visible_stick')} | {p('visible_costume')} | {p('visible_silhouette')} | {p('visible_space')} | {s['joint_jitter_px_median']}／{s['joint_jitter_px_p95']}（{s['frame_height_px']}px の画面） |")
+          print(f"<!-- {s['name']} hidden_by={s.get('costume_hidden_by')} broken={s.get('costume_broken_frames')} jumps={s.get('costume_figure_jumps')} -->", file=sys.stderr)
           PY
             else
               echo "点検に失敗: ${n}"; FAIL=1
@@ -88,8 +89,19 @@ jobs:
           ls -la out
           exit $FAIL
 
+      # 見る物（一覧の画像・数字・コマごとの記録）を小さく先に上げる。
+      # 42393502155 は全部を 1 つにまとめた約 120MB の上げ直しが GitHub 側の時間切れで落ち、画像が残らなかった
       - uses: actions/upload-artifact@v4
         if: always()
+        with:
+          name: odaicam-realperson-sheets
+          path: |
+            OdaiCam/out/*-sheet.png
+            OdaiCam/out/*.json
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        continue-on-error: true
         with:
           name: odaicam-realperson
           path: |

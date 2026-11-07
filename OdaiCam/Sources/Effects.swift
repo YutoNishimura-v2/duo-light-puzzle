@@ -655,6 +655,9 @@ final class EffectEngine: @unchecked Sendable {
     private var trustedMain: Joints = [:]
     private var trustedMainTime: TimeInterval = -.infinity
     private var jointSeenAt: [VNHumanBodyPoseObservation.JointName: TimeInterval] = [:]
+    /// 点検用：直前のコマの主役の候補（あやしいかを判定する前）と、使ったか・使わなかった理由
+    private(set) var lastCandidate: Joints = [:]
+    private(set) var lastDecision = "no_body"
     /// 骨格があやしいコマで、直前の主役の姿を保つ長さ（秒）。これを過ぎたら人形を隠す
     static let holdSeconds: TimeInterval = 0.8
     /// 一瞬だけ見えなくなった関節を、直前の位置で補う長さ（秒）
@@ -668,8 +671,14 @@ final class EffectEngine: @unchecked Sendable {
     /// 主役が使えるときは、一瞬だけ抜けた関節を直前の位置で補う（腕が抜けて手の点だけ浮くのを防ぐ）
     private func trustedBodies(_ bodies: [Joints], now: TimeInterval) -> [Joints] {
         let recent = now - trustedMainTime < Self.holdSeconds
-        if var main = bodies.first, Self.plausible(main),
-           !recent || Self.consistent(main, with: trustedMain) {
+        lastCandidate = bodies.first ?? [:]
+        if let main = bodies.first {
+            lastDecision = Self.implausibleReason(main)
+                ?? (!recent || Self.consistent(main, with: trustedMain) ? "ok" : "jump")
+        } else {
+            lastDecision = "no_body"
+        }
+        if var main = bodies.first, lastDecision == "ok" {
             for name in main.keys { jointSeenAt[name] = now }
             for (name, p) in trustedMain where main[name] == nil {
                 if let seen = jointSeenAt[name], now - seen < Self.jointCarrySeconds { main[name] = p }
@@ -687,19 +696,24 @@ final class EffectEngine: @unchecked Sendable {
     /// 人の形として自然か：首（か両肩）と腰（か左右の腰）がある（腕だけの横棒を落とす）、胴の長さがほどほど、
     /// 手足の 1 本が体よりずっと長くない、脚が胴よりずっと短くない（斜めの巨大な人形を落とす）。
     /// 横に寝た姿勢は落とさない（1 回目は横長の骨格を落としていて、腕立ての姿勢で人形が消えた）
-    static func plausible(_ j: Joints) -> Bool {
+    static func plausible(_ j: Joints) -> Bool { implausibleReason(j) == nil }
+
+    /// plausible が偽になる理由（点検の道具で、人形が出ないコマを理由ごとに数える）。自然なら nil
+    static func implausibleReason(_ j: Joints) -> String? {
         func mid(_ a: CGPoint?, _ b: CGPoint?) -> CGPoint? {
             guard let a, let b else { return nil }
             return CGPoint(x: (a.x + b.x) / 2, y: (a.y + b.y) / 2)
         }
-        guard let neck = j[.neck] ?? mid(j[.leftShoulder], j[.rightShoulder]),
-              let root = j[.root] ?? mid(j[.leftHip], j[.rightHip]),
-              let box = extent(j) else { return false }
+        guard let neck = j[.neck] ?? mid(j[.leftShoulder], j[.rightShoulder]) else { return "no_neck" }
+        guard let root = j[.root] ?? mid(j[.leftHip], j[.rightHip]) else { return "no_hip" }
+        guard let box = extent(j) else { return "few_joints" }
         func length(_ a: CGPoint, _ b: CGPoint) -> CGFloat { hypot(a.x - b.x, a.y - b.y) }
         let torso = length(neck, root)
         let size = max(box.width, box.height)
         // 胴が画面の 45% を超えるのは、別の人の頭と腰をつないだ斜めの巨大な人形（実写の grizzly・square の 2 秒）
-        guard torso > 0.02, torso <= 0.45, torso >= size * 0.18 else { return false }
+        if torso <= 0.02 { return "torso_tiny" }
+        if torso > 0.45 { return "torso_over_45pct" }
+        if torso < size * 0.18 { return "torso_short_for_body" }
         // 手足の 1 本が体に比べて長すぎない（寝転ぶ・前に倒れる姿勢で胴が短く写っても落とさないよう、体の大きさとも比べる）
         let reference = max(torso, size * 0.3)
         let bones: [(VNHumanBodyPoseObservation.JointName, VNHumanBodyPoseObservation.JointName, CGFloat)] = [
@@ -709,13 +723,13 @@ final class EffectEngine: @unchecked Sendable {
             (.leftKnee, .leftAnkle, 1.4), (.rightKnee, .rightAnkle, 1.4),
         ]
         for (a, b, most) in bones {
-            if let p = j[a], let q = j[b], length(p, q) > reference * most { return false }
+            if let p = j[a], let q = j[b], length(p, q) > reference * most { return "long_bone" }
         }
         // 脚が見えているなら、胴に比べて短すぎない（斜めの巨大な人形は、長い胴の先に短い脚がついていた）
         for (hip, knee, ankle) in [(j[.leftHip], j[.leftKnee], j[.leftAnkle]), (j[.rightHip], j[.rightKnee], j[.rightAnkle])] {
-            if let hip, let knee, let ankle, length(hip, knee) + length(knee, ankle) < torso * 0.6 { return false }
+            if let hip, let knee, let ankle, length(hip, knee) + length(knee, ankle) < torso * 0.6 { return "short_leg" }
         }
-        return true
+        return nil
     }
 
     /// 直前の主役と続いているか：大きさが 0.6〜1.6 倍の中で、中心が画面の 2 割より遠くへ飛んでいない

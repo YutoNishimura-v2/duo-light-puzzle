@@ -52,6 +52,13 @@ struct Stat {
 var stats: [Effect: Stat] = [:]
 /// 着ぐるみの関節の位置（コマごと、画素）。震えを測る
 var jointTrack: [[VNHumanBodyPoseObservation.JointName: CGPoint]] = []
+/// 同じ関節の位置（0〜1、アプリの判定と同じ座標）
+var unitTrack: [[VNHumanBodyPoseObservation.JointName: CGPoint]] = []
+/// 着ぐるみで主役の候補を使ったか・使わなかった理由（全コマ／人形が出なかったコマ）
+var decisions: [String: Int] = [:]
+var hiddenDecisions: [String: Int] = [:]
+/// コマごとの記録（あとで決まりの数字を手元で試すため）
+var frameLog: [[String: Any]] = []
 var sheetRows: [(t: Double, panels: [(String, CGImage)])] = []
 var nextSheet = 0
 
@@ -139,6 +146,18 @@ while let sample = output.copyNextSampleBuffer() {
             if effect == .costume {
                 let w = CGFloat(original.width), h = CGFloat(original.height)
                 jointTrack.append(engine.lastJoints.mapValues { CGPoint(x: $0.x * w, y: $0.y * h) })
+                unitTrack.append(engine.lastJoints)
+                let decision = engine.lastDecision
+                decisions[decision, default: 0] += 1
+                if !r.visible { hiddenDecisions[decision, default: 0] += 1 }
+                frameLog.append([
+                    "t": (t * 1000).rounded() / 1000,
+                    "visible": r.visible,
+                    "decision": decision,
+                    "candidate": Dictionary(uniqueKeysWithValues: engine.lastCandidate.map {
+                        ($0.key.rawValue.rawValue, [Double($0.value.x), Double($0.value.y)])
+                    }),
+                ])
             }
         }
         let panel = CGSize(width: original.width, height: original.height)
@@ -256,18 +275,17 @@ accel.sort()
 func pct(_ q: Double) -> Double { accel.isEmpty ? -1 : accel[min(accel.count - 1, Int(Double(accel.count) * q))] }
 let framesWithBody = jointTrack.filter { $0.count >= EffectEngine.minJoints }.count
 /// 崩れた人形のコマ：人の形として不自然な骨格（横棒・斜めの巨大な人形）を描いたコマの数
-let brokenFrames = jointTrack.filter { !$0.isEmpty && !EffectEngine.plausible($0) }.count
+/// （plausible は 0〜1 の座標を前提にしているので、画素ではなく unitTrack で判定する）
+let brokenFrames = unitTrack.filter { !$0.isEmpty && !EffectEngine.plausible($0) }.count
 /// 人形の飛び：前のコマから大きさが 0.6〜1.6 倍を外れた・中心が画面の 2 割より飛んだコマの数（別の人に乗り移った）
 var figureJumps = 0
-if jointTrack.count >= 2 {
-    let w = CGFloat(sheetRows.first?.panels.first?.1.width ?? 1), h = CGFloat(sheetRows.first?.panels.first?.1.height ?? 1)
-    func unit(_ j: [VNHumanBodyPoseObservation.JointName: CGPoint]) -> [VNHumanBodyPoseObservation.JointName: CGPoint] {
-        j.mapValues { CGPoint(x: $0.x / w, y: $0.y / h) }
-    }
-    for i in 1..<jointTrack.count where !jointTrack[i].isEmpty && !jointTrack[i - 1].isEmpty {
-        if !EffectEngine.consistent(unit(jointTrack[i]), with: unit(jointTrack[i - 1])) { figureJumps += 1 }
+if unitTrack.count >= 2 {
+    for i in 1..<unitTrack.count where !unitTrack[i].isEmpty && !unitTrack[i - 1].isEmpty {
+        if !EffectEngine.consistent(unitTrack[i], with: unitTrack[i - 1]) { figureJumps += 1 }
     }
 }
+let framesJSON = try JSONSerialization.data(withJSONObject: frameLog, options: [.sortedKeys])
+try framesJSON.write(to: outDir.appendingPathComponent("\(name)-frames.json"))
 
 var summary: [String: Any] = [
     "name": name,
@@ -275,6 +293,8 @@ var summary: [String: Any] = [
     "costume_frames_with_body": framesWithBody,
     "costume_broken_frames": brokenFrames,
     "costume_figure_jumps": figureJumps,
+    "costume_decisions": decisions,
+    "costume_hidden_by": hiddenDecisions,
     "joint_jitter_px_median": (pct(0.5) * 10).rounded() / 10,
     "joint_jitter_px_p95": (pct(0.95) * 10).rounded() / 10,
     "frame_height_px": sheetRows.first?.panels.first.map { $0.1.height } ?? 0,
