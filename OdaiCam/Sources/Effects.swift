@@ -1193,25 +1193,37 @@ final class EffectEngine: @unchecked Sendable {
         return (suit.composited(over: base), joints.found)
     }
 
-    /// 人形を出せないコマの着ぐるみ：人の形（少し太らせた型抜き）の中だけ粗いモザイクにする。
-    /// 型抜きで人を十分に見つけられないときは画面全体をモザイクにする（本人が素のまま映るよりよい）
+    /// 人形を出せないコマの着ぐるみ：人の形（少し太らせた型抜き）と人の枠の中だけ粗いモザイクにする。
+    /// 人を見つけられないときは画面全体をモザイクにする（本人が素のまま映るよりよい）
     private func hiddenPeople(source: CVPixelBuffer, input: CIImage, now: TimeInterval, frameTime: TimeInterval) -> CIImage {
         let pixellate = CIFilter.pixellate()
         pixellate.inputImage = input.clampedToExtent()
         pixellate.scale = Float(max(input.extent.width * Self.hiddenMosaicFraction, 4))
         pixellate.center = CGPoint(x: input.extent.midX, y: input.extent.midY)
         guard let mosaic = pixellate.outputImage?.cropped(to: input.extent) else { return input }
+        // 型抜きだけでは、大きく写ってぶれた本人を取りこぼした（grizzly で真ん中の小さな塊だけが隠れた）。
+        // 1 人ずつの枠（少し広げる）も隠す。誰も見つからなければ全体
+        let extent = input.extent
         let person = personMask(source: source, input: input, now: now, frameTime: frameTime)
-        guard person.found, let mask = person.mask else { return mosaic }
-        let grow = CIFilter.morphologyMaximum()
-        grow.inputImage = mask.clampedToExtent()
-        grow.radius = Float(max(4, input.extent.width * 0.03))
-        let fat = (grow.outputImage ?? mask).applyingGaussianBlur(sigma: 3).cropped(to: input.extent)
+        guard !peopleBoxes.isEmpty || person.found else { return mosaic }
+        var cover = CIImage(color: .black).cropped(to: extent)
+        if person.found, let mask = person.mask {
+            let grow = CIFilter.morphologyMaximum()
+            grow.inputImage = mask.clampedToExtent()
+            grow.radius = Float(max(4, extent.width * 0.03))
+            cover = (grow.outputImage ?? mask).cropped(to: extent)
+        }
+        for box in peopleBoxes {
+            let r = box.insetBy(dx: -box.width * 0.08, dy: -box.height * 0.08)
+            let pixels = CGRect(x: extent.minX + r.minX * extent.width, y: extent.minY + r.minY * extent.height,
+                                width: r.width * extent.width, height: r.height * extent.height).intersection(extent)
+            cover = CIImage(color: .white).cropped(to: pixels).composited(over: cover)
+        }
         let blend = CIFilter.blendWithMask()
         blend.inputImage = mosaic
         blend.backgroundImage = input
-        blend.maskImage = fat
-        return blend.outputImage?.cropped(to: input.extent) ?? mosaic
+        blend.maskImage = cover.applyingGaussianBlur(sigma: 3).cropped(to: extent)
+        return blend.outputImage?.cropped(to: extent) ?? mosaic
     }
 
     /// 人形を出せないコマで人を隠すモザイクの粗さ（画面の幅に対する 1 マスの大きさ）
