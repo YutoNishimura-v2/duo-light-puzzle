@@ -292,9 +292,11 @@ final class OdaiCamUITests: XCTestCase {
         // 「ある」を確かめてから押すまでの間にラウンドが終わると、element.tap() はボタンを探し直して失敗する
         // （run 42355012053 の test2Rounds）。位置を先に読み、アプリ全体の座標で押す（消えていても失敗にしない）。
         // 結果の画面の「役を交代してもう一回」は出てから 1.5 秒は効かないので、同じ場所を押しても次へ進まない
-        guard element.exists, element.isHittable else { return }
-        let frame = element.frame
-        guard !frame.isEmpty else { return }
+        // exists と isHittable を別々に聞くと、その間に消えたときに isHittable がテストを落とす（run 42401486776 の「パス」）。
+        // 1 回だけ写しを取り、取れなければ（消えていれば）押さない
+        guard let snapshot = try? element.snapshot() else { return }
+        let frame = snapshot.frame
+        guard !frame.isEmpty, app.windows.firstMatch.frame.contains(CGPoint(x: frame.midX, y: frame.midY)) else { return }
         app.coordinate(withNormalizedOffset: .zero)
             .withOffset(CGVector(dx: frame.midX, dy: frame.midY))
             .tap()
