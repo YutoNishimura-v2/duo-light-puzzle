@@ -244,7 +244,15 @@ final class OdaiCamUITests: XCTestCase {
     /// ある・押せるときだけ押す（ラウンドの終わりと重なっても落ちないように）
     @MainActor
     private func tapIfPresent(_ element: XCUIElement) {
-        if element.exists && element.isHittable { element.tap() }
+        // 「ある」を確かめてから押すまでの間にラウンドが終わると、element.tap() はボタンを探し直して失敗する
+        // （run 42355012053 の test2Rounds）。位置を先に読み、アプリ全体の座標で押す（消えていても失敗にしない）。
+        // 結果の画面の「役を交代してもう一回」は出てから 1.5 秒は効かないので、同じ場所を押しても次へ進まない
+        guard element.exists, element.isHittable else { return }
+        let frame = element.frame
+        guard !frame.isEmpty else { return }
+        app.coordinate(withNormalizedOffset: .zero)
+            .withOffset(CGVector(dx: frame.midX, dy: frame.midY))
+            .tap()
     }
 
     /// ボタンの中心が、画面の中心から ±5% 以内にあるか
