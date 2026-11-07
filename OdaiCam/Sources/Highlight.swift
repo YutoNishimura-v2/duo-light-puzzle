@@ -23,6 +23,8 @@ enum Highlight {
     static let renderSize = CGSize(width: 1080, height: 1920)
     /// 最初のつかみ
     static let hookLength = 1.0
+    /// つかみの上下の映像のあいだの、文字の帯の高さ（画面の高さに対する割合）
+    static let hookBand: CGFloat = 0.09
     /// 最後の点数の札
     static let endLength = 1.5
     /// 1 つのお題で見せる長さ。見えていた画面と実際の演技は同じ場面の頭から流す（合わせて 3 秒まで）
@@ -300,7 +302,7 @@ enum Highlight {
                                         : word("↑ みんなに見えてたのはコレ"),
                                     time: CMTimeRange(start: cursor, duration: d),
                                     face: !hook.topIsSeen, split: true, topIsSeen: hook.topIsSeen,
-                                    subcaption: word("↑ ほんとはコレ")))
+                                    subcaption: word("↓ ほんとはコレ")))
                 cursor = cursor + d
             }
         }
@@ -440,8 +442,9 @@ enum Highlight {
         // ---- 映像の並べ方（変形と切り抜きだけで組む。シミュレータでも同じ形になる） ----
         let w = renderSize.width, h = renderSize.height
         let full = CGRect(x: 0, y: 0, width: w, height: h)
-        let top = CGRect(x: 0, y: 0, width: w, height: h / 2)
-        let bottom = CGRect(x: 0, y: h / 2, width: w, height: h / 2)
+        // つかみは上下の映像のあいだに黒い帯（文字を入れる所）をあけ、映像には何も重ねない
+        let top = CGRect(x: 0, y: 0, width: w, height: h * (0.5 - hookBand / 2))
+        let bottom = CGRect(x: 0, y: h * (0.5 + hookBand / 2), width: w, height: h * (0.5 - hookBand / 2))
         // 当てる人の顔の小窓（BeReal の自撮りの窓と同じ縦長）。左上に置く
         let wipeWidth = w * 0.28
         let wipe = CGRect(x: w * 0.035, y: w * 0.035, width: wipeWidth, height: wipeWidth * 4 / 3)
@@ -829,11 +832,29 @@ enum Highlight {
             switch piece.kind {
             case .hook:
                 parts.markFrom = max(parts.markFrom, piece.at + piece.length - Overlay.slack)
-                // スクロール中でも読める大きさで 2 行に分ける。顔（上の半分の上・下の半分の上）には重ねず、
-                // 上の半分の下端と、画面の下端に置く
-                let big = h * 0.055 * 1.7
-                pill(piece.caption, yellow: true, centerY: h / 2 - big / 2 - h * 0.012, piece: piece, scale: 1.7)
-                pill(piece.subcaption, yellow: false, centerY: h - big / 2 - h * 0.035, piece: piece, scale: 1.7)
+                // 上下の映像のあいだの黒い帯に 2 行で書く（映像の手足や顔を札で隠さない）。
+                // 1 行目（黄）は上の映像を、2 行目（白）は下の映像を指す
+                let bandH = h * hookBand
+                let band = CGRect(x: 0, y: h / 2 - bandH / 2, width: w, height: bandH)
+                let fontSize = bandH * 0.36
+                func line(_ text: String, _ color: UIColor) -> NSAttributedString {
+                    var font = UIFont.systemFont(ofSize: fontSize, weight: .heavy)
+                    let width = (text as NSString).size(withAttributes: [.font: font]).width
+                    if width > w * 0.92 { font = UIFont.systemFont(ofSize: fontSize * w * 0.92 / width, weight: .heavy) }
+                    return NSAttributedString(string: text, attributes: [.font: font, .foregroundColor: color])
+                }
+                let first = line(piece.caption, yellow), second = line(piece.subcaption, .white)
+                if let image = draw(band, { cg in
+                    cg.setFillColor(UIColor.black.cgColor)
+                    cg.fill(CGRect(origin: .zero, size: band.size))
+                    let s1 = first.size(), s2 = second.size()
+                    let gap = bandH * 0.04
+                    let y0 = (bandH - s1.height - s2.height - gap) / 2
+                    first.draw(at: CGPoint(x: (w - s1.width) / 2, y: y0))
+                    second.draw(at: CGPoint(x: (w - s2.width) / 2, y: y0 + s1.height + gap))
+                }) {
+                    parts.chips.append(Overlay.Chip(image: image, center: CGPoint(x: w / 2, y: h / 2), span: Overlay.Span(piece)))
+                }
             case .seen:
                 if piece.face, wipe != nil { parts.borderSpans.append(Overlay.Span(piece)) }
                 // 札は足元に置き、演じる人の顔を隠さない

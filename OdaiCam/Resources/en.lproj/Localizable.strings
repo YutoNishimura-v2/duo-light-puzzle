@@ -153,7 +153,7 @@
 "○" = "✓";
 "↑ 当てる人の顔" = "↑ The guesser";
 "↑ みんなに見えてたのはコレ" = "↑ What everyone saw";
-"↑ ほんとはコレ" = "↑ What was really happening";
+"↓ ほんとはコレ" = "↓ What was really happening";
 "このラウンドのお題" = "This round";
 "%lld 秒で %lld 問正解" = "%2$lld right in %1$lld seconds";
 "%lld 問正解" = "%lld right";
