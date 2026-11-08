@@ -50,6 +50,17 @@ struct Stat {
     var visible = 0
     /// 型抜きの代わりに骨格から描いた人の形を使ったコマ（影絵・背景）
     var shaped = 0
+    /// 1 コマにしばりをかけた時間（ms）。Vision の読み込みが入る始めの warmupFrames コマは数えない
+    var ms: [Double] = []
+    /// Vision を回した回数の合計（1 コマ 1 回になっているか）
+    var visionPasses = 0
+}
+/// 処理時間に数えない始めのコマ（Vision の学習済みの型を読み込む分）
+let warmupFrames = 10
+
+/// 並べた値の q 分位（空なら -1）
+func percentile(_ sorted: [Double], _ q: Double) -> Double {
+    sorted.isEmpty ? -1 : sorted[min(sorted.count - 1, Int(Double(sorted.count) * q))]
 }
 var stats: [Effect: Stat] = [:]
 /// 着ぐるみの関節の位置（コマごと、画素）。震えを測る
@@ -166,8 +177,12 @@ while let sample = output.copyNextSampleBuffer() {
         var images: [Effect: CGImage] = [:]
         for effect in effects {
             guard let engine = engines[effect] else { continue }
+            let started = DispatchTime.now().uptimeNanoseconds
             let r = engine.sequenceFrame(effect, source: pb, frameTime: t)
+            let ms = Double(DispatchTime.now().uptimeNanoseconds - started) / 1_000_000
+            if stats[effect, default: Stat()].frames >= warmupFrames { stats[effect, default: Stat()].ms.append(ms) }
             stats[effect, default: Stat()].frames += 1
+            stats[effect, default: Stat()].visionPasses += engine.lastVisionPasses
             if r.visible { stats[effect, default: Stat()].visible += 1 }
             if engine.lastShapeFallback { stats[effect, default: Stat()].shaped += 1 }
             if let image = r.image { images[effect] = image }
@@ -418,6 +433,12 @@ var summary: [String: Any] = [
 ]
 for (effect, s) in stats {
     summary["visible_\(effect.rawValue)"] = s.frames > 0 ? (Double(s.visible) / Double(s.frames) * 1000).rounded() / 1000 : 0
+    // 1 コマの処理時間（Mac の Vision。iPhone の数字はアプリの設定＞診断に残る）
+    let ms = s.ms.sorted()
+    summary["ms_\(effect.rawValue)_median"] = (percentile(ms, 0.5) * 10).rounded() / 10
+    summary["ms_\(effect.rawValue)_p95"] = (percentile(ms, 0.95) * 10).rounded() / 10
+    summary["vision_passes_\(effect.rawValue)"] = s.frames > 0
+        ? (Double(s.visionPasses) / Double(s.frames) * 1000).rounded() / 1000 : 0
     if effect == .silhouette || effect == .space {
         summary["shaped_\(effect.rawValue)"] = s.frames > 0 ? (Double(s.shaped) / Double(s.frames) * 1000).rounded() / 1000 : 0
     }

@@ -154,6 +154,7 @@ final class Game {
             phase = .playing
             Sound.go()
             CrashLog.mark("プレイ開始")
+            EffectEngine.perfLog.reset()
             if cheatGuard { onWatch?(true) }
             nextPrompt()
             // 試験用：起動引数 -testRoundSeconds 8 で短くする
@@ -473,6 +474,11 @@ final class Game {
         }
         phase = .results
         CrashLog.mark("ラウンド終了")
+        // 1 コマの処理時間・熱・落ちたコマを残す（設定の「診断」に出る。本人が遊ぶだけで実機の数字が残る）
+        if let perf = EffectEngine.perfLog.summary() {
+            PerfLog.save(perf)
+            CrashLog.mark("重さ：" + perf.replacingOccurrences(of: "\n", with: " ｜ "))
+        }
         answerFeedback.notificationOccurred(.success)
         Sound.finish()
         onPrompt?(nil)
