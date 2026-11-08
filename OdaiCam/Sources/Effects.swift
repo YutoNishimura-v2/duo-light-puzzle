@@ -1055,9 +1055,19 @@ final class EffectEngine: @unchecked Sendable {
             for (a, b) in zip(pts, pts.dropFirst()) { length += hypot(a.x - b.x, a.y - b.y) }
             return min(1, max(length / (reference * 2.2), 0.45))
         }
+        func onScreen(_ q: CGPoint?) -> Bool {
+            guard let q else { return false }
+            return q.x >= 0 && q.x <= w && q.y >= 0 && q.y <= h
+        }
+        /// 肩が画面の外で、肘も画面の外（かない）の腕は、肩から先を描かず肉球だけにする。
+        /// 自撮りの距離では肩が画面の左の外に出て、左の端から肉球へ腕の切れ端が残っていた（selfie の 5・8 秒、2026-11-08 批評）
+        func armCut(_ limb: [VNHumanBodyPoseObservation.JointName]) -> Bool {
+            guard limb.first == .leftShoulder || limb.first == .rightShoulder, let shoulder = p(limb[0]) else { return false }
+            return !onScreen(shoulder) && !onScreen(p(limb[1]))
+        }
         func strokeLimbs(width: CGFloat, color: CGColor, reference: CGFloat) {
             ctx.setStrokeColor(color)
-            for limb in limbs {
+            for limb in limbs where !armCut(limb) {
                 let pts = limb.compactMap { p($0) }
                 guard pts.count >= 2 else { continue }
                 ctx.setLineWidth(width * limbScale(pts, reference: reference))
@@ -1143,8 +1153,33 @@ final class EffectEngine: @unchecked Sendable {
             for (name, limb) in zip([VNHumanBodyPoseObservation.JointName.leftWrist, .rightWrist, .leftAnkle, .rightAnkle], limbs) {
                 guard let q = p(name), attached(name) else { continue }
                 let r = line * 0.5 * limbScale(limb.compactMap { p($0) }, reference: line)
-                ctx.setFillColor(furDark); ctx.fillEllipse(in: CGRect(x: q.x - r * 1.1, y: q.y - r * 1.1, width: r * 2.2, height: r * 2.2))
-                ctx.setFillColor(cream); ctx.fillEllipse(in: CGRect(x: q.x - r * 0.8, y: q.y - r * 0.8, width: r * 1.6, height: r * 1.6))
+                guard name == .leftWrist || name == .rightWrist else {
+                    ctx.setFillColor(furDark); ctx.fillEllipse(in: CGRect(x: q.x - r * 1.1, y: q.y - r * 1.1, width: r * 2.2, height: r * 2.2))
+                    ctx.setFillColor(cream); ctx.fillEllipse(in: CGRect(x: q.x - r * 0.8, y: q.y - r * 0.8, width: r * 1.6, height: r * 1.6))
+                    continue
+                }
+                // 手は肉球の形（毛の丸に、大きな掌の肉球と指の肉球 3 つ）。茶色い丸だけでは手に見えにくかった
+                // （selfie の 5・8 秒、2026-11-08 批評）。指は腕の先の向き（肘か肩から手へ）に並べる
+                let from = limb.dropLast().reversed().lazy.compactMap { p($0) }.first
+                var dir = CGVector(dx: 0, dy: 1)
+                if let from {
+                    let d = hypot(q.x - from.x, q.y - from.y)
+                    if d > 1 { dir = CGVector(dx: (q.x - from.x) / d, dy: (q.y - from.y) / d) }
+                }
+                let pawR = r * 1.35
+                ctx.setFillColor(furDark)
+                ctx.fillEllipse(in: CGRect(x: q.x - pawR * 1.08, y: q.y - pawR * 1.08, width: pawR * 2.16, height: pawR * 2.16))
+                ctx.setFillColor(fur)
+                ctx.fillEllipse(in: CGRect(x: q.x - pawR, y: q.y - pawR, width: pawR * 2, height: pawR * 2))
+                let palm = CGPoint(x: q.x - dir.dx * pawR * 0.2, y: q.y - dir.dy * pawR * 0.2)
+                ctx.setFillColor(cream)
+                ctx.fillEllipse(in: CGRect(x: palm.x - pawR * 0.42, y: palm.y - pawR * 0.36, width: pawR * 0.84, height: pawR * 0.72))
+                for turn: CGFloat in [-0.75, 0, 0.75] {
+                    let cosT = cos(turn), sinT = sin(turn)
+                    let toeDir = CGVector(dx: dir.dx * cosT - dir.dy * sinT, dy: dir.dx * sinT + dir.dy * cosT)
+                    let toe = CGPoint(x: q.x + toeDir.dx * pawR * 0.58, y: q.y + toeDir.dy * pawR * 0.58)
+                    ctx.fillEllipse(in: CGRect(x: toe.x - pawR * 0.19, y: toe.y - pawR * 0.19, width: pawR * 0.38, height: pawR * 0.38))
+                }
             }
             if let c = headCenter {
                 drawHead(at: c, r: headR, up: up, fill: fur, edge: furDark, line: 4, in: ctx, ears: true, muzzle: cream)
@@ -1428,12 +1463,12 @@ final class EffectEngine: @unchecked Sendable {
                 hands = lastHands
             }
             if let found = Self.coverFigure(face: seen.face, box: box, size: size) {
-                let armed = Self.withHands(found, hands: hands, box: box, size: size)
+                let armed = Self.withHands(swayed(found, size: size, now: now), hands: hands, box: box, size: size)
                 figure = armed.joints
                 lastHandsDrawn = armed.used
             }
         } else {
-            figure = Self.coverFigure(face: nil, box: box, size: size)
+            figure = Self.coverFigure(face: nil, box: box, size: size).map { swayed($0, size: size, now: now) }
         }
         if let figure {
             lastCover = figure
@@ -1441,6 +1476,40 @@ final class EffectEngine: @unchecked Sendable {
             return figure
         }
         return now - lastCoverTime < 1.2 ? lastCover : nil
+    }
+
+    /// 隠すクマの頭の左右の位置（0〜1）の、ならした値。nil はまだクマを描いていない
+    private var swayCenter: CGFloat?
+    /// ならし方（1 コマで今の位置へ寄せる割合）
+    static let swayFollow: CGFloat = 0.12
+
+    /// 隠すクマを、見えている頭の左右の動きに合わせて揺らす。
+    /// 骨格の取れないコマの隠すクマは気をつけの姿勢のまま動かなかった（grizzly、2026-11-08 批評）。
+    /// 見ていない踊りは作らず、実際に見つけた頭（顔か人の枠）が最近の位置からずれた分だけ、
+    /// 腰から下を逆へずらして体を傾け、腕を振り子のように遅らせる
+    private func swayed(_ figure: Joints, size: CGSize, now: TimeInterval) -> Joints {
+        guard let nose = figure[.nose] else { return figure }
+        // 見失って 1.2 秒より後に見つけ直したときは、別の場所から始まるので揺れの基準を置き直す
+        if now - lastCoverTime > 1.2 { swayCenter = nil }
+        let center = swayCenter.map { $0 + (nose.x - $0) * Self.swayFollow } ?? nose.x
+        swayCenter = center
+        return Self.sway(figure, by: nose.x - center, size: size)
+    }
+
+    /// 頭が最近の位置から offset（0〜1）ずれたときの体の傾きと腕の振り。ずれは顔の幅の 0.8 倍までにする
+    static func sway(_ figure: Joints, by offset: CGFloat, size: CGSize) -> Joints {
+        guard let nose = figure[.nose], let neck = figure[.neck], size.width > 0 else { return figure }
+        let face = hypot((nose.x - neck.x) * size.width, (nose.y - neck.y) * size.height) / 0.65 / size.width
+        let d = max(-face * 0.8, min(face * 0.8, offset))
+        let shift: [VNHumanBodyPoseObservation.JointName: CGFloat] = [
+            .root: -0.6, .leftHip: -0.6, .rightHip: -0.6, .leftKnee: -0.3, .rightKnee: -0.3,
+            .leftElbow: -0.4, .rightElbow: -0.4, .leftWrist: -0.8, .rightWrist: -0.8,
+        ]
+        var joints = figure
+        for (name, k) in shift {
+            if let q = joints[name] { joints[name] = CGPoint(x: q.x + d * k, y: q.y) }
+        }
+        return joints
     }
 
     /// いちばん大きい顔（0〜1、左下が原点。人の枠があれば、その中の顔だけ）と、見つけた手の中心（2 つまで）
@@ -1515,7 +1584,9 @@ final class EffectEngine: @unchecked Sendable {
             // 腕が四角い欠片のように切れていた（selfie の棒人間 8 秒）。肘は手と肩の低いほうより下げない
             let elbowY = max((s.y + p.y) / 2 - d * 0.25, min(s.y, p.y))
             let elbow = CGPoint(x: (s.x + p.x) / 2 + side * d * 0.25, y: elbowY)
-            joints[left ? .leftElbow : .rightElbow] = CGPoint(x: elbow.x / w, y: elbow.y / h)
+            // 肩が画面の外なら肘を置かない（drawFigure が腕を描かず肉球だけにする。肘だけ画面に入ると前腕が浮く）
+            let shoulderInside = (0...1).contains(shoulder.x) && (0...1).contains(shoulder.y)
+            joints[left ? .leftElbow : .rightElbow] = shoulderInside ? CGPoint(x: elbow.x / w, y: elbow.y / h) : nil
             joints[left ? .leftWrist : .rightWrist] = paw
         }
         return (joints, taken.count)
