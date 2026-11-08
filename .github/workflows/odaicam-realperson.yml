@@ -97,6 +97,7 @@ jobs:
           name: odaicam-realperson-sheets
           path: |
             OdaiCam/out/*-sheet.png
+            OdaiCam/out/*-hidden.png
             OdaiCam/out/*.json
 
       - uses: actions/upload-artifact@v4

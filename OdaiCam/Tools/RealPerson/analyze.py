@@ -37,6 +37,9 @@ DEFAULTS: dict[str, float] = {
     "acquire": 3,             # consecutive ok frames before a new figure is shown
     "min_person_ratio": 0.5,  # skeleton smaller than this x biggest person -> background person
     "joint_step": 0.12,       # a joint moving farther than this in one frame is a misdetection
+    "upper_head_neck_max": 0.35,  # head-and-shoulders: face farther than this from the neck -> misdetection
+    "upper_shoulder_ratio": 3,    # shoulder farther than this x neck-to-face -> misdetection
+    "upper_arm_ratio": 4,         # arm bone longer than this x neck-to-face -> long_bone
 }
 
 HIPS = ("left_upLeg_joint", "right_upLeg_joint")
@@ -85,6 +88,53 @@ def root_of(j: Joints) -> Point | None:
     return ((neck[0] + knee[0]) / 2, (neck[1] + knee[1]) / 2)
 
 
+FACE = ("head_joint", "left_eye_joint", "right_eye_joint", "left_ear_joint", "right_ear_joint")
+ARMS = (("left_shoulder_1_joint", "left_forearm_joint"), ("right_shoulder_1_joint", "right_forearm_joint"),
+        ("left_forearm_joint", "left_hand_joint"), ("right_forearm_joint", "right_hand_joint"))
+
+
+def head_of(j: Joints) -> Point | None:
+    """Face point: nose, mid-eyes, one eye, mid-ears, one ear (EffectEngine.headPoint)."""
+    nose, le, re, lr, rr = (j.get(k) for k in FACE)
+    return nose or mid(le, re) or le or re or mid(lr, rr) or lr or rr
+
+
+def is_upper_body(j: Joints) -> bool:
+    """Head-and-shoulders skeleton: a neck but no hip centre."""
+    return neck_of(j) is not None and root_of(j) is None
+
+
+def upper_body_reason(j: Joints, neck: Point, p: dict[str, float]) -> str | None:
+    """Mirror EffectEngine.upperBodyReason: is a head-and-shoulders skeleton plausible?"""
+    shoulders = [j[s] for s in SHOULDERS if s in j]
+    head = head_of(j)
+    if head is None or not shoulders or "left_foot_joint" in j or "right_foot_joint" in j:
+        return "no_hip"
+    head_neck = dist(head, neck)
+    if head_neck < 0.01 or head_neck > p["upper_head_neck_max"]:
+        return "upper_far"
+    if any(dist(s, neck) > head_neck * p["upper_shoulder_ratio"] for s in shoulders):
+        return "upper_far"
+    for a, b in ARMS:
+        if a in j and b in j and dist(j[a], j[b]) > head_neck * p["upper_arm_ratio"]:
+            return "long_bone"
+    return None
+
+
+def is_background(c: Joints, frame: dict, p: dict[str, float]) -> bool:
+    """Mirror EffectEngine.isBackgroundPerson (upper bodies inside a big person box are kept)."""
+    biggest = frame.get("biggest_person", 0.0)
+    box = extent(c)
+    if not biggest or box is None:
+        return False
+    if is_upper_body(c):
+        cx, cy = box[0] + box[2] / 2, box[1] + box[3] / 2
+        return not any(b[3] >= biggest * p["min_person_ratio"]
+                       and b[0] - 0.05 <= cx <= b[0] + b[2] + 0.05 and b[1] - 0.05 <= cy <= b[1] + b[3] + 0.05
+                       for b in frame.get("boxes", []))
+    return max(box[2], box[3]) < biggest * p["min_person_ratio"]
+
+
 def reason(j: Joints, p: dict[str, float]) -> str | None:
     """Why the skeleton is not a plausible single person, or None if it is."""
     neck = neck_of(j)
@@ -92,7 +142,7 @@ def reason(j: Joints, p: dict[str, float]) -> str | None:
         return "no_neck"
     root = root_of(j)
     if root is None:
-        return "no_hip"
+        return upper_body_reason(j, neck, p)
     box = extent(j)
     if box is None:
         return "few_joints"
@@ -182,10 +232,9 @@ def replay(frames: list[dict], p: dict[str, float],
             for name, q in trusted.items():
                 if name not in c and t - seen.get(name, -1e9) < p["carry"]:
                     c[name] = q
-        biggest = f.get("biggest_person", 0.0)
         if not c:
             d = "no_body"
-        elif biggest and (box := extent(c)) and max(box[2], box[3]) < biggest * p["min_person_ratio"]:
+        elif is_background(c, f, p):
             d = "background_person"
         else:
             d = reason(c, p) or ("ok" if (not recent or consistent(c, trusted, p)) else "jump")
@@ -194,8 +243,8 @@ def replay(frames: list[dict], p: dict[str, float],
         if d == "ok" and (recent or streak >= p["acquire"]):
             for name in fresh:
                 seen[name] = t
-            if "root" not in c and not any(h in c for h in HIPS):
-                c["root"] = root_of(c)
+            if "root" not in c and not any(h in c for h in HIPS) and (r := root_of(c)) is not None:
+                c["root"] = r
             trusted, t_time = c, t
             drawn = c
             shown += 1

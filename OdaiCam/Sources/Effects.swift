@@ -278,6 +278,7 @@ final class EffectEngine: @unchecked Sendable {
                 bodyRequestStore = nil
                 personRequestStore = nil
                 peopleRequestStore = nil
+                faceRequestStore = nil
             }
             context.clearCaches()
         }
@@ -812,6 +813,13 @@ final class EffectEngine: @unchecked Sendable {
     private func isBackgroundPerson(_ j: Joints) -> Bool {
         let biggest = biggestPersonHeight
         guard biggest > 0, let box = Self.extent(j) else { return false }
+        // 頭と肩だけの骨格は、全身の枠よりずっと小さく写る。手前の大きい人の枠の中にあれば、その人として扱う
+        if Self.isUpperBody(j) {
+            let center = CGPoint(x: box.midX, y: box.midY)
+            return !peopleBoxes.contains {
+                $0.height >= biggest * Self.minPersonRatio && $0.insetBy(dx: -0.05, dy: -0.05).contains(center)
+            }
+        }
         return max(box.width, box.height) < biggest * Self.minPersonRatio
     }
 
@@ -834,7 +842,8 @@ final class EffectEngine: @unchecked Sendable {
             return CGPoint(x: (a.x + b.x) / 2, y: (a.y + b.y) / 2)
         }
         guard let neck = j[.neck] ?? mid(j[.leftShoulder], j[.rightShoulder]) else { return "no_neck" }
-        guard let root = hipCenter(j, neck: neck) else { return "no_hip" }
+        // 腰が写らない（自撮りの距離で頭と肩だけ）なら、上半身だけのクマを着せられるかを見る
+        guard let root = hipCenter(j, neck: neck) else { return upperBodyReason(j, neck: neck) }
         guard let box = extent(j) else { return "few_joints" }
         func length(_ a: CGPoint, _ b: CGPoint) -> CGFloat { hypot(a.x - b.x, a.y - b.y) }
         let torso = length(neck, root)
@@ -862,6 +871,43 @@ final class EffectEngine: @unchecked Sendable {
         }
         return nil
     }
+
+    /// 顔の位置：鼻、両目の真ん中、片目、両耳の真ん中、片耳の順。なければ nil
+    static func headPoint(_ j: Joints) -> CGPoint? {
+        j[.nose] ?? midpoint(j[.leftEye], j[.rightEye]) ?? j[.leftEye] ?? j[.rightEye]
+            ?? midpoint(j[.leftEar], j[.rightEar]) ?? j[.leftEar] ?? j[.rightEar]
+    }
+
+    /// 頭と肩だけの骨格（腰も膝も取れていない）か
+    static func isUpperBody(_ j: Joints) -> Bool {
+        guard let neck = j[.neck] ?? midpoint(j[.leftShoulder], j[.rightShoulder]) else { return false }
+        return hipCenter(j, neck: neck) == nil
+    }
+
+    /// 頭と肩だけ写るときの判定（スマホで自撮りする距離では、これがふつうの映り方。2026-11-08 批評）。自然なら nil。
+    /// - 顔（鼻・目・耳のどれか）と肩が 1 つ以上ある。足首が写っているのに腰がないのは全身の取りこぼしなので落とす
+    /// - 顔は首から画面の 0.35 以内、肩は首から「首と顔の間」の 3 倍以内
+    ///   （grizzly で、右端の客の顔と肩に画面の 0.5 離れた首をつないだ誤検出があった。それを落とす）
+    static func upperBodyReason(_ j: Joints, neck: CGPoint) -> String? {
+        let shoulders = [j[.leftShoulder], j[.rightShoulder]].compactMap { $0 }
+        guard let head = headPoint(j), !shoulders.isEmpty, j[.leftAnkle] == nil, j[.rightAnkle] == nil else { return "no_hip" }
+        let headNeck = hypot(head.x - neck.x, head.y - neck.y)
+        if headNeck < 0.01 || headNeck > upperHeadNeckMax { return "upper_far" }
+        for s in shoulders where hypot(s.x - neck.x, s.y - neck.y) > headNeck * upperShoulderRatio { return "upper_far" }
+        // 腕は「首と顔の間」の 4 倍まで（別の人の手をつないだ長い腕を落とす）
+        let arms: [(VNHumanBodyPoseObservation.JointName, VNHumanBodyPoseObservation.JointName)] = [
+            (.leftShoulder, .leftElbow), (.rightShoulder, .rightElbow), (.leftElbow, .leftWrist), (.rightElbow, .rightWrist),
+        ]
+        for (a, b) in arms {
+            if let p = j[a], let q = j[b], hypot(p.x - q.x, p.y - q.y) > headNeck * upperArmRatio { return "long_bone" }
+        }
+        return nil
+    }
+
+    /// 上半身だけの判定の数字（Tools/RealPerson/analyze.py の upper_* とそろえる）
+    static let upperHeadNeckMax: CGFloat = 0.35
+    static let upperShoulderRatio: CGFloat = 3
+    static let upperArmRatio: CGFloat = 4
 
     /// 2 点の真ん中（どちらかがなければ nil）
     static func midpoint(_ a: CGPoint?, _ b: CGPoint?) -> CGPoint? {
@@ -896,7 +942,12 @@ final class EffectEngine: @unchecked Sendable {
     var trustedMainArea: CGRect? {
         guard let box = Self.extent(trustedMain) else { return nil }
         let pad = max(box.width, box.height) * 0.22
-        return box.insetBy(dx: -pad, dy: -pad)
+        var area = box.insetBy(dx: -pad, dy: -pad)
+        // 頭と肩だけのときは、体は画面の下へ続いている
+        if Self.isUpperBody(trustedMain) {
+            area = CGRect(x: area.minX - pad, y: 0, width: area.width + pad * 2, height: area.maxY)
+        }
+        return area
     }
 
     /// 関節の範囲（0〜1）。関節が 3 つ未満なら nil
@@ -933,6 +984,8 @@ final class EffectEngine: @unchecked Sendable {
 
     /// 骨組みの人形（棒人間）と着ぐるみの描き方
     enum FigureStyle { case stick, costume }
+    /// 人形の頭の傾きの上限（真上からの角度）
+    static let maxHeadTilt: CGFloat = .pi * 35 / 180
 
     /// 関節から人形を描く。ctx は左下が原点、w×h の大きさ
     static func drawFigure(_ points: Joints, style: FigureStyle, in ctx: CGContext, w: CGFloat, h: CGFloat) {
@@ -955,23 +1008,38 @@ final class EffectEngine: @unchecked Sendable {
             }
         }
         let neck = p(.neck) ?? mid(p(.leftShoulder), p(.rightShoulder))
-        let root = p(.root) ?? mid(p(.leftHip), p(.rightHip))
+        var root = p(.root) ?? mid(p(.leftHip), p(.rightHip))
+        let face = headPoint(points).map { CGPoint(x: $0.x * w, y: $0.y * h) }
+        let upper = root == nil
         // 体の大きさの目安（肩幅か、首から腰まで）
         var unit = w / 10
         if let l = p(.leftShoulder), let r = p(.rightShoulder) { unit = max(hypot(l.x - r.x, l.y - r.y), w / 20) }
         else if let neck, let root { unit = max(hypot(neck.x - root.x, neck.y - root.y) * 0.6, w / 20) }
-        // 肩の位置がずれて肩幅が大きく出ると、体より大きな頭のクマになっていた（実写の点検）。
-        // 体の縦の長さ（頭から足まで、見えている関節の範囲）の 3 割までに抑える
-        if let box = extent(points) {
+        if upper, let neck, let face {
+            // 頭と肩だけ：頭の大きさは首と顔の間から決める（顔が隠れる大きさ。片方の肩しかないときも同じ）
+            unit = max(hypot(face.x - neck.x, face.y - neck.y) * 1.9, w / 20)
+        } else if let box = extent(points) {
+            // 肩の位置がずれて肩幅が大きく出ると、体より大きな頭のクマになっていた（実写の点検）。
+            // 体の縦の長さ（頭から足まで、見えている関節の範囲）の 3 割までに抑える
             let body = max(box.height * h, box.width * w)
             if body > 0 { unit = min(unit, max(body * 0.3, w / 40)) }
         }
-        // 頭の上の向き（首→鼻。なければ真上）
+        // 頭の上の向き（首→顔。なければ真上）
         var up = CGVector(dx: 0, dy: 1)
-        if let neck, let nose = p(.nose) {
-            let d = hypot(nose.x - neck.x, nose.y - neck.y)
-            if d > 1 { up = CGVector(dx: (nose.x - neck.x) / d, dy: (nose.y - neck.y) / d) }
+        if let neck, let face {
+            let d = hypot(face.x - neck.x, face.y - neck.y)
+            if d > 1 { up = CGVector(dx: (face.x - neck.x) / d, dy: (face.y - neck.y) / d) }
         }
+        // 立っている人の頭の傾きは真上から 35° まで（横を向いた人で首と顔が横に並び、クマの頭が真横に倒れていた。square の 5 秒）。
+        // 腕立て・寝転びのように胴が横に倒れているときは、胴に合わせてそのまま
+        var upright = true
+        if let neck, let root { upright = abs(atan2(neck.x - root.x, neck.y - root.y)) < .pi / 4 }
+        if upright {
+            let tilt = max(-maxHeadTilt, min(maxHeadTilt, atan2(up.dx, up.dy)))
+            up = CGVector(dx: sin(tilt), dy: cos(tilt))
+        }
+        // 頭と肩だけのときは、胴は首から画面の下へ続く（下にはみ出して描く）
+        if upper, let neck { root = CGPoint(x: neck.x - up.dx * unit * 2.4, y: neck.y - up.dy * unit * 2.4) }
         let headR = style == .stick ? unit * 0.42 : unit * 0.62
         let headCenter: CGPoint? = neck.map { CGPoint(x: $0.x + up.dx * headR * 1.15, y: $0.y + up.dy * headR * 1.15) }
 
@@ -979,16 +1047,24 @@ final class EffectEngine: @unchecked Sendable {
             [.leftShoulder, .leftElbow, .leftWrist], [.rightShoulder, .rightElbow, .rightWrist],
             [.leftHip, .leftKnee, .leftAnkle], [.rightHip, .rightKnee, .rightAnkle],
         ]
-        func strokeLimbs(width: CGFloat, color: CGColor) {
+        /// 手足の太さの倍率：短く写った手足（腕を胸の前で曲げる・カメラに向ける）を太い線で描くと、
+        /// 丸い塊の腕になっていた（square の 5 秒、2026-11-08 批評）。長さが太さの 2.2 倍に届かない手足は細くする
+        func limbScale(_ pts: [CGPoint], reference: CGFloat) -> CGFloat {
+            var length: CGFloat = 0
+            for (a, b) in zip(pts, pts.dropFirst()) { length += hypot(a.x - b.x, a.y - b.y) }
+            return min(1, max(length / (reference * 2.2), 0.45))
+        }
+        func strokeLimbs(width: CGFloat, color: CGColor, reference: CGFloat) {
             ctx.setStrokeColor(color)
-            ctx.setLineWidth(width)
             for limb in limbs {
                 let pts = limb.compactMap { p($0) }
                 guard pts.count >= 2 else { continue }
+                ctx.setLineWidth(width * limbScale(pts, reference: reference))
                 ctx.move(to: pts[0])
                 for q in pts.dropFirst() { ctx.addLine(to: q) }
                 ctx.strokePath()
             }
+            ctx.setLineWidth(width)
             // 肩・腰から胴へつなぐ
             if let neck {
                 for s in [p(.leftShoulder), p(.rightShoulder)].compactMap({ $0 }) { ctx.move(to: neck); ctx.addLine(to: s) }
@@ -1013,14 +1089,14 @@ final class EffectEngine: @unchecked Sendable {
                 ctx.setFillColor(UIColor(white: 0, alpha: 0.35).cgColor)
                 ctx.fillEllipse(in: CGRect(x: foot.x - unit * 0.9, y: foot.y - unit * 0.18, width: unit * 1.8, height: unit * 0.3))
             }
-            strokeLimbs(width: line * 1.45, color: edge)
+            strokeLimbs(width: line * 1.45, color: edge, reference: line)
             if let neck, let root {
                 ctx.setStrokeColor(edge); ctx.setLineWidth(line * 2.4)
                 ctx.move(to: neck); ctx.addLine(to: root); ctx.strokePath()
                 ctx.setStrokeColor(yellow); ctx.setLineWidth(line * 1.95)
                 ctx.move(to: neck); ctx.addLine(to: root); ctx.strokePath()
             }
-            strokeLimbs(width: line, color: yellow)
+            strokeLimbs(width: line, color: yellow, reference: line)
             // 関節の丸と、手足の先の大きめの丸
             ctx.setFillColor(edge)
             for name: VNHumanBodyPoseObservation.JointName in [.leftElbow, .rightElbow, .leftKnee, .rightKnee] {
@@ -1041,12 +1117,15 @@ final class EffectEngine: @unchecked Sendable {
             let furDark = UIColor(red: 0.36, green: 0.22, blue: 0.13, alpha: 1).cgColor
             let cream = UIColor(red: 0.98, green: 0.9, blue: 0.76, alpha: 1).cgColor
             let line = max(unit * 0.55, 14)
-            strokeLimbs(width: line * 1.12, color: furDark)
-            strokeLimbs(width: line, color: fur)
+            strokeLimbs(width: line * 1.12, color: furDark, reference: line)
+            strokeLimbs(width: line, color: fur, reference: line)
             if let neck, let root {
                 let c = mid(neck, root)!
                 let len = hypot(neck.x - root.x, neck.y - root.y)
-                let bodyW = max(unit * 1.25, line * 1.6), bodyH = len * 1.35
+                var bodyW = max(unit * 1.25, line * 1.6)
+                let bodyH = len * 1.35
+                // 頭と肩だけのときは、胴を肩幅まで広げる（肩の服が横からはみ出さないように）
+                if upper, let l = p(.leftShoulder), let r = p(.rightShoulder) { bodyW = max(bodyW, hypot(l.x - r.x, l.y - r.y) * 1.2) }
                 let angle = atan2(neck.y - root.y, neck.x - root.x) - .pi / 2
                 ctx.saveGState()
                 ctx.translateBy(x: c.x, y: c.y)
@@ -1059,10 +1138,10 @@ final class EffectEngine: @unchecked Sendable {
                 ctx.fillEllipse(in: CGRect(x: -bodyW * 0.3, y: -bodyH * 0.32, width: bodyW * 0.6, height: bodyH * 0.55))
                 ctx.restoreGState()
             }
-            // 手足の先はクリーム色の肉球
-            for name: VNHumanBodyPoseObservation.JointName in [.leftWrist, .rightWrist, .leftAnkle, .rightAnkle] {
+            // 手足の先はクリーム色の肉球。短く写った手足では小さくする（大きな丸が重なって腕が丸い塊に見えていた）
+            for (name, limb) in zip([VNHumanBodyPoseObservation.JointName.leftWrist, .rightWrist, .leftAnkle, .rightAnkle], limbs) {
                 guard let q = p(name), attached(name) else { continue }
-                let r = line * 0.62
+                let r = line * 0.5 * limbScale(limb.compactMap { p($0) }, reference: line)
                 ctx.setFillColor(furDark); ctx.fillEllipse(in: CGRect(x: q.x - r * 1.1, y: q.y - r * 1.1, width: r * 2.2, height: r * 2.2))
                 ctx.setFillColor(cream); ctx.fillEllipse(in: CGRect(x: q.x - r * 0.8, y: q.y - r * 0.8, width: r * 1.6, height: r * 1.6))
             }
@@ -1158,10 +1237,11 @@ final class EffectEngine: @unchecked Sendable {
                    width: $0.width * size.width, height: $0.height * size.height)
         } : nil
         let paint = !joints.bodies.isEmpty && (area != nil || !Self.usesVision || FakeCamera.isDemo)
+        lastCoverDrawn = false
         if joints.bodies.isEmpty {
             // 人形を出さないコマで元の映像をそのまま返すと、当てる人に本人が素のまま見えて種明かしが成り立たない
             // （実写の grizzly で着ぐるみの 2・5・8 秒が「そのまま」と同じ絵だった、2026-11-08 批評）。人をモザイクで隠す
-            return (hiddenPeople(source: source, input: input, now: now, frameTime: frameTime), joints.found)
+            return (coverBear(source: source, input: input, now: now, frameTime: frameTime), joints.found)
         }
         if paint, let mask = personMask(source: source, input: input, now: now, frameTime: frameTime).mask {
             let grow = CIFilter.morphologyMaximum()
@@ -1193,41 +1273,155 @@ final class EffectEngine: @unchecked Sendable {
         return (suit.composited(over: base), joints.found)
     }
 
-    /// 人形を出せないコマの着ぐるみ：人の形（少し太らせた型抜き）と人の枠の中だけ粗いモザイクにする。
-    /// 人を見つけられないときは画面全体をモザイクにする（本人が素のまま映るよりよい）
-    private func hiddenPeople(source: CVPixelBuffer, input: CIImage, now: TimeInterval, frameTime: TimeInterval) -> CIImage {
-        let pixellate = CIFilter.pixellate()
-        pixellate.inputImage = input.clampedToExtent()
-        pixellate.scale = Float(max(input.extent.width * Self.hiddenMosaicFraction, 4))
-        pixellate.center = CGPoint(x: input.extent.midX, y: input.extent.midY)
-        guard let mosaic = pixellate.outputImage?.cropped(to: input.extent) else { return input }
-        // 型抜きだけでは、大きく写ってぶれた本人を取りこぼした（grizzly で真ん中の小さな塊だけが隠れた）。
-        // 1 人ずつの枠（少し広げる）も隠す。誰も見つからなければ全体
+    /// 人形を出せないコマの着ぐるみ：手前のいちばん大きい人に、頭と胴だけのクマを着せる。
+    /// 1 回目はモザイクで隠したが、「着ぐるみ」の札なのにモザイクが出る食い違いになった（2026-11-08 批評）。
+    /// - 頭は顔の位置（顔が見つからなければ人の枠の上のほう）。胴は人の枠の真ん中あたりまで
+    /// - その人の型抜き（少し太らせる）を毛の色で塗る（手足が素のまま出ないように）
+    /// - 誰も見つからなければ元の映像のまま（隠す人がいない）
+    private func coverBear(source: CVPixelBuffer, input: CIImage, now: TimeInterval, frameTime: TimeInterval) -> CIImage {
         let extent = input.extent
         let person = personMask(source: source, input: input, now: now, frameTime: frameTime)
-        guard !peopleBoxes.isEmpty || person.found else { return mosaic }
-        var cover = CIImage(color: .black).cropped(to: extent)
+        // 人の枠が取れないコマ（ぶれた白黒の grizzly で 2 割）は、人の型抜きの範囲を枠の代わりにする
+        var box = peopleBoxes.max { $0.height < $1.height }
+        if box == nil, person.found, let buffer = lastGoodMask { box = Self.maskBounds(buffer) }
+        // 画面の 1/4 に満たない枠は、床の影や遠くの人（grizzly の 4.2 秒で床に小さなクマが出ていた）。使わずに直前のクマを残す
+        if let b = box, b.height < Self.minCoverHeight { box = nil }
+        let face = Self.usesVision ? biggestFace(source: source, in: box) : nil
+        var figure = Self.coverFigure(face: face, box: box, size: extent.size)
+        // 人も顔も見つからないコマは、1.2 秒までは直前のクマを残す（型抜きと同じ長さ。ぶれたコマで本人が一瞬素のまま出ていた）
+        if let figure {
+            lastCover = figure
+            lastCoverTime = now
+        } else if now - lastCoverTime < 1.2 {
+            figure = lastCover
+        }
+        lastCoverDrawn = figure != nil
+        var base = input
         if person.found, let mask = person.mask {
+            // 毛の色で塗るのは、クマの体のまわりと、その人の枠の中だけ（後ろの人まで茶色にしない）。クマがなければ型抜き全体
+            var region = CGRect(x: 0, y: 0, width: 1, height: 1)
+            if let area = figure.flatMap({ Self.extent($0) }) {
+                region = area.insetBy(dx: -area.width * 0.6, dy: -area.height * 0.3)
+                region = CGRect(x: region.minX, y: 0, width: region.width, height: region.maxY)
+                if let box { region = region.union(box.insetBy(dx: -box.width * 0.08, dy: -box.height * 0.08)) }
+            }
+            let pixels = CGRect(x: extent.minX + region.minX * extent.width, y: extent.minY + region.minY * extent.height,
+                                width: region.width * extent.width, height: region.height * extent.height).intersection(extent)
             let grow = CIFilter.morphologyMaximum()
             grow.inputImage = mask.clampedToExtent()
             grow.radius = Float(max(4, extent.width * 0.03))
-            cover = (grow.outputImage ?? mask).cropped(to: extent)
+            let fat = (grow.outputImage ?? mask).applyingGaussianBlur(sigma: 2).cropped(to: pixels)
+            let blend = CIFilter.blendWithMask()
+            blend.inputImage = CIImage(color: CIColor(red: 0.55, green: 0.36, blue: 0.22)).cropped(to: extent)
+            blend.backgroundImage = input
+            blend.maskImage = fat
+            base = blend.outputImage?.cropped(to: extent) ?? input
         }
-        for box in peopleBoxes {
-            let r = box.insetBy(dx: -box.width * 0.08, dy: -box.height * 0.08)
-            let pixels = CGRect(x: extent.minX + r.minX * extent.width, y: extent.minY + r.minY * extent.height,
-                                width: r.width * extent.width, height: r.height * extent.height).intersection(extent)
-            cover = CIImage(color: .white).cropped(to: pixels).composited(over: cover)
-        }
-        let blend = CIFilter.blendWithMask()
-        blend.inputImage = mosaic
-        blend.backgroundImage = input
-        blend.maskImage = cover.applyingGaussianBlur(sigma: 3).cropped(to: extent)
-        return blend.outputImage?.cropped(to: extent) ?? mosaic
+        guard let figure else { return base }
+        let w = Int(extent.width.rounded()), h = Int(extent.height.rounded())
+        guard w > 0, h > 0,
+              let pb = Self.pooledBuffer(&stickPool, &stickPoolSize, size: CGSize(width: w, height: h),
+                                         format: kCVPixelFormatType_32BGRA, limit: 3) else { return base }
+        CVPixelBufferLockBaseAddress(pb, [])
+        defer { CVPixelBufferUnlockBaseAddress(pb, []) }
+        guard let ctx = CGContext(data: CVPixelBufferGetBaseAddress(pb), width: w, height: h, bitsPerComponent: 8,
+                                  bytesPerRow: CVPixelBufferGetBytesPerRow(pb), space: CGColorSpaceCreateDeviceRGB(),
+                                  bitmapInfo: CGImageAlphaInfo.premultipliedFirst.rawValue | CGBitmapInfo.byteOrder32Little.rawValue)
+        else { return base }
+        ctx.clear(CGRect(x: 0, y: 0, width: w, height: h))
+        Self.drawFigure(figure, style: .costume, in: ctx, w: CGFloat(w), h: CGFloat(h))
+        ctx.flush()
+        let suit = CIImage(cvPixelBuffer: pb).transformed(by: CGAffineTransform(translationX: extent.minX, y: extent.minY))
+        return suit.composited(over: base)
     }
 
-    /// 人形を出せないコマで人を隠すモザイクの粗さ（画面の幅に対する 1 マスの大きさ）
-    static let hiddenMosaicFraction: CGFloat = 0.08
+    /// 型抜きで人の形がある範囲（0〜1、左下が原点）。4 画素おきに数える。なければ nil
+    static func maskBounds(_ mask: CVPixelBuffer) -> CGRect? {
+        CVPixelBufferLockBaseAddress(mask, .readOnly)
+        defer { CVPixelBufferUnlockBaseAddress(mask, .readOnly) }
+        guard let base = CVPixelBufferGetBaseAddress(mask) else { return nil }
+        let w = CVPixelBufferGetWidth(mask), h = CVPixelBufferGetHeight(mask)
+        let row = CVPixelBufferGetBytesPerRow(mask)
+        let pixels = base.assumingMemoryBound(to: UInt8.self)
+        var minX = w, maxX = -1, minY = h, maxY = -1
+        for y in stride(from: 0, to: h, by: 4) {
+            for x in stride(from: 0, to: w, by: 4) where pixels[y * row + x] > 127 {
+                minX = min(minX, x); maxX = max(maxX, x); minY = min(minY, y); maxY = max(maxY, y)
+            }
+        }
+        guard maxX >= minX, maxY >= minY, w > 0, h > 0 else { return nil }
+        // 画素の箱は上の行から並ぶ。0〜1 の座標は左下が原点
+        return CGRect(x: CGFloat(minX) / CGFloat(w), y: 1 - CGFloat(maxY + 4) / CGFloat(h),
+                      width: CGFloat(maxX - minX + 4) / CGFloat(w), height: CGFloat(maxY - minY + 4) / CGFloat(h))
+    }
+
+    /// 隠すクマを付ける人の枠の、いちばん小さい高さ（画面に対する割合）
+    static let minCoverHeight: CGFloat = 0.25
+    /// 直前に描いた隠すクマと、その時刻
+    private var lastCover: Joints?
+    private var lastCoverTime: TimeInterval = -.infinity
+    /// 点検用：直前のコマで隠すクマを描いたか（人形を出したコマでは false）
+    private(set) var lastCoverDrawn = false
+
+    /// 顔の枠の読み取り（人形を出せないコマだけで使う）。effects キューだけで触る
+    private var faceRequestStore: VNDetectFaceRectanglesRequest?
+
+    /// いちばん大きい顔（0〜1、左下が原点）。人の枠があれば、その中の顔だけ
+    private func biggestFace(source: CVPixelBuffer, in box: CGRect?) -> CGRect? {
+        let request = faceRequestStore ?? VNDetectFaceRectanglesRequest()
+        faceRequestStore = request
+        try? VNImageRequestHandler(cvPixelBuffer: source).perform([request])
+        // 小さな顔は後ろの客（grizzly の上のほうに小さなクマの頭が出ていた）。画面の幅の 8% 以上だけ
+        let faces = (request.results ?? []).map(\.boundingBox).filter { face in
+            guard face.width >= 0.08 else { return false }
+            guard let box else { return true }
+            return box.insetBy(dx: -box.width * 0.1, dy: -box.height * 0.1).contains(CGPoint(x: face.midX, y: face.midY))
+        }
+        return faces.max { $0.width * $0.height < $1.width * $1.height }
+    }
+
+    /// 顔の枠か人の枠から、頭と胴だけのクマの関節を作る（0〜1）。どちらもなければ nil。
+    /// 首は顔の下、肩は顔の幅の左右、腰は人の枠があればその真ん中より少し下（なければ描くときに画面の下へ伸ばす）
+    static func coverFigure(face: CGRect?, box: CGRect?, size: CGSize) -> Joints? {
+        let w = size.width, h = size.height
+        guard w > 0, h > 0 else { return nil }
+        let head: CGPoint, faceWidth: CGFloat
+        if let face {
+            head = CGPoint(x: face.midX * w, y: face.midY * h)
+            faceWidth = face.width * w
+        } else if let box {
+            faceWidth = min(box.width * w * 0.4, box.height * h * 0.12)
+            head = CGPoint(x: box.midX * w, y: box.maxY * h - faceWidth * 0.8)
+        } else {
+            return nil
+        }
+        let f = faceWidth
+        // 首を顔の幅の 0.65 下に置くと、頭（首と顔の間 × 1.9 × 0.62 の半径）が顔と髪をちょうど覆う
+        let neck = CGPoint(x: head.x, y: head.y - f * 0.65)
+        func unit(_ x: CGFloat, _ y: CGFloat) -> CGPoint { CGPoint(x: x / w, y: y / h) }
+        let shoulderY = neck.y - f * 0.15
+        var joints: Joints = [
+            .nose: unit(head.x, head.y), .neck: unit(neck.x, neck.y),
+            .leftShoulder: unit(neck.x - f * 0.7, shoulderY), .rightShoulder: unit(neck.x + f * 0.7, shoulderY),
+        ]
+        // 全身の枠があれば、立っているクマの腕と脚も描く（細長い胴だけでは、着ぐるみに見えなかった）
+        guard let box else { return joints }
+        let floor = max(box.minY * h + box.height * h * 0.03, 0)
+        let rootY = box.minY * h + box.height * h * 0.45
+        guard rootY < neck.y - f * 1.2 else { return joints }
+        joints[.root] = unit(neck.x, rootY)
+        for side: CGFloat in [-1, 1] {
+            let left = side < 0
+            let elbowY = shoulderY - (shoulderY - rootY) * 0.5, wristY = shoulderY - (shoulderY - rootY) * 0.95
+            joints[left ? .leftElbow : .rightElbow] = unit(neck.x + side * f * 1.0, elbowY)
+            joints[left ? .leftWrist : .rightWrist] = unit(neck.x + side * f * 1.15, wristY)
+            let kneeY = (rootY + floor) / 2
+            joints[left ? .leftHip : .rightHip] = unit(neck.x + side * f * 0.4, rootY)
+            joints[left ? .leftKnee : .rightKnee] = unit(neck.x + side * f * 0.45, kneeY)
+            joints[left ? .leftAnkle : .rightAnkle] = unit(neck.x + side * f * 0.5, floor)
+        }
+        return joints
+    }
 
     // MARK: 下ごしらえ
 
