@@ -1398,8 +1398,16 @@ final class EffectEngine: @unchecked Sendable {
         lastHandsDrawn = 0
         if Self.usesVision {
             let seen = facesAndHands(source: source, in: box)
+            // 手は画面の端で途切れると、数コマおきにしか見つからない（selfie の 4.7〜5.2 秒）。0.4 秒は直前の手を使う
+            var hands = seen.hands
+            if !hands.isEmpty {
+                lastHands = hands
+                lastHandsTime = now
+            } else if now - lastHandsTime < Self.handHoldSeconds {
+                hands = lastHands
+            }
             if let found = Self.coverFigure(face: seen.face, box: box, size: size) {
-                let armed = Self.withHands(found, hands: seen.hands, box: box, size: size)
+                let armed = Self.withHands(found, hands: hands, box: box, size: size)
                 figure = armed.joints
                 lastHandsDrawn = armed.used
             }
@@ -1423,14 +1431,16 @@ final class EffectEngine: @unchecked Sendable {
         handRequestStore = handRequest
         try? VNImageRequestHandler(cvPixelBuffer: source).perform([faceRequest, handRequest])
         // 小さな顔は後ろの客（grizzly の上のほうに小さなクマの頭が出ていた）。画面の幅の 8% 以上だけ
+        // 人の枠がないときは、自撮りの距離の大きな顔（幅の 15% 以上）だけ。踊る 2 人の顔が取れないコマで、
+        // 右端の客の顔に小さなクマが付き、本人は素のまま残っていた（grizzly の 4.2・8.4 秒、2026-11-08 批評）
         let faces = (faceRequest.results ?? []).map(\.boundingBox).filter { face in
             guard face.width >= 0.08 else { return false }
-            guard let box else { return true }
+            guard let box else { return face.width >= Self.minLoneFaceWidth }
             return box.insetBy(dx: -box.width * 0.1, dy: -box.height * 0.1).contains(CGPoint(x: face.midX, y: face.midY))
         }
         let hands: [CGPoint] = (handRequest.results ?? []).compactMap { hand in
             guard let points = try? hand.recognizedPoints(.all) else { return nil }
-            let sure = points.values.filter { $0.confidence > 0.3 }.map(\.location)
+            let sure = points.values.filter { $0.confidence > 0.2 }.map(\.location)
             guard sure.count >= Self.minHandPoints else { return nil }
             let n = CGFloat(sure.count)
             return CGPoint(x: sure.map(\.x).reduce(0, +) / n, y: sure.map(\.y).reduce(0, +) / n)
@@ -1438,8 +1448,15 @@ final class EffectEngine: @unchecked Sendable {
         return (faces.max { $0.width * $0.height < $1.width * $1.height }, hands)
     }
 
+    /// 人の枠がないときに、クマを付けてよい顔のいちばん小さい幅（画面の幅に対する割合）
+    static let minLoneFaceWidth: CGFloat = 0.15
     /// 手として使うのに要る、見つかった手の点の数（21 点のうち）
-    static let minHandPoints = 6
+    static let minHandPoints = 5
+    /// 手が見つからないコマで、直前の手を使う長さ（秒）
+    static let handHoldSeconds: TimeInterval = 0.4
+    /// 直前に見つけた手（0〜1）と、その時刻
+    private var lastHands: [CGPoint] = []
+    private var lastHandsTime: TimeInterval = -.infinity
     /// 首から手までの、いちばん遠い距離（顔の幅に対する倍率）。これより遠い手は他人の手
     static let maxHandReach: CGFloat = 5
 
