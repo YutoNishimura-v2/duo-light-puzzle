@@ -279,6 +279,7 @@ final class EffectEngine: @unchecked Sendable {
                 personRequestStore = nil
                 peopleRequestStore = nil
                 faceRequestStore = nil
+                handRequestStore = nil
             }
             context.clearCaches()
         }
@@ -1198,7 +1199,19 @@ final class EffectEngine: @unchecked Sendable {
     private func stickFigure(source: CVPixelBuffer, size: CGSize, now: TimeInterval,
                              frameTime: TimeInterval) -> (image: CIImage?, found: Bool) {
         let joints = bodyJoints(source: source, now: now, frameTime: frameTime)
-        let bodies = joints.bodies, found = joints.found
+        var bodies = joints.bodies, found = joints.found
+        lastCoverDrawn = false
+        lastHandsDrawn = 0
+        // 自撮りの距離では Vision が骨格を取れず、棒人間が空の紺色の画面になっていた（selfie の 301 コマすべて、2026-11-08 批評）。
+        // 着ぐるみの隠すクマと同じく、顔と人の枠から上半身（全身の枠があれば立った姿）の棒人間を出し、見つけた手を腕の先にする
+        if bodies.isEmpty, Self.usesVision {
+            let box = coverBox(peopleBoxes.max { $0.height < $1.height }, now: now)
+            if let figure = fallbackFigure(source: source, box: box, size: size, now: now) {
+                bodies = [figure]
+                found = true
+                lastCoverDrawn = true
+            }
+        }
         // 使い回しの画素の箱（BGRA）に描く。毎コマ新しい CGImage を作ると Core Image が抱え込む
         let w = Int(size.width.rounded()), h = Int(size.height.rounded())
         guard w > 0, h > 0,
@@ -1238,6 +1251,8 @@ final class EffectEngine: @unchecked Sendable {
         } : nil
         let paint = !joints.bodies.isEmpty && (area != nil || !Self.usesVision || FakeCamera.isDemo)
         lastCoverDrawn = false
+        lastCoverBlurred = false
+        lastHandsDrawn = 0
         if joints.bodies.isEmpty {
             // 人形を出さないコマで元の映像をそのまま返すと、当てる人に本人が素のまま見えて種明かしが成り立たない
             // （実写の grizzly で着ぐるみの 2・5・8 秒が「そのまま」と同じ絵だった、2026-11-08 批評）。人をモザイクで隠す
@@ -1277,33 +1292,32 @@ final class EffectEngine: @unchecked Sendable {
     /// 1 回目はモザイクで隠したが、「着ぐるみ」の札なのにモザイクが出る食い違いになった（2026-11-08 批評）。
     /// - 頭は顔の位置（顔が見つからなければ人の枠の上のほう）。胴は人の枠の真ん中あたりまで
     /// - その人の型抜き（少し太らせる）を毛の色で塗る（手足が素のまま出ないように）
-    /// - 誰も見つからなければ元の映像のまま（隠す人がいない）
+    /// - 見つけた手はクマの手にする（fallbackFigure）
+    /// - 誰も見つからなければ、画面全体を強くぼかす
     private func coverBear(source: CVPixelBuffer, input: CIImage, now: TimeInterval, frameTime: TimeInterval) -> CIImage {
         let extent = input.extent
         let person = personMask(source: source, input: input, now: now, frameTime: frameTime)
         // 人の枠が取れないコマ（ぶれた白黒の grizzly で 2 割）は、人の型抜きの範囲を枠の代わりにする
         var box = peopleBoxes.max { $0.height < $1.height }
         if box == nil, person.found, let buffer = lastGoodMask { box = Self.maskBounds(buffer) }
-        // 画面の 1/4 に満たない枠は、床の影や遠くの人（grizzly の 4.2 秒で床に小さなクマが出ていた）。使わずに直前のクマを残す
-        if let b = box, b.height < Self.minCoverHeight { box = nil }
-        let face = Self.usesVision ? biggestFace(source: source, in: box) : nil
-        var figure = Self.coverFigure(face: face, box: box, size: extent.size)
-        // 人も顔も見つからないコマは、1.2 秒までは直前のクマを残す（型抜きと同じ長さ。ぶれたコマで本人が一瞬素のまま出ていた）
-        if let figure {
-            lastCover = figure
-            lastCoverTime = now
-        } else if now - lastCoverTime < 1.2 {
-            figure = lastCover
-        }
+        box = coverBox(box, now: now)
+        let figure = fallbackFigure(source: source, box: box, size: extent.size, now: now)
         lastCoverDrawn = figure != nil
+        // まだ誰も見つけていない（動画の始め）か、見失って 1.2 秒過ぎたコマは、画面全体を強くぼかして隠す
+        // （grizzly の始めの 0〜0.5 秒に本人が素のまま映っていた、2026-11-08 批評）
+        lastCoverBlurred = figure == nil
+        guard let figure else { return Self.blurredAway(input) }
         var base = input
         if person.found, let mask = person.mask {
-            // 毛の色で塗るのは、クマの体のまわりと、その人の枠の中だけ（後ろの人まで茶色にしない）。クマがなければ型抜き全体
+            // クマからはみ出した本人は、ぼかして隠す（クマを着せた人の枠の中だけ。枠がなければクマのまわり）。
+            // 毛の色で塗ると、クマより広い型抜きがクマのまわりの茶色いにじみになった
+            // （grizzly の 0.7・1.5・6.6・7.0 秒ほか、2026-11-08 批評）
             var region = CGRect(x: 0, y: 0, width: 1, height: 1)
-            if let area = figure.flatMap({ Self.extent($0) }) {
-                region = area.insetBy(dx: -area.width * 0.6, dy: -area.height * 0.3)
+            if let box {
+                region = box.insetBy(dx: -box.width * 0.08, dy: -box.height * 0.08)
+            } else if let area = Self.extent(figure) {
+                region = area.insetBy(dx: -area.width * 0.25, dy: -area.height * 0.1)
                 region = CGRect(x: region.minX, y: 0, width: region.width, height: region.maxY)
-                if let box { region = region.union(box.insetBy(dx: -box.width * 0.08, dy: -box.height * 0.08)) }
             }
             let pixels = CGRect(x: extent.minX + region.minX * extent.width, y: extent.minY + region.minY * extent.height,
                                 width: region.width * extent.width, height: region.height * extent.height).intersection(extent)
@@ -1312,12 +1326,11 @@ final class EffectEngine: @unchecked Sendable {
             grow.radius = Float(max(4, extent.width * 0.03))
             let fat = (grow.outputImage ?? mask).applyingGaussianBlur(sigma: 2).cropped(to: pixels)
             let blend = CIFilter.blendWithMask()
-            blend.inputImage = CIImage(color: CIColor(red: 0.55, green: 0.36, blue: 0.22)).cropped(to: extent)
+            blend.inputImage = Self.blurredAway(input)
             blend.backgroundImage = input
             blend.maskImage = fat
             base = blend.outputImage?.cropped(to: extent) ?? input
         }
-        guard let figure else { return base }
         let w = Int(extent.width.rounded()), h = Int(extent.height.rounded())
         guard w > 0, h > 0,
               let pb = Self.pooledBuffer(&stickPool, &stickPoolSize, size: CGSize(width: w, height: h),
@@ -1355,29 +1368,157 @@ final class EffectEngine: @unchecked Sendable {
                       width: CGFloat(maxX - minX + 4) / CGFloat(w), height: CGFloat(maxY - minY + 4) / CGFloat(h))
     }
 
+    /// 画面全体を、誰か分からないほど強くぼかす（隠すクマを付ける人がまだ見つからないとき）
+    static func blurredAway(_ input: CIImage) -> CIImage {
+        input.clampedToExtent().applyingGaussianBlur(sigma: Double(input.extent.width * 0.06)).cropped(to: input.extent)
+    }
+
     /// 隠すクマを付ける人の枠の、いちばん小さい高さ（画面に対する割合）
     static let minCoverHeight: CGFloat = 0.25
+    /// 直前にクマを付けた人の枠に対して、この割合より低い枠は別の（後ろの）人
+    static let minCoverShrink: CGFloat = 0.6
+    /// 直前にクマを付けた人の枠を覚えておく長さ（秒）
+    static let coverBoxMemory: TimeInterval = 2
+    /// 直前にクマを付けた人の枠（0〜1）と、その時刻
+    private var lastCoverBox: CGRect?
+    private var lastCoverBoxTime: TimeInterval = -.infinity
+
+    /// 隠すクマを付けてよい人の枠。使えなければ nil（fallbackFigure が直前のクマを 1.2 秒残す）。
+    /// - 画面の 1/4 に満たない枠は、床の影や遠くの人（grizzly の 4.2 秒で床に小さなクマが出ていた）
+    /// - 2 秒以内にクマを付けた人より 6 割未満の低い枠は、後ろの客。踊る 2 人の枠が取れないコマで、
+    ///   右下の客（高さ 0.37）に小さなクマが付いていた（grizzly の 8.1〜8.6 秒、2026-11-08 批評）
+    private func coverBox(_ candidate: CGRect?, now: TimeInterval) -> CGRect? {
+        guard let box = candidate, box.height >= Self.minCoverHeight else { return nil }
+        if let last = lastCoverBox, now - lastCoverBoxTime < Self.coverBoxMemory,
+           box.height < last.height * Self.minCoverShrink {
+            return nil
+        }
+        lastCoverBox = box
+        lastCoverBoxTime = now
+        return box
+    }
     /// 直前に描いた隠すクマと、その時刻
     private var lastCover: Joints?
     private var lastCoverTime: TimeInterval = -.infinity
-    /// 点検用：直前のコマで隠すクマを描いたか（人形を出したコマでは false）
+    /// 点検用：直前のコマで、骨格の代わりの人形（隠すクマ・上半身の棒人間）を描いたか（骨格の人形を出したコマでは false）
     private(set) var lastCoverDrawn = false
+    /// 点検用：直前のコマで、隠すクマも描けず画面全体をぼかしたか
+    private(set) var lastCoverBlurred = false
+    /// 点検用：直前のコマで、見つけた手から描いたクマの手の数
+    private(set) var lastHandsDrawn = 0
 
-    /// 顔の枠の読み取り（人形を出せないコマだけで使う）。effects キューだけで触る
+    /// 顔の枠と手の読み取り（骨格が取れないコマだけで使う）。effects キューだけで触る
     private var faceRequestStore: VNDetectFaceRectanglesRequest?
+    private var handRequestStore: VNDetectHumanHandPoseRequest?
 
-    /// いちばん大きい顔（0〜1、左下が原点）。人の枠があれば、その中の顔だけ
-    private func biggestFace(source: CVPixelBuffer, in box: CGRect?) -> CGRect? {
-        let request = faceRequestStore ?? VNDetectFaceRectanglesRequest()
-        faceRequestStore = request
-        try? VNImageRequestHandler(cvPixelBuffer: source).perform([request])
+    /// 骨格が取れないコマの人形の関節（0〜1）。顔か人の枠から頭と胴（全身の枠があれば手足も）を作り、見つけた手を腕の先にする。
+    /// 何も見つからなければ 1.2 秒までは直前の姿（型抜きと同じ長さ。ぶれたコマで本人が一瞬素のまま出ていた）。それも過ぎたら nil。
+    /// 着ぐるみの隠すクマと、自撮りの距離の棒人間（Vision が骨格を取れない）で使う
+    private func fallbackFigure(source: CVPixelBuffer, box: CGRect?, size: CGSize, now: TimeInterval) -> Joints? {
+        var figure: Joints?
+        lastHandsDrawn = 0
+        if Self.usesVision {
+            let seen = facesAndHands(source: source, in: box)
+            // 手は画面の端で途切れると、数コマおきにしか見つからない（selfie の 4.7〜5.2 秒）。0.4 秒は直前の手を使う
+            var hands = seen.hands
+            if !hands.isEmpty {
+                lastHands = hands
+                lastHandsTime = now
+            } else if now - lastHandsTime < Self.handHoldSeconds {
+                hands = lastHands
+            }
+            if let found = Self.coverFigure(face: seen.face, box: box, size: size) {
+                let armed = Self.withHands(found, hands: hands, box: box, size: size)
+                figure = armed.joints
+                lastHandsDrawn = armed.used
+            }
+        } else {
+            figure = Self.coverFigure(face: nil, box: box, size: size)
+        }
+        if let figure {
+            lastCover = figure
+            lastCoverTime = now
+            return figure
+        }
+        return now - lastCoverTime < 1.2 ? lastCover : nil
+    }
+
+    /// いちばん大きい顔（0〜1、左下が原点。人の枠があれば、その中の顔だけ）と、見つけた手の中心（2 つまで）
+    private func facesAndHands(source: CVPixelBuffer, in box: CGRect?) -> (face: CGRect?, hands: [CGPoint]) {
+        let faceRequest = faceRequestStore ?? VNDetectFaceRectanglesRequest()
+        faceRequestStore = faceRequest
+        let handRequest = handRequestStore ?? VNDetectHumanHandPoseRequest()
+        handRequest.maximumHandCount = 2
+        handRequestStore = handRequest
+        try? VNImageRequestHandler(cvPixelBuffer: source).perform([faceRequest, handRequest])
         // 小さな顔は後ろの客（grizzly の上のほうに小さなクマの頭が出ていた）。画面の幅の 8% 以上だけ
-        let faces = (request.results ?? []).map(\.boundingBox).filter { face in
+        // 人の枠がないときは、自撮りの距離の大きな顔（幅の 15% 以上）だけ。踊る 2 人の顔が取れないコマで、
+        // 右端の客の顔に小さなクマが付き、本人は素のまま残っていた（grizzly の 4.2・8.4 秒、2026-11-08 批評）
+        let faces = (faceRequest.results ?? []).map(\.boundingBox).filter { face in
             guard face.width >= 0.08 else { return false }
-            guard let box else { return true }
+            guard let box else { return face.width >= Self.minLoneFaceWidth }
             return box.insetBy(dx: -box.width * 0.1, dy: -box.height * 0.1).contains(CGPoint(x: face.midX, y: face.midY))
         }
-        return faces.max { $0.width * $0.height < $1.width * $1.height }
+        let hands: [CGPoint] = (handRequest.results ?? []).compactMap { hand in
+            guard let points = try? hand.recognizedPoints(.all) else { return nil }
+            let sure = points.values.filter { $0.confidence > 0.2 }.map(\.location)
+            guard sure.count >= Self.minHandPoints else { return nil }
+            let n = CGFloat(sure.count)
+            return CGPoint(x: sure.map(\.x).reduce(0, +) / n, y: sure.map(\.y).reduce(0, +) / n)
+        }
+        return (faces.max { $0.width * $0.height < $1.width * $1.height }, hands)
+    }
+
+    /// 人の枠がないときに、クマを付けてよい顔のいちばん小さい幅（画面の幅に対する割合）
+    static let minLoneFaceWidth: CGFloat = 0.15
+    /// 手として使うのに要る、見つかった手の点の数（21 点のうち）
+    static let minHandPoints = 5
+    /// 手が見つからないコマで、直前の手を使う長さ（秒）
+    static let handHoldSeconds: TimeInterval = 0.4
+    /// 直前に見つけた手（0〜1）と、その時刻
+    private var lastHands: [CGPoint] = []
+    private var lastHandsTime: TimeInterval = -.infinity
+    /// 首から手までの、いちばん遠い距離（顔の幅に対する倍率）。これより遠い手は他人の手
+    static let maxHandReach: CGFloat = 5
+    /// 手から描く肉球を、画面の端からこれだけ離す（0〜1）
+    static let handEdgeMargin: CGFloat = 0.12
+
+    /// 見つけた手（0〜1）を、近い側の腕の先にする。肘は肩と手の間で、外側の下へ曲げる。
+    /// 骨格が取れない自撮りの距離では、手もクマの下に隠れて身ぶりが相手に届かなかった（2026-11-08 批評）。
+    /// 首から顔の幅の maxHandReach 倍より遠い手と、人の枠の外の手は使わない。used は腕の先にした手の数
+    static func withHands(_ figure: Joints, hands: [CGPoint], box: CGRect?, size: CGSize) -> (joints: Joints, used: Int) {
+        let w = size.width, h = size.height
+        guard let neck = figure[.neck], let nose = figure[.nose], w > 0, h > 0 else { return (figure, 0) }
+        // coverFigure は首を顔の幅の 0.65 下に置く
+        let faceWidth = hypot((nose.x - neck.x) * w, (nose.y - neck.y) * h) / 0.65
+        func distance(_ p: CGPoint) -> CGFloat { hypot((p.x - neck.x) * w, (p.y - neck.y) * h) }
+        let near = hands.filter { hand in
+            if distance(hand) > faceWidth * maxHandReach { return false }
+            guard let box else { return true }
+            return box.insetBy(dx: -box.width * 0.15, dy: -box.height * 0.15).contains(hand)
+        }.sorted { distance($0) < distance($1) }
+        var joints = figure
+        var taken: Set<Bool> = []
+        for hand in near.prefix(2) {
+            // 首より左の手は左の腕。2 つとも同じ側なら、遠いほうは反対の腕にする
+            var left = hand.x < neck.x
+            if taken.contains(left) { left.toggle() }
+            taken.insert(left)
+            guard let shoulder = joints[left ? .leftShoulder : .rightShoulder] else { continue }
+            // 画面の下の端で見つかった手は、肉球が端で半分切れて小さく見えた（selfie の 5 秒、2026-11-08 批評）。
+            // 肉球がまるごと見える高さまで上げ、左右の端からも離す
+            let paw = CGPoint(x: min(max(hand.x, handEdgeMargin), 1 - handEdgeMargin), y: max(hand.y, handEdgeMargin))
+            let s = CGPoint(x: shoulder.x * w, y: shoulder.y * h), p = CGPoint(x: paw.x * w, y: paw.y * h)
+            let d = hypot(p.x - s.x, p.y - s.y)
+            let side: CGFloat = left ? -1 : 1
+            // 肘は外側へ曲げる。手が肩より下のときに肘を下へ曲げると、肘が画面の下の外に出て、
+            // 腕が四角い欠片のように切れていた（selfie の棒人間 8 秒）。肘は手と肩の低いほうより下げない
+            let elbowY = max((s.y + p.y) / 2 - d * 0.25, min(s.y, p.y))
+            let elbow = CGPoint(x: (s.x + p.x) / 2 + side * d * 0.25, y: elbowY)
+            joints[left ? .leftElbow : .rightElbow] = CGPoint(x: elbow.x / w, y: elbow.y / h)
+            joints[left ? .leftWrist : .rightWrist] = paw
+        }
+        return (joints, taken.count)
     }
 
     /// 顔の枠か人の枠から、頭と胴だけのクマの関節を作る（0〜1）。どちらもなければ nil。
