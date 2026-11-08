@@ -1205,8 +1205,7 @@ final class EffectEngine: @unchecked Sendable {
         // 自撮りの距離では Vision が骨格を取れず、棒人間が空の紺色の画面になっていた（selfie の 301 コマすべて、2026-11-08 批評）。
         // 着ぐるみの隠すクマと同じく、顔と人の枠から上半身（全身の枠があれば立った姿）の棒人間を出し、見つけた手を腕の先にする
         if bodies.isEmpty, Self.usesVision {
-            var box = peopleBoxes.max { $0.height < $1.height }
-            if let b = box, b.height < Self.minCoverHeight { box = nil }
+            let box = coverBox(peopleBoxes.max { $0.height < $1.height }, now: now)
             if let figure = fallbackFigure(source: source, box: box, size: size, now: now) {
                 bodies = [figure]
                 found = true
@@ -1301,8 +1300,7 @@ final class EffectEngine: @unchecked Sendable {
         // 人の枠が取れないコマ（ぶれた白黒の grizzly で 2 割）は、人の型抜きの範囲を枠の代わりにする
         var box = peopleBoxes.max { $0.height < $1.height }
         if box == nil, person.found, let buffer = lastGoodMask { box = Self.maskBounds(buffer) }
-        // 画面の 1/4 に満たない枠は、床の影や遠くの人（grizzly の 4.2 秒で床に小さなクマが出ていた）。使わずに直前のクマを残す
-        if let b = box, b.height < Self.minCoverHeight { box = nil }
+        box = coverBox(box, now: now)
         let figure = fallbackFigure(source: source, box: box, size: extent.size, now: now)
         lastCoverDrawn = figure != nil
         // まだ誰も見つけていない（動画の始め）か、見失って 1.2 秒過ぎたコマは、画面全体を強くぼかして隠す
@@ -1311,8 +1309,9 @@ final class EffectEngine: @unchecked Sendable {
         guard let figure else { return Self.blurredAway(input) }
         var base = input
         if person.found, let mask = person.mask {
-            // 毛の色で塗るのは、クマを着せた人の枠の中だけ（枠がなければクマのまわり）。
-            // クマのまわりを広く塗ると、横の客の型抜きが人の形の茶色いにじみになった（grizzly の 2・8 秒、2026-11-08 批評）
+            // クマからはみ出した本人は、ぼかして隠す（クマを着せた人の枠の中だけ。枠がなければクマのまわり）。
+            // 毛の色で塗ると、クマより広い型抜きがクマのまわりの茶色いにじみになった
+            // （grizzly の 0.7・1.5・6.6・7.0 秒ほか、2026-11-08 批評）
             var region = CGRect(x: 0, y: 0, width: 1, height: 1)
             if let box {
                 region = box.insetBy(dx: -box.width * 0.08, dy: -box.height * 0.08)
@@ -1327,7 +1326,7 @@ final class EffectEngine: @unchecked Sendable {
             grow.radius = Float(max(4, extent.width * 0.03))
             let fat = (grow.outputImage ?? mask).applyingGaussianBlur(sigma: 2).cropped(to: pixels)
             let blend = CIFilter.blendWithMask()
-            blend.inputImage = CIImage(color: CIColor(red: 0.55, green: 0.36, blue: 0.22)).cropped(to: extent)
+            blend.inputImage = Self.blurredAway(input)
             blend.backgroundImage = input
             blend.maskImage = fat
             base = blend.outputImage?.cropped(to: extent) ?? input
@@ -1376,6 +1375,28 @@ final class EffectEngine: @unchecked Sendable {
 
     /// 隠すクマを付ける人の枠の、いちばん小さい高さ（画面に対する割合）
     static let minCoverHeight: CGFloat = 0.25
+    /// 直前にクマを付けた人の枠に対して、この割合より低い枠は別の（後ろの）人
+    static let minCoverShrink: CGFloat = 0.6
+    /// 直前にクマを付けた人の枠を覚えておく長さ（秒）
+    static let coverBoxMemory: TimeInterval = 2
+    /// 直前にクマを付けた人の枠（0〜1）と、その時刻
+    private var lastCoverBox: CGRect?
+    private var lastCoverBoxTime: TimeInterval = -.infinity
+
+    /// 隠すクマを付けてよい人の枠。使えなければ nil（fallbackFigure が直前のクマを 1.2 秒残す）。
+    /// - 画面の 1/4 に満たない枠は、床の影や遠くの人（grizzly の 4.2 秒で床に小さなクマが出ていた）
+    /// - 2 秒以内にクマを付けた人より 6 割未満の低い枠は、後ろの客。踊る 2 人の枠が取れないコマで、
+    ///   右下の客（高さ 0.37）に小さなクマが付いていた（grizzly の 8.1〜8.6 秒、2026-11-08 批評）
+    private func coverBox(_ candidate: CGRect?, now: TimeInterval) -> CGRect? {
+        guard let box = candidate, box.height >= Self.minCoverHeight else { return nil }
+        if let last = lastCoverBox, now - lastCoverBoxTime < Self.coverBoxMemory,
+           box.height < last.height * Self.minCoverShrink {
+            return nil
+        }
+        lastCoverBox = box
+        lastCoverBoxTime = now
+        return box
+    }
     /// 直前に描いた隠すクマと、その時刻
     private var lastCover: Joints?
     private var lastCoverTime: TimeInterval = -.infinity
@@ -1459,6 +1480,8 @@ final class EffectEngine: @unchecked Sendable {
     private var lastHandsTime: TimeInterval = -.infinity
     /// 首から手までの、いちばん遠い距離（顔の幅に対する倍率）。これより遠い手は他人の手
     static let maxHandReach: CGFloat = 5
+    /// 手から描く肉球を、画面の端からこれだけ離す（0〜1）
+    static let handEdgeMargin: CGFloat = 0.12
 
     /// 見つけた手（0〜1）を、近い側の腕の先にする。肘は肩と手の間で、外側の下へ曲げる。
     /// 骨格が取れない自撮りの距離では、手もクマの下に隠れて身ぶりが相手に届かなかった（2026-11-08 批評）。
@@ -1482,12 +1505,18 @@ final class EffectEngine: @unchecked Sendable {
             if taken.contains(left) { left.toggle() }
             taken.insert(left)
             guard let shoulder = joints[left ? .leftShoulder : .rightShoulder] else { continue }
-            let s = CGPoint(x: shoulder.x * w, y: shoulder.y * h), p = CGPoint(x: hand.x * w, y: hand.y * h)
+            // 画面の下の端で見つかった手は、肉球が端で半分切れて小さく見えた（selfie の 5 秒、2026-11-08 批評）。
+            // 肉球がまるごと見える高さまで上げ、左右の端からも離す
+            let paw = CGPoint(x: min(max(hand.x, handEdgeMargin), 1 - handEdgeMargin), y: max(hand.y, handEdgeMargin))
+            let s = CGPoint(x: shoulder.x * w, y: shoulder.y * h), p = CGPoint(x: paw.x * w, y: paw.y * h)
             let d = hypot(p.x - s.x, p.y - s.y)
             let side: CGFloat = left ? -1 : 1
-            let elbow = CGPoint(x: (s.x + p.x) / 2 + side * d * 0.25, y: (s.y + p.y) / 2 - d * 0.25)
+            // 肘は外側へ曲げる。手が肩より下のときに肘を下へ曲げると、肘が画面の下の外に出て、
+            // 腕が四角い欠片のように切れていた（selfie の棒人間 8 秒）。肘は手と肩の低いほうより下げない
+            let elbowY = max((s.y + p.y) / 2 - d * 0.25, min(s.y, p.y))
+            let elbow = CGPoint(x: (s.x + p.x) / 2 + side * d * 0.25, y: elbowY)
             joints[left ? .leftElbow : .rightElbow] = CGPoint(x: elbow.x / w, y: elbow.y / h)
-            joints[left ? .leftWrist : .rightWrist] = hand
+            joints[left ? .leftWrist : .rightWrist] = paw
         }
         return (joints, taken.count)
     }
