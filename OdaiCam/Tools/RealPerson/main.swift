@@ -83,6 +83,9 @@ struct HiddenShots {
 var hiddenShots: [String: HiddenShots] = [:]
 /// 着ぐるみで、人形か隠すクマが出たコマの数
 var bearFrames = 0
+/// 着ぐるみで、見つけた手からクマの手を描いたコマ／人形もクマもぼかしもなく本人が素のまま出たコマ
+var handFrames = 0
+var rawFrames = 0
 
 // 左右に並べた動画（左：しばり、右：実写）を書く
 final class SideBySide {
@@ -173,6 +176,8 @@ while let sample = output.copyNextSampleBuffer() {
                 decisions[decision, default: 0] += 1
                 // 人形か、人形を出せないときの隠すクマのどちらかが出たコマ（着ぐるみらしく見えたコマ）
                 if r.visible || engine.lastCoverDrawn { bearFrames += 1 }
+                if engine.lastHandsDrawn > 0 { handFrames += 1 }
+                if !r.visible, !engine.lastCoverDrawn, !engine.lastCoverBlurred { rawFrames += 1 }
                 if !r.visible {
                     hiddenDecisions[decision, default: 0] += 1
                     let candidate = engine.lastCandidate
@@ -186,6 +191,8 @@ while let sample = output.copyNextSampleBuffer() {
                     "decision": decision,
                     "biggest_person": rounded(engine.lastBiggestPerson),
                     "people": engine.peopleBoxes.count,
+                    "cover": engine.lastCoverDrawn ? "bear" : engine.lastCoverBlurred ? "blur" : "none",
+                    "hands": engine.lastHandsDrawn,
                     "boxes": engine.peopleBoxes.map { [rounded($0.minX), rounded($0.minY), rounded($0.width), rounded($0.height)] },
                     "candidate": Dictionary(uniqueKeysWithValues: engine.lastCandidate.map {
                         ($0.key.rawValue.rawValue, [Double($0.value.x), Double($0.value.y)])
@@ -391,6 +398,8 @@ var summary: [String: Any] = [
     "costume_decisions": decisions,
     "costume_hidden_by": hiddenDecisions,
     "costume_bear_shown": jointTrack.isEmpty ? 0 : (Double(bearFrames) / Double(jointTrack.count) * 1000).rounded() / 1000,
+    "costume_hand_frames": handFrames,
+    "costume_raw_frames": rawFrames,
     "joint_jitter_px_median": (pct(0.5) * 10).rounded() / 10,
     "joint_jitter_px_p95": (pct(0.95) * 10).rounded() / 10,
     "frame_height_px": sheetRows.first?.panels.first.map { $0.1.height } ?? 0,
