@@ -66,8 +66,8 @@ final class Game {
     }
 
     /// 初めて開いたとき（まだモードを選んでいない）の最初の設定。
-    /// 【仮 2026-11-07】本人の判断待ちの「主役のモード」を、批評役のおすすめ「おまかせ」で仮に入れている。
-    /// 本人が決めたらここだけ差し替える（しばりなし＝(false, nil)、着ぐるみ＝(true, .costume) など）
+    /// 主役のモードは「おまかせ」（本人が 2026-11-08 に確定）。
+    /// 変えるときはここだけ差し替える（しばりなし＝(false, nil)、着ぐるみ＝(true, .costume) など）
     static let firstRunMode: (on: Bool, effect: Effect?) = (true, nil)
 
     private static var savedMode: (on: Bool, effect: Effect?) {
@@ -404,7 +404,7 @@ final class Game {
         switch shot {
         case "countdown": phase = .countdown(3)
         case "play":
-            // 最初の設定（firstRunMode、【仮】おまかせ）のまま。おまかせなら姿のしばりがかかったお題を見せる
+            // 最初の設定（firstRunMode、おまかせ）のまま。おまかせなら姿のしばりがかかったお題を見せる
             let shown: Effect? = effectsOn ? (fixedEffect ?? .costume) : nil
             turns.append(Turn(prompt: en ? "Koala" : "コアラ", effect: shown, start: 40))
             phase = .playing
