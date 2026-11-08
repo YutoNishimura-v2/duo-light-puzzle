@@ -677,10 +677,11 @@ final class EffectEngine: @unchecked Sendable {
         lastShapeFallback = false
         lastShapeScore = nil
         guard Self.usesVision, !FakeCamera.isDemo else { return mask }
-        var figure = bodyJoints(source: source, now: now, frameTime: frameTime).bodies.first
+        // Vision の読み取りは骨格の 1 つだけ足す（顔・手まで読むと、実写の点検が 40 分を超えた。実機の熱と遅さも増える）
+        var figure = bodyJoints(source: source, now: now, frameTime: frameTime, people: false).bodies.first
         if figure == nil {
             let box = coverBox(peopleBoxes.max { $0.height < $1.height }, now: now)
-            figure = fallbackFigure(source: source, box: box, size: extent.size, now: now)
+            figure = Self.coverFigure(face: nil, box: box, size: extent.size)
         }
         let size = CGSize(width: (extent.width / 4).rounded(), height: (extent.height / 4).rounded())
         guard let figure, size.width > 0, size.height > 0,
@@ -818,14 +819,16 @@ final class EffectEngine: @unchecked Sendable {
     private var smoothedJoints: Joints = [:]
 
     /// 人の関節（0〜1、左下が原点）。found は関節が十分に見つかったか。1 人目だけをなめらかにする
-    private func bodyJoints(source: CVPixelBuffer, now: TimeInterval, frameTime: TimeInterval) -> (bodies: [Joints], found: Bool) {
+    /// people が偽なら、人の枠は読み直さない（同じコマで personMask が読んだ枠を使う）
+    private func bodyJoints(source: CVPixelBuffer, now: TimeInterval, frameTime: TimeInterval,
+                            people: Bool = true) -> (bodies: [Joints], found: Bool) {
         let demo = FakeCamera.isDemo
         var found = false
         var bodies: [Joints] = []
         if Self.usesVision, !(demo && now < bodyRetryAt) {
             let handler = VNImageRequestHandler(cvPixelBuffer: source)
-            try? handler.perform([bodyRequest, peopleRequest])
-            updatePeople(now: now)
+            try? handler.perform(people ? [bodyRequest, peopleRequest] : [bodyRequest])
+            if people { updatePeople(now: now) }
             for body in bodyRequest.results ?? [] {
                 guard let points = try? body.recognizedPoints(.all) else { continue }
                 var sure: Joints = [:]

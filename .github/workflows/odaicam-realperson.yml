@@ -21,7 +21,7 @@ concurrency:
 jobs:
   realperson:
     runs-on: xcode-27
-    timeout-minutes: 40
+    timeout-minutes: 55
     defaults:
       run:
         working-directory: OdaiCam
