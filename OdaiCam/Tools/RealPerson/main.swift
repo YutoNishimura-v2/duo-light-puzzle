@@ -48,6 +48,8 @@ let context = CIContext()
 struct Stat {
     var frames = 0
     var visible = 0
+    /// 型抜きの代わりに骨格から描いた人の形を使ったコマ（影絵・背景）
+    var shaped = 0
 }
 var stats: [Effect: Stat] = [:]
 /// 着ぐるみの関節の位置（コマごと、画素）。震えを測る
@@ -167,7 +169,17 @@ while let sample = output.copyNextSampleBuffer() {
             let r = engine.sequenceFrame(effect, source: pb, frameTime: t)
             stats[effect, default: Stat()].frames += 1
             if r.visible { stats[effect, default: Stat()].visible += 1 }
+            if engine.lastShapeFallback { stats[effect, default: Stat()].shaped += 1 }
             if let image = r.image { images[effect] = image }
+            // 影絵の型抜きと人の形の重なり（着ぐるみのあとに回るので、このコマの記録に足す）
+            if effect == .silhouette, !frameLog.isEmpty {
+                let score = engine.lastShapeScore
+                frameLog[frameLog.count - 1]["shape"] = [
+                    "fallback": engine.lastShapeFallback,
+                    "cover": score.map { ($0.cover * 1000).rounded() / 1000 } ?? -1,
+                    "overlap": score.map { ($0.overlap * 1000).rounded() / 1000 } ?? -1,
+                ] as [String: Any]
+            }
             if effect == .costume {
                 let w = CGFloat(original.width), h = CGFloat(original.height)
                 jointTrack.append(engine.lastJoints.mapValues { CGPoint(x: $0.x * w, y: $0.y * h) })
@@ -406,6 +418,9 @@ var summary: [String: Any] = [
 ]
 for (effect, s) in stats {
     summary["visible_\(effect.rawValue)"] = s.frames > 0 ? (Double(s.visible) / Double(s.frames) * 1000).rounded() / 1000 : 0
+    if effect == .silhouette || effect == .space {
+        summary["shaped_\(effect.rawValue)"] = s.frames > 0 ? (Double(s.shaped) / Double(s.frames) * 1000).rounded() / 1000 : 0
+    }
 }
 let json = try JSONSerialization.data(withJSONObject: summary, options: [.prettyPrinted, .sortedKeys])
 try json.write(to: outDir.appendingPathComponent("\(name).json"))
