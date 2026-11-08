@@ -52,6 +52,8 @@ struct Stat {
     var shaped = 0
     /// 1 コマにしばりをかけた時間（ms）。Vision の読み込みが入る始めの warmupFrames コマは数えない
     var ms: [Double] = []
+    /// Vision を回した回数の合計（1 コマ 1 回になっているか）
+    var visionPasses = 0
 }
 /// 処理時間に数えない始めのコマ（Vision の学習済みの型を読み込む分）
 let warmupFrames = 10
@@ -180,6 +182,7 @@ while let sample = output.copyNextSampleBuffer() {
             let ms = Double(DispatchTime.now().uptimeNanoseconds - started) / 1_000_000
             if stats[effect, default: Stat()].frames >= warmupFrames { stats[effect, default: Stat()].ms.append(ms) }
             stats[effect, default: Stat()].frames += 1
+            stats[effect, default: Stat()].visionPasses += engine.lastVisionPasses
             if r.visible { stats[effect, default: Stat()].visible += 1 }
             if engine.lastShapeFallback { stats[effect, default: Stat()].shaped += 1 }
             if let image = r.image { images[effect] = image }
@@ -434,6 +437,8 @@ for (effect, s) in stats {
     let ms = s.ms.sorted()
     summary["ms_\(effect.rawValue)_median"] = (percentile(ms, 0.5) * 10).rounded() / 10
     summary["ms_\(effect.rawValue)_p95"] = (percentile(ms, 0.95) * 10).rounded() / 10
+    summary["vision_passes_\(effect.rawValue)"] = s.frames > 0
+        ? (Double(s.visionPasses) / Double(s.frames) * 1000).rounded() / 1000 : 0
     if effect == .silhouette || effect == .space {
         summary["shaped_\(effect.rawValue)"] = s.frames > 0 ? (Double(s.shaped) / Double(s.frames) * 1000).rounded() / 1000 : 0
     }

@@ -147,10 +147,116 @@ final class SeenLog: @unchecked Sendable {
     }
 }
 
+/// 実機で遊んだときの重さの記録（1 ラウンドぶん）：しばりごとの 1 コマの処理時間、熱の状態、落ちたコマ。
+/// 本人が遊ぶだけで数字が残るように、ラウンドの終わりに文字にして残し、設定の「診断」に出す
+final class PerfLog: @unchecked Sendable {
+    private let lock = NSLock()
+    private var ms: [Effect: [Double]] = [:]
+    private var visionPasses: [Effect: Int] = [:]
+    /// 前のコマの処理が終わらず、しばりをかけずに捨てたコマ
+    private var busyDrops = 0
+    /// 出口の画素の箱が足りず、描いたのに捨てたコマ
+    private var poolDrops = 0
+    /// カメラが渡せずに捨てたコマ（AVCaptureVideoDataOutput の didDrop）
+    private var cameraDrops = 0
+    private var thermalStart = ProcessInfo.ThermalState.nominal
+    private var thermalWorst = ProcessInfo.ThermalState.nominal
+    private var startTime: TimeInterval = 0
+    private var frames = 0
+    /// 熱の状態を見る間隔（コマ）
+    static let thermalEvery = 30
+    /// 残すラウンドの数（新しい順）
+    static let keptRounds = 5
+    private static let savedKey = "perf.rounds"
+
+    /// プレイの頭で空にする
+    func reset() {
+        let thermal = ProcessInfo.processInfo.thermalState
+        lock.withLock {
+            ms = [:]
+            visionPasses = [:]
+            busyDrops = 0
+            poolDrops = 0
+            cameraDrops = 0
+            thermalStart = thermal
+            thermalWorst = thermal
+            startTime = ProcessInfo.processInfo.systemUptime
+            frames = 0
+        }
+    }
+
+    /// しばりをかけた 1 コマ（effects キューで呼ぶ）
+    func frame(_ effect: Effect, ms value: Double, visionPasses passes: Int) {
+        lock.withLock {
+            ms[effect, default: []].append(value)
+            visionPasses[effect, default: 0] += passes
+            frames += 1
+            if frames % Self.thermalEvery == 0 {
+                let thermal = ProcessInfo.processInfo.thermalState
+                if thermal.rawValue > thermalWorst.rawValue { thermalWorst = thermal }
+            }
+        }
+    }
+
+    func droppedBusy() { lock.withLock { busyDrops += 1 } }
+    func droppedPool() { lock.withLock { poolDrops += 1 } }
+    func droppedCamera() { lock.withLock { cameraDrops += 1 } }
+
+    /// このラウンドの記録を文字にする（しばりを使ったコマがなければ nil）
+    func summary() -> String? {
+        let thermalEnd = ProcessInfo.processInfo.thermalState
+        return lock.withLock {
+            guard frames > 0 else { return nil }
+            let seconds = ProcessInfo.processInfo.systemUptime - startTime
+            if thermalEnd.rawValue > thermalWorst.rawValue { thermalWorst = thermalEnd }
+            var lines = [
+                String(format: "%@  %.0f 秒・%ld コマ（%.1f コマ/秒）",
+                       Date().formatted(date: .numeric, time: .shortened), seconds, frames,
+                       seconds > 0 ? Double(frames) / seconds : 0),
+                "熱：始め \(Self.name(thermalStart))・いちばん高い \(Self.name(thermalWorst))・終わり \(Self.name(thermalEnd))",
+                "落ちたコマ：処理が追いつかない \(busyDrops)・カメラ \(cameraDrops)・箱が足りない \(poolDrops)",
+                "1 コマの処理（ms）：中央値／95%／最大・コマ数・Vision 回数/コマ",
+            ]
+            for effect in Effect.allCases {
+                guard let list = ms[effect]?.sorted(), !list.isEmpty else { continue }
+                func at(_ q: Double) -> Double { list[min(list.count - 1, Int(Double(list.count) * q))] }
+                let passes = Double(visionPasses[effect] ?? 0) / Double(list.count)
+                lines.append(String(format: "  %@ %.0f／%.0f／%.0f・%ld・%.1f",
+                                    effect.name, at(0.5), at(0.95), list.last ?? 0, list.count, passes))
+            }
+            return lines.joined(separator: "\n")
+        }
+    }
+
+    private static func name(_ state: ProcessInfo.ThermalState) -> String {
+        switch state {
+        case .nominal: "ふつう"
+        case .fair: "やや高い"
+        case .serious: "高い"
+        case .critical: "危険"
+        @unknown default: "不明"
+        }
+    }
+
+    /// ラウンドの記録を残す（新しいものを先頭に keptRounds まで）
+    static func save(_ text: String) {
+        let kept = [text] + (UserDefaults.standard.stringArray(forKey: savedKey) ?? [])
+        UserDefaults.standard.set(Array(kept.prefix(keptRounds)), forKey: savedKey)
+    }
+
+    /// 残っている記録（新しい順に空行で区切る。なければ nil）
+    static var saved: String? {
+        let list = UserDefaults.standard.stringArray(forKey: savedKey) ?? []
+        return list.isEmpty ? nil : list.joined(separator: "\n\n")
+    }
+}
+
 /// 背面カメラのフレームにしばりをかける。重い処理なので専用のキューで、追いつかないフレームは捨てる
 final class EffectEngine: @unchecked Sendable {
     /// しばりの画面に人が映っていたかの記録（ラウンド終わりに Game が読む）
     static let seenLog = SeenLog()
+    /// 実機の重さの記録（プレイの頭で Game が空にし、ラウンド終わりに残す）
+    static let perfLog = PerfLog()
     /// モザイクの粗さ（ホームで選ぶ。main で書き、しばりのキューで読む）
     nonisolated(unsafe) static var mosaicLevel: MosaicLevel =
         MosaicLevel(rawValue: UserDefaults.standard.string(forKey: "mosaicLevel") ?? "") ?? .normal
@@ -245,6 +351,32 @@ final class EffectEngine: @unchecked Sendable {
         return r
     }
 
+    /// このコマで Vision に読ませた読み取り（同じコマで同じものを 2 回読まない）。render の頭で空にする
+    private var visionDone: Set<ObjectIdentifier> = []
+    /// 点検・記録用：このコマで Vision を回した回数
+    private(set) var lastVisionPasses = 0
+
+    /// requests のうち、このコマでまだ読んでいないものだけを 1 回の perform で読む。
+    /// 影絵・背景は型抜き（と人の枠）を読んだあとに骨格を別に読み、着ぐるみは人の枠を 2 回読んでいた
+    /// （実写の点検が 33 分から 40 分に延びた、2026-11-08 批評）
+    private func read(_ requests: [VNRequest], source: CVPixelBuffer) {
+        let todo = requests.filter { !visionDone.contains(ObjectIdentifier($0)) }
+        guard !todo.isEmpty else { return }
+        try? VNImageRequestHandler(cvPixelBuffer: source).perform(todo)
+        visionDone.formUnion(todo.map { ObjectIdentifier($0) })
+        lastVisionPasses += 1
+    }
+
+    /// しばりがそのコマで使う読み取り（顔と手は、骨格が取れないコマだけあとで読む）
+    private func visionReads(for effect: Effect) -> [VNRequest] {
+        if effect.isBackground || effect == .silhouette { return [personRequest, peopleRequest, bodyRequest] }
+        switch effect {
+        case .costume: return [bodyRequest, peopleRequest, personRequest]
+        case .stick: return [bodyRequest, peopleRequest]
+        default: return []
+        }
+    }
+
     /// 3 秒遅れの絵を持つ大きさ（処理の大きさに対する割合）と、1 秒に残す枚数
     static let historyScale: CGFloat = 2.0 / 3.0
     static let historyFPS = 15.0
@@ -307,6 +439,7 @@ final class EffectEngine: @unchecked Sendable {
     /// カメラのキューから呼ぶ
     func process(_ buffer: CVPixelBuffer, time: CMTime) {
         let (effect, start, skip, clear): (Effect?, TimeInterval, Bool, Bool) = lock.withLock {
+            if busy, effect != nil { Self.perfLog.droppedBusy() }
             if busy || effect == nil { return (nil, 0, true, false) }
             busy = true
             let clear = clearHistory
@@ -332,8 +465,14 @@ final class EffectEngine: @unchecked Sendable {
                 let output = rendered.image.cropped(to: input.extent)
                 // 出口の箱は、録画の符号化と画面が持っている分だけ（6 枚まで）。足りなければこのコマは捨てる
                 guard let pb = Self.pooledBuffer(&pool, &poolSize, size: input.extent.size,
-                                                 format: kCVPixelFormatType_32BGRA, limit: 6) else { return }
+                                                 format: kCVPixelFormatType_32BGRA, limit: 6) else {
+                    Self.perfLog.droppedPool()
+                    return
+                }
                 context.render(output, to: pb)
+                // 1 コマの処理時間（Vision・描画・書き出し用の箱への描き込みまで）
+                Self.perfLog.frame(effect, ms: (ProcessInfo.processInfo.systemUptime - now) * 1000,
+                                   visionPasses: lastVisionPasses)
                 onPixelBuffer?(pb, time)
                 // 前の画面を main がまだ受け取っていなければ、この画面は見せない（録画には上で書いてある）
                 let send: Bool = lock.withLock {
@@ -391,6 +530,12 @@ final class EffectEngine: @unchecked Sendable {
     /// frameTime はフレームの時刻（デモでは、この時刻の役者の骨組み・型抜きを使う）
     private func render(_ effect: Effect, input: CIImage, source: CVPixelBuffer, now: TimeInterval, elapsed: TimeInterval,
                         frameTime: TimeInterval) -> (image: CIImage, visible: Bool) {
+        // Vision はこのコマで 1 回だけ回す：しばりが使う読み取りをまとめて先に読み、あとの読み取りは結果を使い回す
+        visionDone = []
+        lastVisionPasses = 0
+        if Self.usesVision, !FakeCamera.isDemo {
+            read(visionReads(for: effect), source: source)
+        }
         let black = CIImage(color: .black).cropped(to: input.extent)
         if effect.isBackground {
             return backdrop(effect, source: source, input: input, now: now, frameTime: frameTime, black: black)
@@ -491,8 +636,7 @@ final class EffectEngine: @unchecked Sendable {
             maskBuffer = last
             found = true
         } else {
-            let handler = VNImageRequestHandler(cvPixelBuffer: source)
-            try? handler.perform([personRequest, peopleRequest])
+            read([personRequest, peopleRequest], source: source)
             updatePeople(now: now)
             if let m = personRequest.results?.first?.pixelBuffer {
                 maskBuffer = m
@@ -681,8 +825,8 @@ final class EffectEngine: @unchecked Sendable {
         lastShapeFallback = false
         lastShapeScore = nil
         guard Self.usesVision, !FakeCamera.isDemo else { return mask }
-        // Vision の読み取りは骨格の 1 つだけ足す（顔・手まで読むと、実写の点検が 40 分を超えた。実機の熱と遅さも増える）
-        var figure = bodyJoints(source: source, now: now, frameTime: frameTime, people: false).bodies.first
+        // 骨格は render の頭で型抜き・人の枠と一緒に読んである（顔・手は読まない。実写の点検が 40 分を超え、実機の熱と遅さも増える）
+        var figure = bodyJoints(source: source, now: now, frameTime: frameTime).bodies.first
         let skeleton = figure != nil
         if figure == nil {
             let box = coverBox(peopleBoxes.max { $0.height < $1.height }, now: now)
@@ -829,16 +973,15 @@ final class EffectEngine: @unchecked Sendable {
     private var smoothedJoints: Joints = [:]
 
     /// 人の関節（0〜1、左下が原点）。found は関節が十分に見つかったか。1 人目だけをなめらかにする
-    /// people が偽なら、人の枠は読み直さない（同じコマで personMask が読んだ枠を使う）
-    private func bodyJoints(source: CVPixelBuffer, now: TimeInterval, frameTime: TimeInterval,
-                            people: Bool = true) -> (bodies: [Joints], found: Bool) {
+    /// 骨格と人の枠は、このコマで読んであればその結果を使う（read）
+    private func bodyJoints(source: CVPixelBuffer, now: TimeInterval,
+                            frameTime: TimeInterval) -> (bodies: [Joints], found: Bool) {
         let demo = FakeCamera.isDemo
         var found = false
         var bodies: [Joints] = []
         if Self.usesVision, !(demo && now < bodyRetryAt) {
-            let handler = VNImageRequestHandler(cvPixelBuffer: source)
-            try? handler.perform(people ? [bodyRequest, peopleRequest] : [bodyRequest])
-            if people { updatePeople(now: now) }
+            read([bodyRequest, peopleRequest], source: source)
+            updatePeople(now: now)
             for body in bodyRequest.results ?? [] {
                 guard let points = try? body.recognizedPoints(.all) else { continue }
                 var sure: Joints = [:]
@@ -1687,7 +1830,7 @@ final class EffectEngine: @unchecked Sendable {
         let handRequest = handRequestStore ?? VNDetectHumanHandPoseRequest()
         handRequest.maximumHandCount = 2
         handRequestStore = handRequest
-        try? VNImageRequestHandler(cvPixelBuffer: source).perform([faceRequest, handRequest])
+        read([faceRequest, handRequest], source: source)
         // 小さな顔は後ろの客（grizzly の上のほうに小さなクマの頭が出ていた）。画面の幅の 8% 以上だけ
         // 人の枠がないときは、自撮りの距離の大きな顔（幅の 15% 以上）だけ。踊る 2 人の顔が取れないコマで、
         // 右端の客の顔に小さなクマが付き、本人は素のまま残っていた（grizzly の 4.2・8.4 秒、2026-11-08 批評）

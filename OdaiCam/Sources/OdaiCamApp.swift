@@ -950,6 +950,15 @@ struct SettingsSheet: View {
                             }
                             .font(.system(size: 14, weight: .semibold))
                         }
+                        // 実機の重さ（ラウンドごと、新しい順）。1 回遊べば残る
+                        if let perf = PerfLog.saved {
+                            Text(perf).font(.caption.monospaced()).foregroundStyle(Theme.secondary).textSelection(.enabled)
+                            ShareLink(item: perf) { Label("重さの記録を送る", systemImage: "square.and.arrow.up") }
+                                .font(.system(size: 14, weight: .semibold))
+                        } else {
+                            Text("重さの記録：1 ラウンド遊ぶと、1 コマの処理時間・熱・落ちたコマがここに残ります")
+                                .font(.caption).foregroundStyle(Theme.secondary)
+                        }
                         Text(MultiCamProbe.summary).font(.caption.monospaced()).foregroundStyle(Theme.secondary)
                             .textSelection(.enabled)
                     }

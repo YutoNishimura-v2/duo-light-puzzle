@@ -435,6 +435,11 @@ extension Camera: AVCaptureVideoDataOutputSampleBufferDelegate, AVCaptureAudioDa
         handle(sampleBuffer, isAudio: output === audioOutput)
     }
 
+    /// 背面カメラが渡せずに捨てたコマ（実機の重さの記録に数える）
+    func captureOutput(_ output: AVCaptureOutput, didDrop sampleBuffer: CMSampleBuffer, from connection: AVCaptureConnection) {
+        if output === videoOutput { EffectEngine.perfLog.droppedCamera() }
+    }
+
     /// 内側のカメラの 1 コマ（カメラのキューで呼ぶ）。デモの描いた顔もここに流す
     func handleFront(_ sampleBuffer: CMSampleBuffer) {
         let pts = CMSampleBufferGetPresentationTimeStamp(sampleBuffer)
