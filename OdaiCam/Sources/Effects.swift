@@ -667,6 +667,10 @@ final class EffectEngine: @unchecked Sendable {
     /// 型抜きを人の形とみなす、いちばん小さい覆う割合と範囲の重なり
     static let minShapeCover = 0.55
     static let minShapeOverlap = 0.5
+    /// 骨格が取れたコマで、型抜きがその人から外れたとみなす覆う割合と範囲の重なり（どちらも下回ったら差し替える）。
+    /// 実写の点検 42447540849 の分布から決めた（grizzly の差し替え 0.73 のまま、square 0.61 → 0.17、1 人の動画 0〜0.01）
+    static let minSkeletonShapeCover = 0.1
+    static let minSkeletonShapeOverlap = 0.2
 
     /// 影絵・背景の型抜きが人の形になっていないコマは、骨格（取れなければ顔・人の枠から作る人形）の形を型抜きにする。
     /// 何人も映るぶれた白黒の動画（grizzly）で、影絵と宇宙が細い棒・四角い塊・煙になり、
@@ -679,6 +683,7 @@ final class EffectEngine: @unchecked Sendable {
         guard Self.usesVision, !FakeCamera.isDemo else { return mask }
         // Vision の読み取りは骨格の 1 つだけ足す（顔・手まで読むと、実写の点検が 40 分を超えた。実機の熱と遅さも増える）
         var figure = bodyJoints(source: source, now: now, frameTime: frameTime, people: false).bodies.first
+        let skeleton = figure != nil
         if figure == nil {
             let box = coverBox(peopleBoxes.max { $0.height < $1.height }, now: now)
             figure = Self.coverFigure(face: nil, box: box, size: extent.size)
@@ -691,7 +696,12 @@ final class EffectEngine: @unchecked Sendable {
         if let buffer = lastMaskBuffer {
             let score = Self.shapeScore(mask: buffer, shape: shape)
             lastShapeScore = score
-            if found, score.cover >= Self.minShapeCover, score.overlap >= Self.minShapeOverlap { return mask }
+            // 骨格が取れたコマでは、型抜きがその人からまったく外れたときだけ差し替える。手前で組んで踊る 2 人
+            // （square の 5 秒）は型抜きが 2 人の形で、骨格の 1 人と合わず、読める影絵まで 1 人の絵になっていた
+            let human = skeleton
+                ? score.cover >= Self.minSkeletonShapeCover || score.overlap >= Self.minSkeletonShapeOverlap
+                : score.cover >= Self.minShapeCover && score.overlap >= Self.minShapeOverlap
+            if found, human { return mask }
         }
         lastShapeFallback = true
         let m = CIImage(cvPixelBuffer: shape)
@@ -1233,13 +1243,15 @@ final class EffectEngine: @unchecked Sendable {
                 ctx.setFillColor(UIColor(white: 0, alpha: 0.35).cgColor)
                 ctx.fillEllipse(in: CGRect(x: foot.x - unit * 0.9, y: foot.y - unit * 0.18, width: unit * 1.8, height: unit * 0.3))
             }
-            strokeLimbs(width: line * 1.45, color: edge, reference: line)
+            // 胴を先に描き、手足は縁ごと胴の上に描く。胴の前に出した腕が胴と同じ黄色に溶け、
+            // 手の丸だけが胴の上に浮いて見えていた（selfie の 5 秒、2026-11-08 批評）
             if let neck, let root {
                 ctx.setStrokeColor(edge); ctx.setLineWidth(line * 2.4)
                 ctx.move(to: neck); ctx.addLine(to: root); ctx.strokePath()
                 ctx.setStrokeColor(yellow); ctx.setLineWidth(line * 1.95)
                 ctx.move(to: neck); ctx.addLine(to: root); ctx.strokePath()
             }
+            strokeLimbs(width: line * 1.45, color: edge, reference: line)
             strokeLimbs(width: line, color: yellow, reference: line)
             // 関節の丸と、手足の先の大きめの丸
             ctx.setFillColor(edge)
