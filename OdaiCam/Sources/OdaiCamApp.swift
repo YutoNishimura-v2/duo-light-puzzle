@@ -447,18 +447,19 @@ struct HowToView: View {
                         Wordmark(size: 40)
                     }
                     .padding(.top, 24)
-                    row("theatermasks", "お題は外側の画面に",
-                        "外の画面の前に立つ人だけがお題を見て、声を出さずに演じます。")
-                    row("camera.fill", "見えるのは画面越しだけ",
-                        "当てる人は画面だけを見て当てます。直接見たらカンニング。")
-                    row("waveform", "答えは声に出すだけ",
+                    // 各項目は色付きの丸い絵＋1 行（文字だけの説明書に見えないように。2026-11-09 批評 r3）
+                    row("theatermasks", .orange, "お題は外側の画面に",
+                        "外の画面の人だけがお題を見て、無言で演じる。")
+                    row("camera.fill", .blue, "見えるのは画面越しだけ",
+                        "画面だけで当てる。直接見たらカンニング。")
+                    row("waveform", .green, "答えは声に出すだけ",
                         "合っていれば自動で次のお題へ。")
-                    row("figure.stand", "しばりで見え方が変わる",
-                        "棒人間・モザイク・着ぐるみなどに変わって見えます。")
-                    row("play.rectangle", "最後に種明かし",
-                        "見えていた画面と本当の演技を並べた動画ができます。")
-                    row("arrow.triangle.2.circlepath", "役を交代してもう一回",
-                        "Duo を渡して、演じる人と当てる人を入れ替えます。")
+                    row("figure.stand", .purple, "しばりで見え方が変わる",
+                        "棒人間・モザイク・着ぐるみなどに変身。")
+                    row("play.rectangle.fill", .pink, "最後に種明かし",
+                        "見えていた姿と本当の演技を並べた動画に。")
+                    row("arrow.triangle.2.circlepath", .teal, "役を交代してもう一回",
+                        "Duo を渡して、演じる人と当てる人を交代。")
                 }
                 .padding(.horizontal, 28)
                 .padding(.bottom, 20)
@@ -479,13 +480,15 @@ struct HowToView: View {
         .background(Color.black.ignoresSafeArea())
     }
 
-    private func row(_ symbol: String, _ title: LocalizedStringKey, _ text: LocalizedStringKey) -> some View {
-        HStack(alignment: .top, spacing: 16) {
+    private func row(_ symbol: String, _ tint: Color, _ title: LocalizedStringKey, _ text: LocalizedStringKey) -> some View {
+        HStack(alignment: .center, spacing: 14) {
             Image(systemName: symbol)
-                .font(.system(size: 24, weight: .semibold))
+                .font(.system(size: 22, weight: .bold))
                 .foregroundStyle(.white)
-                .frame(width: 34)
-            VStack(alignment: .leading, spacing: 4) {
+                .frame(width: 50, height: 50)
+                .background(LinearGradient(colors: [tint, tint.mix(with: .black, by: 0.3)],
+                                           startPoint: .topLeading, endPoint: .bottomTrailing), in: Circle())
+            VStack(alignment: .leading, spacing: 3) {
                 Text(title).font(Theme.bold(17)).foregroundStyle(.white)
                 Text(text).font(.system(size: 14)).foregroundStyle(Theme.secondary)
                     .fixedSize(horizontal: false, vertical: true)
@@ -698,7 +701,7 @@ struct HomeView: View {
                     .frame(width: 52, height: 52)
                     .background(Theme.surface, in: Circle())
                 Text(game.deck.title)
-                    .font(.system(size: 11, weight: .bold))
+                    .font(.system(size: 13, weight: .bold))
                     .lineLimit(1)
             }
             .foregroundStyle(.white)
@@ -722,7 +725,7 @@ struct HomeView: View {
                     .background(Theme.surface, in: Circle())
                 // 押すと 30・60・90 秒に変わることが分かるように、回る矢印を添える
                 HStack(spacing: 3) {
-                    Text("秒").font(.system(size: 11, weight: .bold))
+                    Text("秒").font(.system(size: 13, weight: .bold))
                     Image(systemName: "arrow.triangle.2.circlepath").font(.system(size: 9, weight: .bold))
                 }
             }
@@ -868,7 +871,7 @@ struct DeckSheet: View {
                 // 右下に大きな絵を薄く敷いて、色の板ではなく「絵のあるカード」に見せる
                 Image(systemName: deck.symbol)
                     .font(.system(size: 92, weight: .bold))
-                    .foregroundStyle(.white.opacity(0.14))
+                    .foregroundStyle(.white.opacity(0.1))
                     .offset(x: 18, y: 14)
             }
         }
@@ -1170,7 +1173,7 @@ struct CountdownView: View {
                 TopBar {
                     BarButton(symbol: "xmark", label: "やめる") { game.backToMenu() }
                 } trailing: { Color.clear.frame(width: 44) }
-                UnderBar { TimerText(remaining: game.roundLength) }
+                UnderBar { TimerText(remaining: game.roundLength, size: 24) }
             }
             .background(Color.black.ignoresSafeArea(edges: .top))
 
@@ -1465,7 +1468,7 @@ struct ResultsView: View {
                 faceIcon
                 Text(verbatim: deckLine + "　" + tally)
                     .font(.system(size: 13, weight: .semibold))
-                    .foregroundStyle(Theme.secondary)
+                    .foregroundStyle(.white.opacity(0.8))
                     .lineLimit(1).minimumScaleFactor(0.75)
             }
         }
