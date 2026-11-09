@@ -180,6 +180,8 @@ struct GuesserView: View {
     private var previewEffect: Effect? {
         guard game.phase == .menu, game.effectsOn else { return nil }
         if let fixed = game.fixedEffect { return fixed }
+        // 初めての人には、右上の見本カードと同じ着ぐるみだけを見せる（見え方が 2 つ並ぶと、どれが相手に見える姿か迷う。批評 r2）
+        if !onboarded { return .costume }
         let cycle: [Effect] = [.stick, .mosaic, .costume, .space, .silhouette, .sea, .stage, .classroom, .peephole]
         return cycle[previewCycle % cycle.count]
     }
@@ -438,13 +440,13 @@ struct HowToView: View {
     var body: some View {
         VStack(spacing: 0) {
             ScrollView {
-                VStack(alignment: .leading, spacing: 30) {
-                    VStack(alignment: .leading, spacing: 10) {
+                // 6 項目が「とじる」の上に 1 画面で収まるように、間と頭を詰める（切れて見えないように。2026-11-09 批評 r2）
+                VStack(alignment: .leading, spacing: 18) {
+                    VStack(alignment: .leading, spacing: 8) {
                         Text("遊び方").font(Theme.bold(17)).foregroundStyle(Theme.secondary)
-                        Wordmark(size: 46)
+                        Wordmark(size: 40)
                     }
-                    .padding(.top, 32)
-                    .padding(.bottom, 2)
+                    .padding(.top, 24)
                     row("theatermasks", "お題は外側の画面に",
                         "外の画面の前に立つ人だけがお題を見て、声を出さずに演じます。")
                     row("camera.fill", "見えるのは画面越しだけ",
@@ -459,7 +461,7 @@ struct HowToView: View {
                         "Duo を渡して、演じる人と当てる人を入れ替えます。")
                 }
                 .padding(.horizontal, 28)
-                .padding(.bottom, 36)
+                .padding(.bottom, 20)
             }
             .scrollBounceBehavior(.basedOnSize)
             .scrollIndicatorsFlash(onAppear: true)
@@ -485,7 +487,7 @@ struct HowToView: View {
                 .frame(width: 34)
             VStack(alignment: .leading, spacing: 4) {
                 Text(title).font(Theme.bold(17)).foregroundStyle(.white)
-                Text(text).font(.system(size: 15)).foregroundStyle(Theme.secondary)
+                Text(text).font(.system(size: 14)).foregroundStyle(Theme.secondary)
                     .fixedSize(horizontal: false, vertical: true)
             }
         }
@@ -598,8 +600,8 @@ struct HomeView: View {
                     if let seenFrame, game.effectsOn {
                         EffectFrame(image: seenFrame)
                     } else if Shot.name != nil, game.effectsOn {
-                        // おまかせのときは、右上の見本（着ぐるみ）と重ならないモザイクを見せる
-                        SampleSeen(effect: game.fixedEffect ?? .mosaic)
+                        // おまかせのときは、初めての人には見本カードと同じ着ぐるみ、それ以外はモザイクを見せる（実機の previewEffect と同じ考え）
+                        SampleSeen(effect: game.fixedEffect ?? (firstRun ? .costume : .mosaic))
                     }
                     VStack(spacing: 10) {
                         // 初めての人には、右上に種明かしの見本を流す（最初の設定に関係なく、何が起きるゲームかが分かる）
@@ -1084,7 +1086,8 @@ struct SettingsSheet: View {
     }
 }
 
-/// シートの頭：中央の題と、右上の丸い「×」
+/// シートの頭：中央の題と、左上の丸い「×」
+/// （右上は外側の画面のカメラの穴に重なるので、× は左に置く。2026-11-09 批評 r2）
 struct SheetHeader: View {
     let title: LocalizedStringKey
     let close: () -> Void
@@ -1093,7 +1096,6 @@ struct SheetHeader: View {
         ZStack {
             Text(title).font(Theme.bold(22))
             HStack {
-                Spacer()
                 Button(action: close) {
                     Image(systemName: "xmark")
                         .font(.system(size: 16, weight: .bold))
@@ -1103,6 +1105,7 @@ struct SheetHeader: View {
                 }
                 .buttonStyle(PressStyle())
                 .accessibilityLabel("閉じる")
+                Spacer()
             }
         }
         .padding(.horizontal, 20)
@@ -1190,28 +1193,19 @@ struct CountdownView: View {
                 }
             }
 
-            VStack(spacing: 12) {
-                ZStack {
-                    Circle().stroke(Color(white: 0.25), lineWidth: 6)
-                    // シャッターの中が黄色く満ちていく（読み込み中の輪に見えないように）
-                    Circle()
-                        .fill(Theme.accent)
-                        .padding(11)
-                        .scaleEffect(CGFloat(4 - n) / 3)
-                    Circle()
-                        .trim(from: 0, to: CGFloat(4 - n) / 3)
-                        .stroke(.white, style: StrokeStyle(lineWidth: 6, lineCap: .round))
-                        .rotationEffect(.degrees(-90))
-                }
-                .frame(width: 78, height: 78)
-                .animation(.easeInOut(duration: 0.8), value: n)
+            // 数字は真ん中の 1 つだけにする（下に輪を出すと、読み込み中の印に見えて二重になった。2026-11-09 批評 r2）
+            VStack(spacing: 6) {
                 Text("\(game.deck.title)・\(modeName)")
-                    .font(.system(size: 15, weight: .heavy))
+                    .font(.system(size: 20, weight: .heavy))
                     .foregroundStyle(.white)
-                    .frame(height: 24)
+                Text("演じる人は声を出さずに")
+                    .font(.system(size: 14, weight: .semibold))
+                    .foregroundStyle(Theme.secondary)
             }
-            .padding(.top, 19)
-            .padding(.bottom, 6)
+            .lineLimit(1).minimumScaleFactor(0.7)
+            .padding(.horizontal, 20)
+            .padding(.top, 22)
+            .padding(.bottom, 22)
             .frame(maxWidth: .infinity)
             .background(Color.black.ignoresSafeArea(edges: .bottom))
         }

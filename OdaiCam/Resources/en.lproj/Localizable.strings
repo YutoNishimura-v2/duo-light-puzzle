@@ -7,9 +7,9 @@
 
 /* しばりの名前と説明 */
 "棒人間" = "Stick figure";
-"影絵" = "Silhouette";
+"影絵" = "Shadow";
 "モザイク" = "Mosaic";
-"3秒遅れ" = "3s delay";
+"3秒遅れ" = "Delay";
 "のぞき穴" = "Peephole";
 "骨組みの線だけが見える" = "Only the skeleton lines show";
 "顔つきの棒人間が同じ動きをする" = "A stick buddy with a face copies your moves";
@@ -26,7 +26,7 @@
 "小さな丸い窓だけがうろつく" = "Only a tiny roaming circle shows";
 "宇宙" = "Space";
 "海" = "Sea";
-"教室" = "Classroom";
+"教室" = "School";
 "ステージ" = "Stage";
 "宇宙に浮かんで見える" = "You're floating in space";
 "海の中にいるように見える" = "You're deep under the sea";
@@ -58,12 +58,12 @@
 "しばりはおまけ" = "Filters are a bonus";
 "背景を宇宙や教室に変えたり、棒人間や影絵にしたり。いつもと違う姿で、もっとばかばかしく。" = "Swap the background for outer space or a classroom, or turn into a stick figure or a silhouette. Same game, even sillier.";
 "答えは声に出すだけ" = "Just say your answer";
-"合っていれば自動で次のお題へ。" = "Get it right and the next prompt comes up on its own.";
+"合っていれば自動で次のお題へ。" = "Get it right and the next one comes up.";
 "最後に種明かし" = "The big reveal";
 "しばりで見え方が変わる" = "Twists change what they see";
 "当てる人には、棒人間・モザイク・着ぐるみ・影絵などに変わって見えます。シャッターの下の列で選べて、「おまかせ」ならお題ごとに入れ替わります。「しばりなし」はそのままの姿。" = "The guesser sees you as a stick buddy, a mosaic, a bear costume, a silhouette and more. Pick one in the row under the shutter, or choose Random to switch every prompt. No filter shows you as you are.";
 "当てる人に見えていた画面と、本当の演技を並べた動画ができます。そのまま TikTok やストーリーズに。" = "You get a video of what the guesser saw next to the real acting. Post it straight to TikTok or Stories.";
-"Duo を渡して、演じる人と当てる人を入れ替えます。" = "Hand over the Duo and swap actor and guesser.";
+"Duo を渡して、演じる人と当てる人を入れ替えます。" = "Hand over the Duo and swap roles.";
 "ほんとはコレ" = "What it really was";
 "見えてたのは" = "What they saw";
 "種明かしの見本：当てる人に見えていた着ぐるみと、本当の演技" = "Reveal sample: the bear costume the guesser saw, and the real acting";
@@ -187,7 +187,8 @@
 "正解 %lld・パス %lld" = "Correct %lld · Pass %lld";
 "・カンニング −%lld" = " · Peeking −%lld";
 "自己ベスト！" = "New best!";
-"外の画面の前に立つ人だけがお題を見て、声を出さずに演じます。" = "Only the person in front of the outer screen sees the prompt, and acts it out without a word.";
-"当てる人は画面だけを見て当てます。直接見たらカンニング。" = "The guesser can only use the screen. Looking up directly counts as peeking.";
-"棒人間・モザイク・着ぐるみなどに変わって見えます。" = "The actor shows up as a stick figure, a mosaic, a mascot suit and more.";
-"見えていた画面と本当の演技を並べた動画ができます。" = "You get a video of what the guesser saw next to the real acting.";
+"外の画面の前に立つ人だけがお題を見て、声を出さずに演じます。" = "Only the actor sees it. Act it out, no talking.";
+"当てる人は画面だけを見て当てます。直接見たらカンニング。" = "Looking up at the actor counts as peeking.";
+"棒人間・モザイク・着ぐるみなどに変わって見えます。" = "Stick figure, mosaic, bear suit and more.";
+"見えていた画面と本当の演技を並べた動画ができます。" = "A video of what they saw next to the real acting.";
+"演じる人は声を出さずに" = "Actor: no talking!";
