@@ -429,6 +429,12 @@ final class Game {
             fixedEffect = .space
             turns.append(Turn(prompt: en ? "Koala" : "コアラ", effect: .space, start: 40))
             phase = .playing
+        case "actor-play", "actor-missing":
+            // 演じる人の画面（外側の画面に出る分）。影絵のお題を演じている途中と、カメラに映っていないときの知らせ
+            effectsOn = true
+            turns.append(Turn(prompt: en ? "Koala" : "コアラ", effect: .silhouette, start: 40))
+            phase = .playing
+            updateActorMissing(shot == "actor-missing")
         case "results":
             cheatWarnings = 1
             cheats = 1

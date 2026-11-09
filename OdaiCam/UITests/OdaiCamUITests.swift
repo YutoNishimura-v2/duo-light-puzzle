@@ -12,6 +12,31 @@ final class OdaiCamUITests: XCTestCase {
     // 15 秒では、CI の重いシミュレータで画面写真と配置の確認をしている間にラウンドが終わり、
     // 「パス」を押す前に結果の画面になって落ちた（run 42328558975）
     static let roundSeconds = 25
+    /// 型抜きだけで人を見つけるしばり（シミュレータでも偽カメラの型抜きで映っている扱いになる）
+    static let maskModes = ["影絵", "宇宙"]
+
+    /// 当てる人の画面の「演じる人が映っていません」
+    @MainActor
+    private var missingChip: XCUIElement {
+        app.descendants(matching: .any).matching(NSPredicate(format: "label CONTAINS '映っていません'")).firstMatch
+    }
+
+    /// 型抜きを付けない（人が見つからない）偽カメラで影絵を遊び、当てる人の画面に知らせが出るか
+    @MainActor
+    func test4NoActor() {
+        app = XCUIApplication()
+        app.launchArguments = ["-fakeCamera", "YES", "-testNoMask", "YES", "-onboarded", "YES",
+                               "-testRoundSeconds", "\(Self.roundSeconds)"] + Self.japanese
+        app.launch()
+        XCTAssertTrue(app.buttons["あそぶ"].waitForExistence(timeout: 20), "ホームが出ない")
+        sleep(2)
+        tapMode("影絵")
+        sleep(1)
+        app.buttons["あそぶ"].tap()
+        XCTAssertTrue(app.buttons["正解"].waitForExistence(timeout: 10), "プレイ画面が出ない")
+        XCTAssertTrue(missingChip.waitForExistence(timeout: 6), "人がいないのに「映っていません」が出ない")
+        shot("guesser-missing")
+    }
     /// デモ（test3Demo）で続けて遊ぶラウンドの数
     static let demoRounds = 10
     /// シミュレータの言葉に関係なく、アプリを日本語で動かす（ボタンは日本語の名前で探すため。山札も日本語になる）
@@ -216,6 +241,11 @@ final class OdaiCamUITests: XCTestCase {
         XCTAssertEqual(app.state, .runningForeground, "\(name)：カウントダウンのあと落ちた")
         sleep(1)
         shot("\(name)-play")
+        // 影絵・宇宙は偽カメラの型抜き（Mac の Vision で作ったもの）で人を見つける。人が映っているのに知らせが出ないか
+        if Self.maskModes.contains(where: { name.hasPrefix($0) }) {
+            sleep(2)
+            XCTAssertFalse(missingChip.exists, "\(name)：人が映っているのに「映っていません」が出た")
+        }
         // 正解とパスの組が、画面の中心から ±5% 以内にある（左に寄る不具合の見張り）
         let pass = app.buttons["パス"]
         let screen = app.windows.firstMatch.frame

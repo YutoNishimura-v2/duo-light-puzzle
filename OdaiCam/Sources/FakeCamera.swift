@@ -29,6 +29,14 @@ final class FakeCamera: @unchecked Sendable {
     private var track: AVAssetTrack?
     private var reader: AVAssetReader?
     private var output: AVAssetReaderTrackOutput?
+    /// 型抜きの動画（fake-camera-mask.mp4。CI が Mac の Vision で作って入れる）。動画と同じコマを読む。
+    /// シミュレータの Vision は人を見つけないので、これを型抜きとして各コマに付ける（起動引数 -testNoMask YES で付けない）
+    private var maskAsset: AVAsset?
+    private var maskTrack: AVAssetTrack?
+    private var maskReader: AVAssetReader?
+    private var maskOutput: AVAssetReaderTrackOutput?
+    private var maskPool: CVPixelBufferPool?
+    static let usesMask = !UserDefaults.standard.bool(forKey: "testNoMask")
     private var pool: CVPixelBufferPool?
     private var actorPool: CVPixelBufferPool?
     private var facePool: CVPixelBufferPool?
@@ -72,11 +80,18 @@ final class FakeCamera: @unchecked Sendable {
             faceTimer = f
         } else if let url = Bundle.main.url(forResource: "fake-camera", withExtension: "mp4") {
             let asset = AVURLAsset(url: url)
+            let maskURL = Self.usesMask ? Bundle.main.url(forResource: "fake-camera-mask", withExtension: "mp4") : nil
+            let maskAsset = maskURL.map { AVURLAsset(url: $0) }
             Task { [self] in
                 guard let track = try? await asset.loadTracks(withMediaType: .video).first else { return }
+                let maskTrack = try? await maskAsset?.loadTracks(withMediaType: .video).first
                 queue.async { [self] in
                     self.asset = asset
                     self.track = track
+                    if let maskAsset, let maskTrack {
+                        self.maskAsset = maskAsset
+                        self.maskTrack = maskTrack
+                    }
                 }
             }
         }
@@ -86,7 +101,8 @@ final class FakeCamera: @unchecked Sendable {
         t.resume()
         timer = t
         let hasMovie = Bundle.main.url(forResource: "fake-camera", withExtension: "mp4") != nil
-        let source = Self.isDemo ? "デモ" : (hasMovie ? "動画" : "描いた人形")
+        let hasMask = Self.usesMask && Bundle.main.url(forResource: "fake-camera-mask", withExtension: "mp4") != nil
+        let source = Self.isDemo ? "デモ" : (hasMovie ? (hasMask ? "動画＋型抜き" : "動画") : "描いた人形")
         CrashLog.mark("偽カメラ開始（\(source)）")
     }
 
@@ -99,6 +115,7 @@ final class FakeCamera: @unchecked Sendable {
         // 止めている間は、描き置きの部屋と画素の箱を手放す（次に動かすとき作り直す）
         room = nil
         pool = nil
+        maskPool = nil
         actorPool = nil
         facePool = nil
     }
@@ -149,28 +166,69 @@ final class FakeCamera: @unchecked Sendable {
         }
     }
 
-    /// 同梱の動画から 1 コマ。終わったら頭から読み直す
+    /// 同梱の動画から 1 コマ。終わったら頭から読み直す（型抜きの動画も一緒に頭へ戻す）
     private func readFrame() -> CVPixelBuffer? {
         guard let asset, let track else { return nil }
         for _ in 0..<2 {
             if output == nil {
-                guard let r = try? AVAssetReader(asset: asset) else { return nil }
-                let o = AVAssetReaderTrackOutput(track: track, outputSettings: [
-                    kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_32BGRA,
-                    kCVPixelBufferIOSurfacePropertiesKey as String: [String: Any](),
-                ])
-                guard r.canAdd(o) else { return nil }
-                r.add(o)
-                guard r.startReading() else { return nil }
-                reader = r
-                output = o
+                guard let opened = Self.openReader(asset, track) else { return nil }
+                reader = opened.reader
+                output = opened.output
+                if let maskAsset, let maskTrack, let mask = Self.openReader(maskAsset, maskTrack) {
+                    maskReader = mask.reader
+                    maskOutput = mask.output
+                }
             }
-            if let sb = output?.copyNextSampleBuffer(), let pb = CMSampleBufferGetImageBuffer(sb) { return pb }
+            if let sb = output?.copyNextSampleBuffer(), let pb = CMSampleBufferGetImageBuffer(sb) {
+                attachMask(to: pb)
+                return pb
+            }
             reader?.cancelReading()
             reader = nil
             output = nil
+            maskReader?.cancelReading()
+            maskReader = nil
+            maskOutput = nil
         }
         return nil
+    }
+
+    private static func openReader(_ asset: AVAsset,
+                                   _ track: AVAssetTrack) -> (reader: AVAssetReader, output: AVAssetReaderTrackOutput)? {
+        guard let r = try? AVAssetReader(asset: asset) else { return nil }
+        let o = AVAssetReaderTrackOutput(track: track, outputSettings: [
+            kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_32BGRA,
+            kCVPixelBufferIOSurfacePropertiesKey as String: [String: Any](),
+        ])
+        guard r.canAdd(o) else { return nil }
+        r.add(o)
+        guard r.startReading() else { return nil }
+        return (r, o)
+    }
+
+    /// 型抜きの動画の次のコマを、半分の大きさの 8 ビットの型抜きにして frame に付ける（EffectEngine が Vision の代わりに使う）
+    private func attachMask(to frame: CVPixelBuffer) {
+        CVBufferRemoveAttachment(frame, EffectEngine.injectedMaskKey)
+        guard let sb = maskOutput?.copyNextSampleBuffer(), let src = CMSampleBufferGetImageBuffer(sb) else { return }
+        let w = CVPixelBufferGetWidth(src) / 2, h = CVPixelBufferGetHeight(src) / 2
+        if maskPool == nil { maskPool = PixelPool.make(width: w, height: h, format: kCVPixelFormatType_OneComponent8) }
+        guard let maskPool, let dst = PixelPool.buffer(from: maskPool, limit: 6) else { return }
+        CVPixelBufferLockBaseAddress(src, .readOnly)
+        CVPixelBufferLockBaseAddress(dst, [])
+        defer {
+            CVPixelBufferUnlockBaseAddress(dst, [])
+            CVPixelBufferUnlockBaseAddress(src, .readOnly)
+        }
+        guard let s = CVPixelBufferGetBaseAddress(src)?.assumingMemoryBound(to: UInt8.self),
+              let d = CVPixelBufferGetBaseAddress(dst)?.assumingMemoryBound(to: UInt8.self) else { return }
+        let sRow = CVPixelBufferGetBytesPerRow(src), dRow = CVPixelBufferGetBytesPerRow(dst)
+        // 灰色の動画なので、BGRA の緑（1 バイト目）を 1 画素おきに写す
+        for y in 0..<h {
+            let sLine = s + (y * 2) * sRow + 1
+            let dLine = d + y * dRow
+            for x in 0..<w { dLine[x] = sLine[x * 8] }
+        }
+        CVBufferSetAttachment(frame, EffectEngine.injectedMaskKey, dst, .shouldNotPropagate)
     }
 
     /// 動画がないときの代わり：腕と脚を振る人形

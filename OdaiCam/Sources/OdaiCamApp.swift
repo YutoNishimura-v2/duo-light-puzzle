@@ -92,6 +92,10 @@ struct GuesserView: View {
             // 画面の左右の安全領域は使い切る（外側の画面で右に 2 割の空きができていた）。
             // 端に寄りすぎないよう、各画面が自分で余白を持つ
             .ignoresSafeArea(edges: .horizontal)
+            // 画面写真（-shot actor-…）：演じる人の画面を前に出す。シミュレータでは撮影画面の付属の画面が見えないため
+            if Shot.name?.hasPrefix("actor") == true {
+                ActorView(game: game)
+            }
         }
         .animation(.smooth(duration: 0.35), value: game.phase)
         // 撮影画面が内側に全画面で出ていて、撮影が動いている間だけ、システムが外側の画面に出す

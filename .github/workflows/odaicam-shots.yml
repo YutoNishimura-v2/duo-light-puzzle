@@ -48,6 +48,16 @@ jobs:
               -vf "crop='min(iw,ih*9/16)':'min(ih,iw*16/9)',scale=540:960,fps=30,format=yuv420p" -an -c:v libx264 -crf 23 \
               TestAssets/fake-camera.mp4 || rm -f TestAssets/fake-camera.mp4
           fi
+          # シミュレータの Vision は人を見つけないので、Mac の Vision で同じコマの型抜きの動画を先に作って入れる
+          # （偽カメラがコマごとに付け、影絵・背景が本物の型抜きで描ける）。作れなければ今までどおり型抜きなしで続ける
+          if [ -f TestAssets/fake-camera.mp4 ]; then
+            xcrun swiftc -O -swift-version 5 -o "$RUNNER_TEMP/record-mask" Tools/RecordMask/main.swift \
+              && "$RUNNER_TEMP/record-mask" TestAssets/fake-camera.mp4 TestAssets/fake-camera-mask.mp4 \
+              || rm -f TestAssets/fake-camera-mask.mp4
+            for f in TestAssets/*.mp4; do
+              echo "$f $(ffprobe -v error -count_frames -select_streams v:0 -show_entries stream=nb_read_frames,width,height -of csv=p=0 "$f")"
+            done
+          fi
           ls -la TestAssets
 
       - name: Boot simulator
@@ -84,7 +94,7 @@ jobs:
           # 日本語と英語の両方で撮る（英語は名前の後ろに -en）
           for lang in ja en; do
             suffix=""; [ "$lang" = en ] && suffix="-en"
-            for s in welcome home home-bg play play-bg countdown results settings decks howto; do
+            for s in welcome home home-bg play play-bg countdown results settings decks howto actor-play actor-missing; do
               xcrun simctl launch --terminate-running-process "$UDID" io.github.yutonishimura-v2.odaicam \
                 -AppleLanguages "($lang)" -shot "$s"
               sleep 6

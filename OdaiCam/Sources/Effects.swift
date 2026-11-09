@@ -351,6 +351,17 @@ final class EffectEngine: @unchecked Sendable {
         return r
     }
 
+    /// 偽カメラがコマに付ける型抜き（白が人・8 ビット）の名前。シミュレータの Vision は人を見つけないので、
+    /// CI が Mac の Vision で作った型抜きの動画を偽カメラが読み、コマごとに付ける（実機のカメラのコマには付かない）
+    static let injectedMaskKey = "OdaiCamInjectedPersonMask" as CFString
+
+    /// コマに付いた型抜き（なければ nil）
+    private static func injectedMask(_ buffer: CVPixelBuffer) -> CVPixelBuffer? {
+        guard let value = CVBufferCopyAttachment(buffer, injectedMaskKey, nil),
+              CFGetTypeID(value) == CVPixelBufferGetTypeID() else { return nil }
+        return unsafeBitCast(value, to: CVPixelBuffer.self)
+    }
+
     /// このコマで Vision に読ませた読み取り（同じコマで同じものを 2 回読まない）。render の頭で空にする
     private var visionDone: Set<ObjectIdentifier> = []
     /// 点検・記録用：このコマで Vision を回した回数
@@ -659,7 +670,11 @@ final class EffectEngine: @unchecked Sendable {
         } else {
             read([personRequest, peopleRequest], source: source)
             updatePeople(now: now)
-            if let m = personRequest.results?.first?.pixelBuffer {
+            if let m = Self.injectedMask(source) {
+                // シミュレータの試験：偽カメラが付けた、Mac の Vision で作った型抜きを使う（実機では付かない）
+                maskBuffer = m
+                found = Self.coverage(m) > Self.minCoverage
+            } else if let m = personRequest.results?.first?.pixelBuffer {
                 maskBuffer = m
                 found = Self.coverage(m) > Self.minCoverage
             }
