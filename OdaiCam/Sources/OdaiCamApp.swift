@@ -401,7 +401,15 @@ struct EffectFrame: View {
                     .blur(radius: 28, opaque: true)
                     .overlay(Color.black.opacity(0.35))
             }
-            .overlay { picture.scaledToFit() }
+            .overlay {
+                // 左右の端はぼかしへなだらかにつなぐ（暗いしばりで、境目が縦の線に見えていた）
+                picture.scaledToFit()
+                    .mask {
+                        LinearGradient(stops: [.init(color: .clear, location: 0), .init(color: .black, location: 0.06),
+                                               .init(color: .black, location: 0.94), .init(color: .clear, location: 1)],
+                                       startPoint: .leading, endPoint: .trailing)
+                    }
+            }
             .clipped()
     }
 }
