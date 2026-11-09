@@ -74,6 +74,22 @@ extension Deck {
         }
     }
 
+    /// 山札のタイルの色（Heads Up! のように山札ごとに色を変え、選ぶこと自体を楽しくする）
+    var tint: Color {
+        switch id {
+        case "animal", "en-animal": Color(red: 1.0, green: 0.55, blue: 0.2)
+        case "job", "en-job": Color(red: 0.25, green: 0.52, blue: 1.0)
+        case "sport", "en-sport": Color(red: 0.13, green: 0.72, blue: 0.42)
+        case "action", "en-action": Color(red: 0.58, green: 0.4, blue: 1.0)
+        case "nomikai", "en-party": Color(red: 0.95, green: 0.68, blue: 0.1)
+        case "couple", "en-couple": Color(red: 1.0, green: 0.33, blue: 0.55)
+        case "aruaru", "en-relatable": Color(red: 0.1, green: 0.7, blue: 0.78)
+        case "muri", "en-impossible": Color(red: 0.93, green: 0.27, blue: 0.24)
+        case "winter", "en-holiday": Color(red: 0.36, green: 0.68, blue: 0.95)
+        default: Color(white: 0.4)
+        }
+    }
+
     /// プロフィールの丸い写真の代わりに使う 1 文字
     var initial: String { String(title.prefix(1)) }
 }
@@ -177,13 +193,16 @@ struct PillButtonStyle: ButtonStyle {
     var fontSize: CGFloat = 17
     /// 白の代わりに使う地の色（正解のボタンは差し色の黄色）
     var fill: Color = .white
+    /// 灰色のボタンを黒い地から浮かせる（プレイ中の「パス」。地と同じ黒に埋もれないように）
+    var raised = false
 
     func makeBody(configuration: Configuration) -> some View {
         configuration.label
             .font(.system(size: fontSize, weight: .heavy))
             .foregroundStyle(primary ? .black : .white)
             .frame(maxWidth: .infinity, minHeight: height)
-            .background(primary ? fill : Theme.surface, in: Capsule())
+            .background(primary ? fill : (raised ? Color(white: 0.22) : Theme.surface), in: Capsule())
+            .overlay(Capsule().strokeBorder(.white.opacity(raised && !primary ? 0.28 : 0), lineWidth: 1.5))
             .scaleEffect(configuration.isPressed ? 0.96 : 1)
             .opacity(configuration.isPressed ? 0.85 : 1)
             .animation(.spring(response: 0.2, dampingFraction: 0.7), value: configuration.isPressed)
@@ -272,7 +291,8 @@ struct TimerText: View {
         let seconds = Int(remaining.rounded(.up))
         Text(String(format: "%02d:%02d", seconds / 60, seconds % 60))
             .font(Theme.timer(size))
-            .foregroundStyle(remaining <= 10 ? Theme.accent : .white)
+            // 残り 10 秒は赤（急かす）
+            .foregroundStyle(remaining <= 10 ? Theme.warning : .white)
             .contentTransition(.numericText(countsDown: true))
             .animation(.default, value: seconds)
     }

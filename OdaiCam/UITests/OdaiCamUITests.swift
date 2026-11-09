@@ -55,7 +55,14 @@ final class OdaiCamUITests: XCTestCase {
         XCTAssertTrue(animal.waitForExistence(timeout: 5), "山札のシートが出ない")
         sleep(1)
         shot("decks")
-        assertCentered(animal, name: "山札のシートの「動物」")
+        // 山札は 2 列のタイル。1 行目の「動物」と「職業」の真ん中が、画面の中心にあるか
+        let job = app.buttons.matching(NSPredicate(format: "label CONTAINS '職業'")).firstMatch
+        XCTAssertTrue(job.exists, "山札のシートに「職業」がない")
+        let deckMid = (animal.frame.midX + job.frame.midX) / 2
+        let screen = app.windows.firstMatch.frame
+        XCTAssertLessThanOrEqual(abs(deckMid - screen.midX), screen.width * 0.05,
+                                 "山札のタイルが中心からずれている \(deckMid)（画面 \(screen)）")
+        XCTAssertLessThan(animal.frame.midX, job.frame.midX, "山札のタイルが 2 列に並んでいない")
         app.buttons["閉じる"].tap()
         sleep(1)
         app.buttons["設定"].tap()

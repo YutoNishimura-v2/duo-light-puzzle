@@ -172,3 +172,22 @@
 "作り直す" = "Try again";
 "録画を受け取れませんでした。もう一回遊んでください" = "The recording didn't come through. Please play another round.";
 "時間がかかりすぎたので止めました" = "This was taking too long, so we stopped.";
+/* 0.1.25 UI pass */
+"%lld 枚" = "%lld cards";
+"自分の山札" = "My Deck";
+"自分の山札をつくる" = "Make your own deck";
+"自分の山札を編集" = "Edit your deck";
+"やめる" = "Quit";
+"ラウンドをやめる？" = "Quit this round?";
+"やめてホームへ" = "Quit to Home";
+"続ける" = "Keep playing";
+"正解 %lld" = "Correct %lld";
+"%@・%@" = "%@ · %@";
+"%@・%lld秒" = "%@ · %lld s";
+"正解 %lld・パス %lld" = "Correct %lld · Pass %lld";
+"・カンニング −%lld" = " · Peeking −%lld";
+"自己ベスト！" = "New best!";
+"外の画面の前に立つ人だけがお題を見て、声を出さずに演じます。" = "Only the person in front of the outer screen sees the prompt, and acts it out without a word.";
+"当てる人は画面だけを見て当てます。直接見たらカンニング。" = "The guesser can only use the screen. Looking up directly counts as peeking.";
+"棒人間・モザイク・着ぐるみなどに変わって見えます。" = "The actor shows up as a stick figure, a mosaic, a mascot suit and more.";
+"見えていた画面と本当の演技を並べた動画ができます。" = "You get a video of what the guesser saw next to the real acting.";

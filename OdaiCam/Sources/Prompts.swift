@@ -199,6 +199,6 @@ enum CustomDeck {
         let prompts = text.split(whereSeparator: \.isNewline)
             .map { $0.trimmingCharacters(in: .whitespaces) }
             .filter { !$0.isEmpty }
-        return prompts.isEmpty ? nil : Deck(id: "custom", title: Deck.deviceLanguage == "ja" ? "お題帳" : "My Deck", prompts: prompts, language: Deck.deviceLanguage)
+        return prompts.isEmpty ? nil : Deck(id: "custom", title: Deck.deviceLanguage == "ja" ? "自分の山札" : "My Deck", prompts: prompts, language: Deck.deviceLanguage)
     }
 }
