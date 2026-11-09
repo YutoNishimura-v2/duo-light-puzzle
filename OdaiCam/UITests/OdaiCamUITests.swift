@@ -30,8 +30,11 @@ final class OdaiCamUITests: XCTestCase {
         app.launch()
         XCTAssertTrue(app.buttons["あそぶ"].waitForExistence(timeout: 20), "ホームが出ない")
         sleep(2)
-        tapMode("影絵")
-        sleep(1)
+        // 影絵は最初は画面の外にあるので、手前から順に押して中央へ寄せる
+        for mode in Self.modes.prefix(through: Self.modes.firstIndex(of: "影絵")!) {
+            tapMode(mode)
+            sleep(1)
+        }
         app.buttons["あそぶ"].tap()
         XCTAssertTrue(app.buttons["正解"].waitForExistence(timeout: 10), "プレイ画面が出ない")
         XCTAssertTrue(missingChip.waitForExistence(timeout: 6), "人がいないのに「映っていません」が出ない")

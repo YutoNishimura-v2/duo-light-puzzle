@@ -1876,7 +1876,8 @@ struct ActorView: View {
                 .padding(.vertical, 12)
                 .background(Theme.warning, in: RoundedRectangle(cornerRadius: 18))
                 .padding(.horizontal, 16)
-                .padding(.top, 70)
+                // ロゴと残り時間（上の約 80pt）を隠さない
+                .padding(.top, 92)
                 .transition(.move(edge: .top).combined(with: .opacity))
             }
         }
