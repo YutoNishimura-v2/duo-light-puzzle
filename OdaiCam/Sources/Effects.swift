@@ -623,8 +623,9 @@ final class EffectEngine: @unchecked Sendable {
     /// 人の形の型抜き（白が人、input の大きさ）。found は人の形が画面に十分あったか
     /// デモでは Vision を間引く：見つけているときは 12 回/秒まで（間は前の型抜きを使う）、
     /// 見つからなかったら 1 秒は Vision を回さず役者の型抜きを使う（シミュレータの Vision は人を見つけず、重いだけ）
+    /// despeckle が true なら、Vision の型抜きから主役から離れた小さいかけらを消す（影絵・背景で使う。`withoutSpecks`）
     private func personMask(source: CVPixelBuffer, input: CIImage, now: TimeInterval,
-                            frameTime: TimeInterval) -> (mask: CIImage?, found: Bool) {
+                            frameTime: TimeInterval, despeckle: Bool = false) -> (mask: CIImage?, found: Bool) {
         let demo = FakeCamera.isDemo
         var maskBuffer: CVPixelBuffer?
         var found = false
@@ -664,7 +665,7 @@ final class EffectEngine: @unchecked Sendable {
         lastMaskBuffer = maskBuffer
         var mask: CIImage?
         if let maskBuffer {
-            let m = CIImage(cvPixelBuffer: maskBuffer)
+            let m = CIImage(cvPixelBuffer: despeckle ? withoutSpecks(maskBuffer) : maskBuffer)
             mask = m.transformed(by: CGAffineTransform(scaleX: input.extent.width / m.extent.width,
                                                        y: input.extent.height / m.extent.height))
         }
@@ -682,6 +683,80 @@ final class EffectEngine: @unchecked Sendable {
             }
         }
         return (mask, found)
+    }
+
+    /// かけらを消した型抜きの箱と、作り元（同じ型抜きを使い回すコマで作り直さない）
+    private var specklessPool: CVPixelBufferPool?
+    private var specklessPoolSize: CGSize = .zero
+    private var specklessCache: (source: CVPixelBuffer, result: CVPixelBuffer)?
+    private var speckLabels: [Int32] = []
+    private var speckStack: [Int32] = []
+    /// かけらとみなす大きさ（いちばん大きい人の塊の面積に対する割合）。これより小さい離れた塊は消す
+    static let speckRatio = 0.15
+    /// 塊を数えるときに「人」とみなす型抜きの値（keepForeground で 0 にする 0.3 と同じ）
+    static let speckOn: UInt8 = 77
+
+    /// 型抜きから、いちばん大きい塊の 15% より小さい離れた塊を消した写し（8 ビット）。
+    /// 型抜きは背景の花・床の荷物・後ろの人の一部も薄く拾い、影絵の横や足元に灰色のかけらが浮いていた
+    /// （実写の点検 42461901766 の selfie 右の花・jacks 8 秒の足元・square 5 秒、2026-11-09）。
+    /// 型抜きは小さい（Vision の出力のまま）ので、手で塊を数えても 1 コマ数 ms で済む
+    private func withoutSpecks(_ mask: CVPixelBuffer) -> CVPixelBuffer {
+        if let cache = specklessCache, cache.source === mask { return cache.result }
+        let w = CVPixelBufferGetWidth(mask), h = CVPixelBufferGetHeight(mask)
+        guard CVPixelBufferGetPixelFormatType(mask) == kCVPixelFormatType_OneComponent8,
+              let out = Self.pooledBuffer(&specklessPool, &specklessPoolSize, size: CGSize(width: w, height: h),
+                                          format: kCVPixelFormatType_OneComponent8, limit: 3) else { return mask }
+        CVPixelBufferLockBaseAddress(mask, .readOnly)
+        CVPixelBufferLockBaseAddress(out, [])
+        defer {
+            CVPixelBufferUnlockBaseAddress(out, [])
+            CVPixelBufferUnlockBaseAddress(mask, .readOnly)
+        }
+        guard let srcBase = CVPixelBufferGetBaseAddress(mask), let dstBase = CVPixelBufferGetBaseAddress(out) else { return mask }
+        let srcRow = CVPixelBufferGetBytesPerRow(mask), dstRow = CVPixelBufferGetBytesPerRow(out)
+        let src = srcBase.assumingMemoryBound(to: UInt8.self), dst = dstBase.assumingMemoryBound(to: UInt8.self)
+        let areas = labelBlobs(src, row: srcRow, w: w, h: h)
+        let largest = areas.max() ?? 0
+        let minArea = Int(Double(largest) * Self.speckRatio)
+        for y in 0..<h {
+            for x in 0..<w {
+                let label = Int(speckLabels[y * w + x])
+                let v = src[y * srcRow + x]
+                dst[y * dstRow + x] = label > 0 && areas[label - 1] < minArea ? 0 : v
+            }
+        }
+        specklessCache = (mask, out)
+        return out
+    }
+
+    /// 型抜きの「人」の画素を 4 方向のつながりで塊に分け、speckLabels に番号（1 から。0 は人でない）を書く。塊ごとの面積を返す
+    private func labelBlobs(_ src: UnsafeMutablePointer<UInt8>, row: Int, w: Int, h: Int) -> [Int] {
+        if speckLabels.count != w * h { speckLabels = [Int32](repeating: 0, count: w * h) }
+        else { speckLabels.withUnsafeMutableBufferPointer { $0.update(repeating: 0) } }
+        var areas: [Int] = []
+        func visit(_ x: Int, _ y: Int, _ label: Int32) {
+            let j = y * w + x
+            if speckLabels[j] == 0 && src[y * row + x] >= Self.speckOn {
+                speckLabels[j] = label
+                speckStack.append(Int32(j))
+            }
+        }
+        for start in 0..<(w * h) where speckLabels[start] == 0 && src[(start / w) * row + start % w] >= Self.speckOn {
+            areas.append(0)
+            let label = Int32(areas.count)
+            speckLabels[start] = label
+            speckStack.removeAll(keepingCapacity: true)
+            speckStack.append(Int32(start))
+            while let i = speckStack.popLast().map(Int.init) {
+                areas[areas.count - 1] += 1
+                let x = i % w, y = i / w
+                if x > 0 { visit(x - 1, y, label) }
+                if x < w - 1 { visit(x + 1, y, label) }
+                if y > 0 { visit(x, y - 1, label) }
+                if y < h - 1 { visit(x, y + 1, label) }
+            }
+        }
+        return areas
     }
 
     /// 1 人ずつの枠（0〜1、左下が原点）と、最後に誰かを見つけた時刻
@@ -734,14 +809,18 @@ final class EffectEngine: @unchecked Sendable {
     /// 型抜きは後ろの群衆まで薄く拾い、誰が演じているか分からなかった（square の 2・5 秒、2026-11-08 批評）。
     /// - 薄い（自信の低い）ところは消し、濃いところははっきりさせる（0.3 以下 → 0、0.8 以上 → 1）
     /// - 後ろの小さい人の枠の中は消す
-    private func keepForeground(_ mask: CIImage, extent: CGRect) -> CIImage {
+    /// - sharp が true（影絵）なら、縁を急にする（0.42 以下 → 0、0.6 以上 → 1）。
+    ///   0.3〜0.8 のなだらかな縁では、自信の低いところが灰色の煙のように残った（square の 2・5 秒、2026-11-09）
+    private func keepForeground(_ mask: CIImage, extent: CGRect, sharp: Bool = false) -> CIImage {
         guard Self.usesVision else { return mask }
+        let (low, high): (CGFloat, CGFloat) = sharp ? (0.42, 0.6) : (0.3, 0.8)
+        let gain = 1 / (high - low), bias = -low / (high - low)
         let curve = CIFilter.colorMatrix()
         curve.inputImage = mask
-        curve.rVector = CIVector(x: 2, y: 0, z: 0, w: 0)
-        curve.gVector = CIVector(x: 0, y: 2, z: 0, w: 0)
-        curve.bVector = CIVector(x: 0, y: 0, z: 2, w: 0)
-        curve.biasVector = CIVector(x: -0.6, y: -0.6, z: -0.6, w: 0)
+        curve.rVector = CIVector(x: gain, y: 0, z: 0, w: 0)
+        curve.gVector = CIVector(x: 0, y: gain, z: 0, w: 0)
+        curve.bVector = CIVector(x: 0, y: 0, z: gain, w: 0)
+        curve.biasVector = CIVector(x: bias, y: bias, z: bias, w: 0)
         let clamp = CIFilter.colorClamp()
         clamp.inputImage = curve.outputImage
         clamp.minComponents = CIVector(x: 0, y: 0, z: 0, w: 0)
@@ -758,9 +837,9 @@ final class EffectEngine: @unchecked Sendable {
     /// found は人の形が画面に十分あったか
     private func silhouette(source: CVPixelBuffer, input: CIImage, now: TimeInterval,
                             frameTime: TimeInterval) -> (image: CIImage?, found: Bool) {
-        let person = personMask(source: source, input: input, now: now, frameTime: frameTime)
+        let person = personMask(source: source, input: input, now: now, frameTime: frameTime, despeckle: true)
         guard let whole = person.mask else { return (nil, false) }
-        let mask = humanShaped(keepForeground(whole, extent: input.extent), found: person.found, source: source,
+        let mask = humanShaped(keepForeground(whole, extent: input.extent, sharp: true), found: person.found, source: source,
                                extent: input.extent, now: now, frameTime: frameTime)
         let blend = CIFilter.blendWithMask()
         blend.inputImage = CIImage(color: CIColor(red: 0.05, green: 0.05, blue: 0.08)).cropped(to: input.extent)
@@ -786,7 +865,7 @@ final class EffectEngine: @unchecked Sendable {
                 background = (effect, size, scene)
             }
         }
-        let person = personMask(source: source, input: input, now: now, frameTime: frameTime)
+        let person = personMask(source: source, input: input, now: now, frameTime: frameTime, despeckle: true)
         guard let whole = person.mask else { return (scene, false) }
         let mask = humanShaped(keepForeground(whole, extent: input.extent), found: person.found, source: source,
                                extent: input.extent, now: now, frameTime: frameTime)
@@ -1349,18 +1428,10 @@ final class EffectEngine: @unchecked Sendable {
             guard limb.first == .leftShoulder || limb.first == .rightShoulder, let shoulder = limbPoint(limb[0]) else { return false }
             return !onScreen(shoulder) && !onScreen(p(limb[1]))
         }
-        func strokeLimbs(width: CGFloat, color: CGColor, reference: CGFloat) {
+        /// 肩・腰から胴へつなぐ線
+        func strokeConnectors(width: CGFloat, color: CGColor) {
             ctx.setStrokeColor(color)
-            for limb in limbs where !armCut(limb) {
-                let pts = limb.compactMap { limbPoint($0) }
-                guard pts.count >= 2 else { continue }
-                ctx.setLineWidth(width * limbScale(pts, reference: reference))
-                ctx.move(to: pts[0])
-                for q in pts.dropFirst() { ctx.addLine(to: q) }
-                ctx.strokePath()
-            }
             ctx.setLineWidth(width)
-            // 肩・腰から胴へつなぐ
             if let neck {
                 for s in [limbPoint(.leftShoulder), limbPoint(.rightShoulder)].compactMap({ $0 }) {
                     ctx.move(to: neck); ctx.addLine(to: s)
@@ -1370,6 +1441,18 @@ final class EffectEngine: @unchecked Sendable {
                 for s in [p(.leftHip), p(.rightHip)].compactMap({ $0 }) { ctx.move(to: root); ctx.addLine(to: s) }
             }
             ctx.strokePath()
+        }
+        func strokeLimbs(width: CGFloat, color: CGColor, reference: CGFloat, connectors: Bool = true) {
+            ctx.setStrokeColor(color)
+            for limb in limbs where !armCut(limb) {
+                let pts = limb.compactMap { limbPoint($0) }
+                guard pts.count >= 2 else { continue }
+                ctx.setLineWidth(width * limbScale(pts, reference: reference))
+                ctx.move(to: pts[0])
+                for q in pts.dropFirst() { ctx.addLine(to: q) }
+                ctx.strokePath()
+            }
+            if connectors { strokeConnectors(width: width, color: color) }
         }
         ctx.setLineCap(.round)
         ctx.setLineJoin(.round)
@@ -1388,14 +1471,20 @@ final class EffectEngine: @unchecked Sendable {
             }
             // 胴を先に描き、手足は縁ごと胴の上に描く。胴の前に出した腕が胴と同じ黄色に溶け、
             // 手の丸だけが胴の上に浮いて見えていた（selfie の 5 秒、2026-11-08 批評）
+            // 肩・腰へつなぐ線も胴と一緒に先に描く。後から描くと、縁の濃い線が胴の上を横切って
+            // 胸に折れ線が出ていた（selfie の 2・5・8 秒、批評 6/30 の ③）
+            strokeConnectors(width: line * 1.45, color: edge)
             if let neck, let root {
                 ctx.setStrokeColor(edge); ctx.setLineWidth(line * 2.4)
                 ctx.move(to: neck); ctx.addLine(to: root); ctx.strokePath()
+            }
+            strokeConnectors(width: line, color: yellow)
+            if let neck, let root {
                 ctx.setStrokeColor(yellow); ctx.setLineWidth(line * 1.95)
                 ctx.move(to: neck); ctx.addLine(to: root); ctx.strokePath()
             }
-            strokeLimbs(width: line * 1.45, color: edge, reference: line)
-            strokeLimbs(width: line, color: yellow, reference: line)
+            strokeLimbs(width: line * 1.45, color: edge, reference: line, connectors: false)
+            strokeLimbs(width: line, color: yellow, reference: line, connectors: false)
             // 関節の丸と、手足の先の大きめの丸
             ctx.setFillColor(edge)
             for name: VNHumanBodyPoseObservation.JointName in [.leftElbow, .rightElbow, .leftKnee, .rightKnee] {
