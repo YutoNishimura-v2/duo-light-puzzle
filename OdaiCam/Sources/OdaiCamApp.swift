@@ -425,8 +425,8 @@ struct HowToView: View {
                         Text("遊び方").font(Theme.bold(17)).foregroundStyle(Theme.secondary)
                         Wordmark(size: 46)
                     }
-                    .padding(.top, 56)
-                    .padding(.bottom, 6)
+                    .padding(.top, 32)
+                    .padding(.bottom, 2)
                     row("theatermasks", "お題は外側の画面に",
                         "Duo を開いて持つ人が当てる役。外側の画面の前に立つ人だけがお題を見て、声を出さずに演じます。")
                     row("camera.fill", "見えるのは画面越しだけ",
@@ -441,8 +441,16 @@ struct HowToView: View {
                         "Duo を渡して、演じる人と当てる人を入れ替えます。")
                 }
                 .padding(.horizontal, 28)
+                .padding(.bottom, 36)
             }
             .scrollBounceBehavior(.basedOnSize)
+            .scrollIndicatorsFlash(onAppear: true)
+            // 続きがあることが分かるように、下の端をぼかす（文字が「とじる」の上で途中で切れて見えないように）
+            .overlay(alignment: .bottom) {
+                LinearGradient(colors: [.black.opacity(0), .black], startPoint: .top, endPoint: .bottom)
+                    .frame(height: 44)
+                    .allowsHitTesting(false)
+            }
             Button("とじる", action: close)
                 .buttonStyle(PillButtonStyle())
                 .padding(.horizontal, 20)
@@ -482,11 +490,16 @@ struct RevealTeaser: View {
             TimelineView(.periodic(from: .now, by: Self.step)) { context in
                 let showReal = Int(context.date.timeIntervalSinceReferenceDate / Self.step) % 2 == 1
                 VStack(spacing: 6) {
-                    Text(showReal ? "ほんとはコレ" : "当てる人に見えてたのは")
+                    // 札の幅は写真と同じに固定する（文字の長さで札が伸びると、カードの右端で切れる）
+                    Text(showReal ? "ほんとはコレ" : "見えてたのは")
                         .font(.system(size: 11, weight: .heavy))
+                        .lineLimit(1).minimumScaleFactor(0.6)
                         .foregroundStyle(showReal ? .white : .black)
-                        .padding(.horizontal, 8).frame(height: 22)
+                        .padding(.horizontal, 8)
+                        .frame(width: 108, height: 22)
                         .background(showReal ? Color.black.opacity(0.75) : Theme.accent, in: Capsule())
+                        .id(showReal)
+                        .transition(.opacity)
                     Image(uiImage: showReal ? real : seen)
                         .resizable().scaledToFill()
                         .frame(width: 108, height: 192)
@@ -1123,6 +1136,11 @@ struct CountdownView: View {
             VStack(spacing: 12) {
                 ZStack {
                     Circle().stroke(Color(white: 0.25), lineWidth: 6)
+                    // シャッターの中が黄色く満ちていく（読み込み中の輪に見えないように）
+                    Circle()
+                        .fill(Theme.accent)
+                        .padding(11)
+                        .scaleEffect(CGFloat(4 - n) / 3)
                     Circle()
                         .trim(from: 0, to: CGFloat(4 - n) / 3)
                         .stroke(.white, style: StrokeStyle(lineWidth: 6, lineCap: .round))
