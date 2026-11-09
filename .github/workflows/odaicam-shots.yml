@@ -33,18 +33,19 @@ jobs:
           brew install xcodegen ffmpeg coreutils
 
       - name: Sample clip
-        # 偽カメラに流す人の動画。The Grizzly Bear Dance (1913)、パブリックドメイン（Wikimedia Commons）。
+        # 偽カメラに流す人の動画：今どきの部屋で 1 人が全身で元気に動くカラーの実写
+        # （Mixkit「Girl doing exercise lively and happy」、Mixkit Stock Video Free License。リポジトリには入れない）。
         # 取れなければアプリが描く人形で代わりにする（テストは続ける）
         run: |
           set -uo pipefail
           mkdir -p TestAssets
-          SRC="$RUNNER_TEMP/src.webm"
+          SRC="$RUNNER_TEMP/src.mp4"
           if curl -fsSL --retry 3 -A "OdaiCamCI/1.0 (https://github.com/YutoNishimura-v2)" -o "$SRC" \
-               "https://upload.wikimedia.org/wikipedia/commons/5/55/The_Grizzly_Bear_Dance_%281913%29.webm" \
+               "https://assets.mixkit.co/videos/5062/5062-720.mp4" \
              && (command -v ffmpeg || brew install ffmpeg) > /dev/null; then
             # 真ん中を縦長に切り出し、10 秒・30 コマ/秒・音なし
-            ffmpeg -y -loglevel error -ss 14 -t 10 -i "$SRC" \
-              -vf "crop=ih*9/16:ih,scale=540:960,fps=30,format=yuv420p" -an -c:v libx264 -crf 28 \
+            ffmpeg -y -loglevel error -t 10 -i "$SRC" \
+              -vf "crop='min(iw,ih*9/16)':'min(ih,iw*16/9)',scale=540:960,fps=30,format=yuv420p" -an -c:v libx264 -crf 23 \
               TestAssets/fake-camera.mp4 || rm -f TestAssets/fake-camera.mp4
           fi
           ls -la TestAssets
