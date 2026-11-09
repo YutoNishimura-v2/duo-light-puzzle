@@ -852,7 +852,8 @@ struct DeckSheet: View {
             Text(verbatim: "\(countText(deck)) · \(sample)")
                 .font(.system(size: 12, weight: .semibold))
                 .foregroundStyle(.white.opacity(0.85))
-                .lineLimit(1)
+                // 英語の例は長いので 2 行まで（1 行だと「Lifeg…」のように切れた）
+                .lineLimit(2, reservesSpace: true)
                 .padding(.top, 2)
         }
         .foregroundStyle(.white)
@@ -1240,9 +1241,9 @@ struct PlayView: View {
             // 上：左にやめる、中央に大きな残り時間、右に大きな正解数（Heads Up! と同じく、時間と点が主役。ロゴは出さない）
             ZStack {
                 TimerText(remaining: game.remaining, size: 46)
-                HStack {
+                // 右上は外側の画面のカメラの穴に重なるので、正解数は左の × の隣に置く
+                HStack(spacing: 8) {
                     BarButton(symbol: "xmark", label: "やめる") { confirmQuit = true }
-                    Spacer()
                     HStack(spacing: 6) {
                         Image(systemName: "checkmark").font(.system(size: 18, weight: .heavy))
                         Text("\(game.score)").font(Theme.timer(30))
@@ -1262,6 +1263,7 @@ struct PlayView: View {
                         scoreBump = true
                         DispatchQueue.main.asyncAfter(deadline: .now() + 0.22) { scoreBump = false }
                     }
+                    Spacer()
                 }
                 .padding(.horizontal, 10)
             }
