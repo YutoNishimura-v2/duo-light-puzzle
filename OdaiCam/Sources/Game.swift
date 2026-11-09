@@ -150,6 +150,8 @@ final class Game {
                 tick.impactOccurred()
                 Sound.tick()
                 try? await Task.sleep(for: .seconds(1))
+                // カウントダウン中に「やめる」を押したら、プレイに進まない
+                if Task.isCancelled { return }
             }
             phase = .playing
             Sound.go()
@@ -166,6 +168,8 @@ final class Game {
                 if remaining <= 0 { break }
                 try? await Task.sleep(for: .milliseconds(100))
             }
+            // 途中でやめたとき（backToMenu）は結果の画面に進まない
+            if Task.isCancelled { return }
             finishRound()
         }
     }

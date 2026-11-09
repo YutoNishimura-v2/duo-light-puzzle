@@ -106,6 +106,7 @@ struct GuesserView: View {
             }
             // シートの中も左右の安全領域を使い切る（外側の画面で右に寄りが出ていた）
             .ignoresSafeArea(edges: .horizontal)
+            .presentationDragIndicator(.visible)
         }
         .sheet(isPresented: $showHowTo) {
             HowToView { showHowTo = false }
@@ -116,6 +117,7 @@ struct GuesserView: View {
             DeckSheet(game: game, editingDeck: $editingDeck)
                 .ignoresSafeArea(edges: .horizontal)
                 .presentationDetents([.large])
+                .presentationDragIndicator(.visible)
                 .presentationBackground(Color(white: 0.06))
                 .presentationCornerRadius(36)
         }
@@ -178,6 +180,8 @@ struct GuesserView: View {
     private var previewEffect: Effect? {
         guard game.phase == .menu, game.effectsOn else { return nil }
         if let fixed = game.fixedEffect { return fixed }
+        // 初めての人には、右上の見本カードと同じ着ぐるみだけを見せる（見え方が 2 つ並ぶと、どれが相手に見える姿か迷う。批評 r2）
+        if !onboarded { return .costume }
         let cycle: [Effect] = [.stick, .mosaic, .costume, .space, .silhouette, .sea, .stage, .classroom, .peephole]
         return cycle[previewCycle % cycle.count]
     }
@@ -260,15 +264,27 @@ struct GuesserView: View {
     }
 }
 
+/// 画面の確認用の絵（見本カードと同じ、部屋で演じる人とクマの着ぐるみ）。
+/// シミュレーターにはカメラがないので、-shot の画面ではこれをカメラと「しばり」の代わりに出す
+enum SampleArt {
+    static let real = RevealTeaser.image("TeaserReal")
+    static let seen = RevealTeaser.image("TeaserSeen")
+    /// モザイクの代わり（人の絵を 18x32 まで縮めて、引き伸ばしたときに粗く見せる）
+    static let mosaic: UIImage? = real.map { image in
+        UIGraphicsImageRenderer(size: CGSize(width: 18, height: 32)).image { _ in
+            image.draw(in: CGRect(x: 0, y: 0, width: 18, height: 32))
+        }
+    }
+}
+
 /// 画面の確認用の背景（カメラの代わり）
 struct SampleScene: View {
     var body: some View {
-        ZStack {
+        if let real = SampleArt.real {
+            Color.black.overlay { Image(uiImage: real).resizable().scaledToFill() }.clipped()
+        } else {
             LinearGradient(colors: [Color(red: 0.55, green: 0.6, blue: 0.68), Color(red: 0.22, green: 0.2, blue: 0.2)],
                            startPoint: .top, endPoint: .bottom)
-            Image(systemName: "figure.arms.open")
-                .font(.system(size: 260, weight: .ultraLight))
-                .foregroundStyle(.white.opacity(0.45))
         }
     }
 }
@@ -384,6 +400,10 @@ struct SampleSeen: View {
                         .foregroundStyle(Color(red: 0.93, green: 0.43, blue: 0.33))
                         .shadow(color: .black.opacity(0.4), radius: 12, y: 6)
                 }
+        } else if effect == .costume, let seen = SampleArt.seen {
+            Color.black.overlay { Image(uiImage: seen).resizable().scaledToFill() }.clipped()
+        } else if effect == .mosaic, let mosaic = SampleArt.mosaic {
+            Color.black.overlay { Image(uiImage: mosaic).resizable().interpolation(.none).scaledToFill() }.clipped()
         } else {
             SampleStick()
         }
@@ -420,28 +440,31 @@ struct HowToView: View {
     var body: some View {
         VStack(spacing: 0) {
             ScrollView {
-                VStack(alignment: .leading, spacing: 30) {
-                    VStack(alignment: .leading, spacing: 10) {
+                // 6 項目が「とじる」の上に 1 画面で収まるように、間と頭を詰める（切れて見えないように。2026-11-09 批評 r2）
+                VStack(alignment: .leading, spacing: 18) {
+                    VStack(alignment: .leading, spacing: 8) {
                         Text("遊び方").font(Theme.bold(17)).foregroundStyle(Theme.secondary)
-                        Wordmark(size: 46)
+                        Wordmark(size: 40)
                     }
-                    .padding(.top, 32)
-                    .padding(.bottom, 2)
-                    row("theatermasks", "お題は外側の画面に",
-                        "Duo を開いて持つ人が当てる役。外側の画面の前に立つ人だけがお題を見て、声を出さずに演じます。")
-                    row("camera.fill", "見えるのは画面越しだけ",
-                        "当てる人はカメラに映った姿だけで当てます。顔を上げて直接見るとカンニング。1 回目は注意、2 回目から −1 点。")
-                    row("waveform", "答えは声に出すだけ",
+                    .padding(.top, 24)
+                    // 各項目は色付きの丸い絵＋1 行（文字だけの説明書に見えないように。2026-11-09 批評 r3）
+                    row("theatermasks", .orange, "お題は外側の画面に",
+                        "外の画面の人だけがお題を見て、無言で演じる。")
+                    row("camera.fill", .blue, "見えるのは画面越しだけ",
+                        "画面だけで当てる。直接見たらカンニング。")
+                    row("waveform", .green, "答えは声に出すだけ",
                         "合っていれば自動で次のお題へ。")
-                    row("figure.stand", "しばりで見え方が変わる",
-                        "当てる人には、棒人間・モザイク・着ぐるみ・影絵などに変わって見えます。シャッターの下の列で選べて、「おまかせ」ならお題ごとに入れ替わります。「しばりなし」はそのままの姿。")
-                    row("play.rectangle", "最後に種明かし",
-                        "当てる人に見えていた画面と、本当の演技を並べた動画ができます。そのまま TikTok やストーリーズに。")
-                    row("arrow.triangle.2.circlepath", "役を交代してもう一回",
-                        "Duo を渡して、演じる人と当てる人を入れ替えます。")
+                    row("figure.stand", .purple, "しばりで見え方が変わる",
+                        "棒人間・モザイク・着ぐるみなどに変身。")
+                    row("play.rectangle.fill", .pink, "最後に種明かし",
+                        "見えていた姿と本当の演技を並べた動画に。")
+                    row("arrow.triangle.2.circlepath", .teal, "役を交代してもう一回",
+                        "Duo を渡して、演じる人と当てる人を交代。")
                 }
+                // 幅いっぱいに広げて左に寄せる（中身の幅で中央に置かれ、日英で左の余白が違った。2026-11-09 批評 r4）
+                .frame(maxWidth: .infinity, alignment: .leading)
                 .padding(.horizontal, 28)
-                .padding(.bottom, 36)
+                .padding(.bottom, 20)
             }
             .scrollBounceBehavior(.basedOnSize)
             .scrollIndicatorsFlash(onAppear: true)
@@ -459,15 +482,17 @@ struct HowToView: View {
         .background(Color.black.ignoresSafeArea())
     }
 
-    private func row(_ symbol: String, _ title: LocalizedStringKey, _ text: LocalizedStringKey) -> some View {
-        HStack(alignment: .top, spacing: 16) {
+    private func row(_ symbol: String, _ tint: Color, _ title: LocalizedStringKey, _ text: LocalizedStringKey) -> some View {
+        HStack(alignment: .center, spacing: 14) {
             Image(systemName: symbol)
-                .font(.system(size: 24, weight: .semibold))
+                .font(.system(size: 22, weight: .bold))
                 .foregroundStyle(.white)
-                .frame(width: 34)
-            VStack(alignment: .leading, spacing: 4) {
+                .frame(width: 50, height: 50)
+                .background(LinearGradient(colors: [tint, tint.mix(with: .black, by: 0.3)],
+                                           startPoint: .topLeading, endPoint: .bottomTrailing), in: Circle())
+            VStack(alignment: .leading, spacing: 3) {
                 Text(title).font(Theme.bold(17)).foregroundStyle(.white)
-                Text(text).font(.system(size: 15)).foregroundStyle(Theme.secondary)
+                Text(text).font(.system(size: 14)).foregroundStyle(Theme.secondary)
                     .fixedSize(horizontal: false, vertical: true)
             }
         }
@@ -476,10 +501,11 @@ struct HowToView: View {
 
 // MARK: - 初めての人への見本（種明かしがどういうものか、開いて 10 秒で分かるように）
 
-/// 当てる人に見えていた画面（着ぐるみ）と、本当の演技（本人）を、同じポーズで交互に見せる小さなカード
+/// 当てる人に見えていた画面（着ぐるみ）と、本当の演技（本人）を、同じポーズで横に並べた小さなカード。
+/// 交互に切り替えていたときは、着ぐるみの瞬間にファインダーの着ぐるみと同じ絵が 2 つ並んで見えた（2026-11-09 批評 r4）。
+/// 種明かし動画と同じく 2 枚を並べて止めておけば、どの瞬間に見ても「見えていた姿 ⇄ 本当の姿」の見本になる
 struct RevealTeaser: View {
-    static let step = 1.6
-    private static func image(_ name: String) -> UIImage? {
+    static func image(_ name: String) -> UIImage? {
         Bundle.main.url(forResource: name, withExtension: "jpg").flatMap { UIImage(contentsOfFile: $0.path) }
     }
     private let seen = RevealTeaser.image("TeaserSeen")
@@ -487,31 +513,30 @@ struct RevealTeaser: View {
 
     var body: some View {
         if let seen, let real {
-            TimelineView(.periodic(from: .now, by: Self.step)) { context in
-                let showReal = Int(context.date.timeIntervalSinceReferenceDate / Self.step) % 2 == 1
-                VStack(spacing: 6) {
-                    // 札の幅は写真と同じに固定する（文字の長さで札が伸びると、カードの右端で切れる）
-                    Text(showReal ? "ほんとはコレ" : "見えてたのは")
-                        .font(.system(size: 11, weight: .heavy))
-                        .lineLimit(1).minimumScaleFactor(0.6)
-                        .foregroundStyle(showReal ? .white : .black)
-                        .padding(.horizontal, 8)
-                        .frame(width: 108, height: 22)
-                        .background(showReal ? Color.black.opacity(0.75) : Theme.accent, in: Capsule())
-                        .id(showReal)
-                        .transition(.opacity)
-                    Image(uiImage: showReal ? real : seen)
-                        .resizable().scaledToFill()
-                        .frame(width: 108, height: 192)
-                        .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
-                        .overlay(RoundedRectangle(cornerRadius: 14, style: .continuous).stroke(.black, lineWidth: 3))
-                        .id(showReal)
-                        .transition(.opacity)
-                }
-                .animation(.easeInOut(duration: 0.35), value: showReal)
+            HStack(spacing: 6) {
+                panel(seen, label: "見えてたのは", dark: false)
+                panel(real, label: "ほんとはコレ", dark: true)
             }
             .accessibilityElement(children: .ignore)
             .accessibilityLabel("種明かしの見本：当てる人に見えていた着ぐるみと、本当の演技")
+        }
+    }
+
+    private func panel(_ image: UIImage, label: LocalizedStringKey, dark: Bool) -> some View {
+        VStack(spacing: 5) {
+            // 札の幅は写真と同じに固定する（文字の長さで札が伸びると、カードの右端で切れる）
+            Text(label)
+                .font(.system(size: 10, weight: .heavy))
+                .lineLimit(1).minimumScaleFactor(0.6)
+                .foregroundStyle(dark ? .white : .black)
+                .padding(.horizontal, 4)
+                .frame(width: 84, height: 20)
+                .background(dark ? Color.black.opacity(0.75) : Theme.accent, in: Capsule())
+            Image(uiImage: image)
+                .resizable().scaledToFill()
+                .frame(width: 84, height: 150)
+                .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+                .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous).stroke(.black, lineWidth: 3))
         }
     }
 }
@@ -551,9 +576,14 @@ struct HomeView: View {
         }
     }
 
-    /// しばりなしが先頭、背景 → 姿の順、おまかせは最後（UI テストはこの順に押す）。
-    /// 最初に選ばれているのは Game.firstRunMode（おまかせ）で、開いたときにその項目まで中央に寄せる
-    private let modes: [Mode] = [.none] + Effect.allCases.map { .fixed($0) } + [.random]
+    /// しばりなしが先頭、姿を変える 4 つ、おまかせ、背景とそのほかの順（UI テストはこの順に押す）。
+    /// 最初に選ばれているのは Game.firstRunMode（おまかせ）で、開いたときにその項目まで中央に寄せる。
+    /// おまかせを列の真ん中に置くのは、最後に置いたら中央に寄せたとき右半分が空いたため（2026-11-09 批評 r4）
+    private let modes: [Mode] = {
+        let effects = Effect.allCases.map { Mode.fixed($0) }
+        let figures = Array(effects.prefix(Game.figureEffects.count))
+        return [.none] + figures + [.random] + effects.dropFirst(figures.count)
+    }()
     private static let lengths: [Double] = [30, 60, 90]
 
     private var mode: Mode {
@@ -584,7 +614,8 @@ struct HomeView: View {
                     if let seenFrame, game.effectsOn {
                         EffectFrame(image: seenFrame)
                     } else if Shot.name != nil, game.effectsOn {
-                        SampleSeen(effect: game.fixedEffect ?? .space)
+                        // おまかせのときは、初めての人には見本カードと同じ着ぐるみ、それ以外はモザイクを見せる（実機の previewEffect と同じ考え）
+                        SampleSeen(effect: game.fixedEffect ?? (firstRun ? .costume : .mosaic))
                     }
                     VStack(spacing: 10) {
                         // 初めての人には、右上に種明かしの見本を流す（最初の設定に関係なく、何が起きるゲームかが分かる）
@@ -681,7 +712,7 @@ struct HomeView: View {
                     .frame(width: 52, height: 52)
                     .background(Theme.surface, in: Circle())
                 Text(game.deck.title)
-                    .font(.system(size: 11, weight: .bold))
+                    .font(.system(size: 13, weight: .bold))
                     .lineLimit(1)
             }
             .foregroundStyle(.white)
@@ -703,7 +734,11 @@ struct HomeView: View {
                     .contentTransition(.numericText())
                     .frame(width: 52, height: 52)
                     .background(Theme.surface, in: Circle())
-                Text("秒").font(.system(size: 11, weight: .bold))
+                // 押すと 30・60・90 秒に変わることが分かるように、回る矢印を添える
+                HStack(spacing: 3) {
+                    Text("秒").font(.system(size: 13, weight: .bold))
+                    Image(systemName: "arrow.triangle.2.circlepath").font(.system(size: 9, weight: .bold))
+                }
             }
             .foregroundStyle(.white)
             .frame(width: 64)
@@ -728,10 +763,10 @@ struct HomeView: View {
                                 // 名前の上に小さな絵を出し、押すと見え方が変わることを一目で分かるようにする
                                 VStack(spacing: 4) {
                                     Image(systemName: m.symbol)
-                                        .font(.system(size: 15, weight: .semibold))
+                                        .font(.system(size: 14, weight: .semibold))
                                         .frame(height: 18)
                                     Text(m.title)
-                                        .font(.system(size: 15, weight: .heavy))
+                                        .font(.system(size: 13, weight: .heavy))
                                         .fixedSize()
                                 }
                                 .foregroundStyle(m == mode ? .white : Theme.secondary)
@@ -780,44 +815,28 @@ struct DeckSheet: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            ZStack {
-                Text("山札").font(Theme.bold(22))
-                HStack {
-                    Spacer()
-                    Button { dismiss() } label: {
-                        Image(systemName: "xmark")
-                            .font(.system(size: 16, weight: .bold))
-                            .foregroundStyle(.white)
-                            .frame(width: 40, height: 40)
-                            .background(Color(white: 0.2), in: Circle())
-                    }
-                    .buttonStyle(PressStyle())
-                    .accessibilityLabel("閉じる")
-                }
-            }
-            .padding(.horizontal, 20)
-            .padding(.top, 24)
-            .padding(.bottom, 20)
+            SheetHeader(title: "山札") { dismiss() }
             ScrollView {
-                VStack(spacing: 10) {
-                    ForEach(Deck.forDevice + (CustomDeck.deck.map { [$0] } ?? [])) { deck in
-                        let selected = game.deck.id == deck.id
-                        Button {
-                            game.deck = deck
-                            dismiss()
-                        } label: {
-                            card(symbol: deck.symbol, title: deck.title, text: summary(deck), selected: selected)
+                VStack(spacing: 12) {
+                    // 山札は色付きのタイルを 2 列に並べる（Heads Up! の山札の棚と同じく、選ぶこと自体を楽しく）
+                    LazyVGrid(columns: [GridItem(.flexible(), spacing: 12), GridItem(.flexible(), spacing: 12)], spacing: 12) {
+                        ForEach(Deck.forDevice + (CustomDeck.deck.map { [$0] } ?? [])) { deck in
+                            let selected = game.deck.id == deck.id
+                            Button {
+                                game.deck = deck
+                                dismiss()
+                            } label: {
+                                tile(deck, selected: selected)
+                            }
+                            .buttonStyle(PressStyle())
+                            .accessibilityAddTraits(selected ? .isSelected : [])
                         }
-                        .buttonStyle(PressStyle())
-                        .accessibilityAddTraits(selected ? .isSelected : [])
                     }
                     Button {
                         dismiss()
                         editingDeck = true
                     } label: {
-                        card(symbol: CustomDeck.deck == nil ? "plus" : "square.and.pencil",
-                             title: CustomDeck.deck == nil ? String(localized: "お題帳をつくる") : String(localized: "お題帳を編集"),
-                             text: String(localized: "友だちの名前や内輪ネタで遊ぶ"), selected: false)
+                        makeOwn
                     }
                     .buttonStyle(PressStyle())
                 }
@@ -828,31 +847,82 @@ struct DeckSheet: View {
         .foregroundStyle(.white)
     }
 
-    /// 山札のカードの 2 行目（「ゴリラ、ペンギン、カンガルー など 50 枚」）。お題の区切りは山札の言葉に合わせる
-    private func summary(_ deck: Deck) -> String {
-        let sample = deck.prompts.prefix(3).joined(separator: deck.language == "ja" ? "、" : ", ")
-        return String(localized: "\(sample) など \(deck.prompts.count) 枚")
+    /// 枚数（「50 枚」「65 cards」）
+    private func countText(_ deck: Deck) -> String {
+        String(localized: "\(deck.prompts.count) 枚")
     }
 
-    private func card(symbol: String, title: String, text: String, selected: Bool) -> some View {
-        HStack(spacing: 18) {
-            Image(systemName: symbol)
-                .font(.system(size: 22, weight: .semibold))
-                .frame(width: 30)
-            VStack(alignment: .leading, spacing: 3) {
-                Text(title).font(Theme.bold(19))
-                Text(text).font(.system(size: 14, weight: .medium))
-                    .foregroundStyle(selected ? Color(white: 0.4) : Theme.secondary)
+    /// 山札のタイル：山札の色の地に大きな絵、題、枚数、お題の例。選んだものは白い縁とチェック
+    private func tile(_ deck: Deck, selected: Bool) -> some View {
+        let shape = RoundedRectangle(cornerRadius: 22, style: .continuous)
+        let sample = deck.prompts.prefix(2).joined(separator: deck.language == "ja" ? "、" : ", ")
+        return VStack(alignment: .leading, spacing: 0) {
+            Image(systemName: deck.symbol)
+                .font(.system(size: 30, weight: .bold))
+                .frame(width: 56, height: 56)
+                .background(.white.opacity(0.22), in: Circle())
+            Spacer(minLength: 10)
+            Text(deck.title)
+                .font(Theme.heavy(22))
+                .lineLimit(1).minimumScaleFactor(0.7)
+            Text(verbatim: "\(countText(deck)) · \(sample)")
+                .font(.system(size: 12, weight: .semibold))
+                .foregroundStyle(.white.opacity(0.85))
+                // 英語の例は長いので 2 行まで（1 行だと「Lifeg…」のように切れた）
+                .lineLimit(2, reservesSpace: true)
+                .padding(.top, 2)
+        }
+        .foregroundStyle(.white)
+        .padding(16)
+        .frame(maxWidth: .infinity, minHeight: 150, alignment: .topLeading)
+        .background {
+            ZStack(alignment: .topTrailing) {
+                LinearGradient(colors: [deck.tint, deck.tint.mix(with: .black, by: 0.35)],
+                               startPoint: .topLeading, endPoint: .bottomTrailing)
+                // 右上に大きな絵を薄く敷いて、色の板ではなく「絵のあるカード」に見せる。
+                // 右下に置いたら英語の 2 行の例の文字と重なったので、文字のない右上へ（2026-11-09 批評 r4）
+                Image(systemName: deck.symbol)
+                    .font(.system(size: 80, weight: .bold))
+                    .foregroundStyle(.white.opacity(0.1))
+                    .offset(x: 16, y: -12)
+            }
+        }
+        .clipShape(shape)
+        .overlay(shape.strokeBorder(.white, lineWidth: selected ? 4 : 0))
+        .overlay(alignment: .topTrailing) {
+            if selected {
+                Image(systemName: "checkmark.circle.fill")
+                    .font(.system(size: 26, weight: .bold))
+                    .symbolRenderingMode(.palette)
+                    .foregroundStyle(.black, .white)
+                    .padding(12)
+            }
+        }
+        .contentShape(shape)
+    }
+
+    /// 自分の山札をつくる（タイルの下に横長で。点線の縁で「新しく足す」ものに見せる）
+    private var makeOwn: some View {
+        let shape = RoundedRectangle(cornerRadius: 22, style: .continuous)
+        return HStack(spacing: 14) {
+            Image(systemName: CustomDeck.deck == nil ? "plus" : "square.and.pencil")
+                .font(.system(size: 20, weight: .bold))
+                .frame(width: 44, height: 44)
+                .background(Color(white: 0.2), in: Circle())
+            VStack(alignment: .leading, spacing: 2) {
+                Text(CustomDeck.deck == nil ? LocalizedStringKey("自分の山札をつくる") : LocalizedStringKey("自分の山札を編集"))
+                    .font(Theme.bold(17))
+                Text("友だちの名前や内輪ネタで遊ぶ").font(.system(size: 13, weight: .medium))
+                    .foregroundStyle(Theme.secondary)
                     .lineLimit(1)
             }
             Spacer(minLength: 0)
         }
-        .foregroundStyle(selected ? .black : .white)
-        .padding(.horizontal, 20)
-        .frame(maxWidth: .infinity, minHeight: 84, alignment: .leading)
-        .background(selected ? Color.white : Theme.surface,
-                    in: RoundedRectangle(cornerRadius: Theme.cardRadius, style: .continuous))
-        .contentShape(Rectangle())
+        .padding(.horizontal, 16)
+        .frame(maxWidth: .infinity, minHeight: 76, alignment: .leading)
+        .background(Theme.surface, in: shape)
+        .overlay(shape.strokeBorder(Color(white: 0.3), style: StrokeStyle(lineWidth: 1.5, dash: [6, 5])))
+        .contentShape(shape)
     }
 }
 
@@ -886,7 +956,7 @@ struct SettingsSheet: View {
                         toggleRow("eye", "カンニング禁止", isOn: $game.cheatGuard, enabled: innerReady)
                     }
                     group {
-                        linkRow("square.and.pencil", "お題帳を編集") { editingDeck = true }
+                        linkRow("square.and.pencil", "自分の山札を編集") { editingDeck = true }
                         divider
                         linkRow("questionmark.circle", "遊び方", action: replayOnboarding)
                     }
@@ -1031,7 +1101,8 @@ struct SettingsSheet: View {
     }
 }
 
-/// シートの頭：中央の題と、右上の丸い「×」
+/// シートの頭：中央の題と、左上の丸い「×」
+/// （右上は外側の画面のカメラの穴に重なるので、× は左に置く。2026-11-09 批評 r2）
 struct SheetHeader: View {
     let title: LocalizedStringKey
     let close: () -> Void
@@ -1040,7 +1111,6 @@ struct SheetHeader: View {
         ZStack {
             Text(title).font(Theme.bold(22))
             HStack {
-                Spacer()
                 Button(action: close) {
                     Image(systemName: "xmark")
                         .font(.system(size: 16, weight: .bold))
@@ -1050,6 +1120,7 @@ struct SheetHeader: View {
                 }
                 .buttonStyle(PressStyle())
                 .accessibilityLabel("閉じる")
+                Spacer()
             }
         }
         .padding(.horizontal, 20)
@@ -1079,7 +1150,7 @@ struct DeckEditor: View {
             }
             .padding(16)
             .background(Color.black)
-            .navigationTitle("お題帳")
+            .navigationTitle("自分の山札")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
@@ -1110,19 +1181,23 @@ struct CountdownView: View {
     var body: some View {
         VStack(spacing: 0) {
             VStack(spacing: 0) {
-                TopBar { Color.clear.frame(width: 44) } trailing: { Color.clear.frame(width: 44) }
-                UnderBar { TimerText(remaining: game.roundLength) }
+                // 間違えて始めたときは、左上の × ですぐホームへ戻れる
+                TopBar {
+                    BarButton(symbol: "xmark", label: "やめる") { game.backToMenu() }
+                } trailing: { Color.clear.frame(width: 44) }
+                UnderBar { TimerText(remaining: game.roundLength, size: 24) }
             }
             .background(Color.black.ignoresSafeArea(edges: .top))
 
             Viewfinder(wipe: wipe, showWipe: wipe != nil) {
                 ZStack {
                     Color.black.opacity(0.35)
+                    // 数字は差し色の黄色で、出るたびに大きく弾ませる（灰色の画面で盛り上がりが切れないように）
                     Text("\(n)")
-                        .font(.system(size: 220, weight: .heavy))
+                        .font(Theme.brand(240))
                         .monospacedDigit()
-                        .foregroundStyle(.white)
-                        .shadow(color: .black.opacity(0.3), radius: 20)
+                        .foregroundStyle(Theme.accent)
+                        .shadow(color: .black.opacity(0.55), radius: 24)
                         .id(n)
                         .transition(.asymmetric(insertion: .scale(scale: 1.3).combined(with: .opacity), removal: .opacity))
                     VStack {
@@ -1133,28 +1208,19 @@ struct CountdownView: View {
                 }
             }
 
-            VStack(spacing: 12) {
-                ZStack {
-                    Circle().stroke(Color(white: 0.25), lineWidth: 6)
-                    // シャッターの中が黄色く満ちていく（読み込み中の輪に見えないように）
-                    Circle()
-                        .fill(Theme.accent)
-                        .padding(11)
-                        .scaleEffect(CGFloat(4 - n) / 3)
-                    Circle()
-                        .trim(from: 0, to: CGFloat(4 - n) / 3)
-                        .stroke(.white, style: StrokeStyle(lineWidth: 6, lineCap: .round))
-                        .rotationEffect(.degrees(-90))
-                }
-                .frame(width: 78, height: 78)
-                .animation(.easeInOut(duration: 0.8), value: n)
-                Text("\(game.deck.title) ・ \(modeName)")
-                    .font(.system(size: 15, weight: .heavy))
+            // 数字は真ん中の 1 つだけにする（下に輪を出すと、読み込み中の印に見えて二重になった。2026-11-09 批評 r2）
+            VStack(spacing: 6) {
+                Text("\(game.deck.title)・\(modeName)")
+                    .font(.system(size: 20, weight: .heavy))
                     .foregroundStyle(.white)
-                    .frame(height: 24)
+                Text("演じる人は声を出さずに")
+                    .font(.system(size: 14, weight: .semibold))
+                    .foregroundStyle(Theme.secondary)
             }
-            .padding(.top, 19)
-            .padding(.bottom, 6)
+            .lineLimit(1).minimumScaleFactor(0.7)
+            .padding(.horizontal, 20)
+            .padding(.top, 22)
+            .padding(.bottom, 22)
             .frame(maxWidth: .infinity)
             .background(Color.black.ignoresSafeArea(edges: .bottom))
         }
@@ -1175,14 +1241,47 @@ struct PlayView: View {
     let seenFrame: CGImage?
     let wipe: CGImage?
     let voiceOn: Bool
+    @State private var confirmQuit = false
+    /// 正解した瞬間に正解数の札を跳ねさせる
+    @State private var scoreBump = false
 
     var body: some View {
         VStack(spacing: 0) {
-            VStack(spacing: 0) {
-                TopBar { Color.clear.frame(width: 44) } trailing: { Color.clear.frame(width: 44) }
-                UnderBar { TimerText(remaining: game.remaining) }
+            // 上：左にやめる、中央に大きな残り時間、右に大きな正解数（Heads Up! と同じく、時間と点が主役。ロゴは出さない）
+            ZStack {
+                TimerText(remaining: game.remaining, size: 46)
+                // 右上は外側の画面のカメラの穴に重なるので、正解数は左の × の隣に置く
+                HStack(spacing: 8) {
+                    BarButton(symbol: "xmark", label: "やめる") { confirmQuit = true }
+                    HStack(spacing: 6) {
+                        Image(systemName: "checkmark").font(.system(size: 18, weight: .heavy))
+                        Text("\(game.score)").font(Theme.timer(30))
+                            .contentTransition(.numericText())
+                    }
+                    .foregroundStyle(.black)
+                    .padding(.horizontal, 16)
+                    .frame(minWidth: 76, minHeight: 48)
+                    .background(Theme.accent, in: Capsule())
+                    .scaleEffect(scoreBump ? 1.18 : 1)
+                    .animation(.spring(response: 0.25, dampingFraction: 0.5), value: scoreBump)
+                    .animation(.snappy, value: game.score)
+                    .accessibilityElement(children: .ignore)
+                    .accessibilityLabel(String(localized: "正解 \(game.score)"))
+                    .onChange(of: game.score) { old, new in
+                        guard new > old else { return }
+                        scoreBump = true
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.22) { scoreBump = false }
+                    }
+                    Spacer()
+                }
+                .padding(.horizontal, 10)
             }
+            .frame(height: 80)
             .background(Color.black.ignoresSafeArea(edges: .top))
+            .confirmationDialog("ラウンドをやめる？", isPresented: $confirmQuit, titleVisibility: .visible) {
+                Button("やめてホームへ", role: .destructive) { game.backToMenu() }
+                Button("続ける", role: .cancel) {}
+            }
 
             Viewfinder(wipe: wipe, showWipe: wipe != nil && game.current?.effect != .peephole) {
                 ZStack {
@@ -1205,11 +1304,8 @@ struct PlayView: View {
                                     .id(effect)
                                     .transition(.blurReplace)
                             }
-                            Chip(symbol: "checkmark", text: "\(game.score)")
-                                .contentTransition(.numericText())
                         }
                         .animation(.snappy, value: game.current?.effect)
-                        .animation(.snappy, value: game.score)
                         Spacer()
                         if voiceOn {
                             HStack(spacing: 8) {
@@ -1231,7 +1327,7 @@ struct PlayView: View {
 
             HStack(spacing: 12) {
                 Button { game.answer(.pass) } label: { Text("パス") }
-                    .buttonStyle(PillButtonStyle(primary: false, height: 60, fontSize: 19))
+                    .buttonStyle(PillButtonStyle(primary: false, height: 60, fontSize: 19, raised: true))
                 Button { game.answer(.correct) } label: {
                     HStack(spacing: 6) {
                         Text("正解")
@@ -1357,56 +1453,70 @@ struct ResultsView: View {
         .onDisappear { player.stop() }
     }
 
-    /// 投稿の頭（当てる人の顔・山札・点数は小さく）
+    /// 投稿の頭：点数を大きく中央に（パーティーゲームの盛り上がりの中心）。その下に当てる人の顔・山札・明細。
+    /// 右端は外側の画面のカメラの穴に重なるので、何も置かない
     private var header: some View {
-        HStack(spacing: 10) {
-            Group {
-                if let face {
-                    Image(decorative: face, scale: 1).resizable().scaledToFill()
-                } else if Shot.name != nil {
-                    SampleFace()
-                } else {
-                    Image(systemName: "person.fill")
-                        .font(.system(size: 20, weight: .bold))
+        VStack(spacing: 6) {
+            HStack(alignment: .center, spacing: 10) {
+                HStack(alignment: .firstTextBaseline, spacing: 3) {
+                    Text("\(game.score)").font(Theme.timer(60))
+                    Text("点").font(Theme.heavy(22))
+                }
+                .fixedSize()
+                .foregroundStyle(game.isNewBest ? Theme.accent : .white)
+                .accessibilityElement(children: .ignore)
+                .accessibilityLabel(String(localized: "\(game.score) 点") + (game.isNewBest ? String(localized: "、自己ベスト") : ""))
+                .accessibilityIdentifier("score")
+                if game.isNewBest {
+                    Text("自己ベスト！")
+                        .font(.system(size: 13, weight: .heavy))
                         .foregroundStyle(.black)
-                        .frame(width: 40, height: 40)
-                        .background(Theme.accent)
+                        .padding(.horizontal, 10).frame(height: 26)
+                        .background(Theme.accent, in: Capsule())
+                        .fixedSize()
                 }
             }
-            .frame(width: 40, height: 40)
-            .clipShape(Circle())
-            .overlay(Circle().strokeBorder(.white.opacity(0.15), lineWidth: 1))
-            VStack(alignment: .leading, spacing: 2) {
-                // 1 行目の頭に点数の札（右端は外側の画面のカメラの穴に重なるので置かない）
-                HStack(spacing: 8) {
-                    // 数え上げはせず、幅も固定（途中で字が欠けないように）
-                    HStack(alignment: .firstTextBaseline, spacing: 2) {
-                        Text("\(game.score)").font(.system(size: 17, weight: .heavy).monospacedDigit())
-                        Text("点").font(.system(size: 11, weight: .bold))
-                    }
-                    .fixedSize()
-                    .padding(.horizontal, 10).frame(minWidth: 48, minHeight: 26)
-                    .background(game.isNewBest ? Theme.accent : Theme.surface, in: Capsule())
-                    .foregroundStyle(game.isNewBest ? .black : .white)
-                    .accessibilityElement(children: .ignore)
-                    .accessibilityLabel(String(localized: "\(game.score) 点") + (game.isNewBest ? String(localized: "、自己ベスト") : ""))
-                    .accessibilityIdentifier("score")
-                    Text("\(game.deck.title) ・ \(Int(game.playedLength.rounded()))秒").font(Theme.bold(15)).lineLimit(1)
-                }
-                Text(verbatim: tally)
-                    .font(.system(size: 13, weight: .medium))
-                    .foregroundStyle(Theme.secondary)
-                    .lineLimit(1)
+            HStack(spacing: 8) {
+                faceIcon
+                Text(verbatim: deckLine + "　" + tally)
+                    .font(.system(size: 13, weight: .semibold))
+                    .foregroundStyle(.white.opacity(0.8))
+                    .lineLimit(1).minimumScaleFactor(0.75)
             }
-            Spacer(minLength: 0)
         }
+        .frame(maxWidth: .infinity)
     }
 
-    /// 頭の 2 行目（「正解 4 ・ パス 1 ・ カンニング −1」）
+    /// 当てる人の顔（内側のカメラの 1 枚）。なければ人の記号
+    private var faceIcon: some View {
+        Group {
+            if let face {
+                Image(decorative: face, scale: 1).resizable().scaledToFill()
+            } else if Shot.name != nil {
+                SampleFace()
+            } else {
+                Image(systemName: "person.fill")
+                    .font(.system(size: 13, weight: .bold))
+                    .foregroundStyle(.black)
+                    .frame(width: 26, height: 26)
+                    .background(Theme.accent)
+            }
+        }
+        .frame(width: 26, height: 26)
+        .clipShape(Circle())
+        .overlay(Circle().strokeBorder(.white.opacity(0.15), lineWidth: 1))
+    }
+
+    /// 頭の 2 行目の山札と秒（「動物・60秒」）
+    private var deckLine: String {
+        String(localized: "\(game.deck.title)・\(Int(game.playedLength.rounded()))秒")
+    }
+
+    /// 頭の 2 行目の明細（「正解 4・パス 1・カンニング −1」）
     private var tally: String {
         let passes = game.turns.filter { $0.outcome == .pass }.count
-        var line = String(localized: "正解 \(game.correct) ・ パス \(passes)")
-        if game.cheats > 0 { line += String(localized: " ・ カンニング −\(game.cheats)") }
+        var line = String(localized: "正解 \(game.correct)・パス \(passes)")
+        if game.cheats > 0 { line += String(localized: "・カンニング −\(game.cheats)") }
         return line
     }
 
@@ -1551,8 +1661,20 @@ struct WaitingRecap: View {
                             .foregroundStyle(turn.outcome == .correct ? .black : .white)
                             .padding(.horizontal, 14).frame(height: 30)
                             .background(turn.outcome == .correct ? Theme.accent : Color.white.opacity(0.2), in: Capsule())
-                        Text(verbatim: "\(i + 1) / \(turns.count)")
-                            .font(.system(size: 12, weight: .semibold)).foregroundStyle(.white.opacity(0.6))
+                        // 何問目かはページの点で見せる（多いときだけ数字）
+                        if turns.count <= 12 {
+                            HStack(spacing: 6) {
+                                ForEach(0..<turns.count, id: \.self) { k in
+                                    Circle()
+                                        .fill(.white.opacity(k == i ? 0.95 : 0.3))
+                                        .frame(width: 7, height: 7)
+                                }
+                            }
+                            .frame(height: 14)
+                        } else {
+                            Text(verbatim: "\(i + 1) / \(turns.count)")
+                                .font(.system(size: 12, weight: .semibold)).foregroundStyle(.white.opacity(0.6))
+                        }
                     }
                     .id(i)
                     .transition(.scale(scale: 0.85).combined(with: .opacity))

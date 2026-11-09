@@ -5,7 +5,7 @@ import XCTest
 final class OdaiCamUITests: XCTestCase {
     /// ホームのモード列（左から順に押す。押すと中央に寄るので、隣は画面の中にある）
     /// 起動したときはしばりなし（先頭）が選ばれている
-    static let modes = ["しばりなし", "棒人間", "モザイク", "着ぐるみ", "影絵", "宇宙", "海", "教室", "ステージ", "3秒遅れ", "のぞき穴", "おまかせ"]
+    static let modes = ["しばりなし", "棒人間", "モザイク", "着ぐるみ", "影絵", "おまかせ", "宇宙", "海", "教室", "ステージ", "3秒遅れ", "のぞき穴"]
     /// 1 ラウンド遊ぶモード。背景はどれも同じ処理なので宇宙だけ（ラウンドが増えると CI の 20 分に収まらない）
     static let roundModes: Set<String> = ["しばりなし", "宇宙", "棒人間", "着ぐるみ", "影絵", "モザイク", "3秒遅れ", "のぞき穴", "おまかせ"]
     /// 1 ラウンドの秒数（起動引数で短くする）
@@ -55,7 +55,14 @@ final class OdaiCamUITests: XCTestCase {
         XCTAssertTrue(animal.waitForExistence(timeout: 5), "山札のシートが出ない")
         sleep(1)
         shot("decks")
-        assertCentered(animal, name: "山札のシートの「動物」")
+        // 山札は 2 列のタイル。1 行目の「動物」と「職業」の真ん中が、画面の中心にあるか
+        let job = app.buttons.matching(NSPredicate(format: "label CONTAINS '職業'")).firstMatch
+        XCTAssertTrue(job.exists, "山札のシートに「職業」がない")
+        let deckMid = (animal.frame.midX + job.frame.midX) / 2
+        let screen = app.windows.firstMatch.frame
+        XCTAssertLessThanOrEqual(abs(deckMid - screen.midX), screen.width * 0.05,
+                                 "山札のタイルが中心からずれている \(deckMid)（画面 \(screen)）")
+        XCTAssertLessThan(animal.frame.midX, job.frame.midX, "山札のタイルが 2 列に並んでいない")
         app.buttons["閉じる"].tap()
         sleep(1)
         app.buttons["設定"].tap()
@@ -117,8 +124,8 @@ final class OdaiCamUITests: XCTestCase {
         XCTAssertTrue(app.buttons["あそぶ"].waitForExistence(timeout: 20), "ホームが出ない")
         sleep(3)
         shot("demo-home")
-        // 起動したときはしばりなし。種明かしに見えていた画面も入るよう、おまかせ（列の最後）まで順に押す
-        for mode in Self.modes {
+        // 起動したときはしばりなし。種明かしに見えていた画面も入るよう、おまかせ（列の真ん中）まで順に押す
+        for mode in Self.modes.prefix(through: Self.modes.firstIndex(of: "おまかせ")!) {
             tapMode(mode)
             sleep(1)
         }
