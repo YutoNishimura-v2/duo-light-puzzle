@@ -464,7 +464,9 @@ final class EffectEngine: @unchecked Sendable {
                 let rendered = render(effect, input: input, source: buffer, now: now, elapsed: now - start, frameTime: time.seconds)
                 // 人が映っていたかを、録画と同じフレームの時刻で残す
                 Self.seenLog.add(time.seconds, visible: rendered.visible)
-                reportMissing(visible: rendered.visible, now: now, restart: clear)
+                // 着ぐるみは骨組みが取れなくても人の枠からクマを着せる。そのコマは映っている扱いにする
+                // （「映っていません」がクマの上に出ていた、2026-11-10 シミュレータの実写 UI テスト）
+                reportMissing(visible: rendered.visible || (effect == .costume && lastCoverDrawn), now: now, restart: clear)
                 let output = rendered.image.cropped(to: input.extent)
                 // 出口の箱は、録画の符号化と画面が持っている分だけ（6 枚まで）。足りなければこのコマは捨てる
                 guard let pb = Self.pooledBuffer(&pool, &poolSize, size: input.extent.size,
