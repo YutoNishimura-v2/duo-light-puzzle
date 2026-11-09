@@ -39,6 +39,8 @@ struct GuesserView: View {
     @State private var effects = EffectEngine()
     @State private var watch = CheatWatch()
     @State private var wipeFeed = WipeFeed()
+    /// しばりなしのときにファインダーへ出す背面のカメラの映像（全身を収めるため、下のプレビューの代わりに出す）
+    @State private var liveFeed = WipeFeed(fps: 30, longSide: 960)
     @State private var voiceReady = false
     @State private var cameraReady = false
     @State private var cameraDenied = false
@@ -46,6 +48,8 @@ struct GuesserView: View {
     @State private var innerReady = false
     /// しばりをかけた画面（当てる人はプレイ中これだけを見る）
     @State private var seenFrame: CGImage?
+    /// しばりなしの映像（全身が入るように枠の中へ縮めて出す）
+    @State private var liveFrame: CGImage?
     /// 左上の小窓に出す、内側のカメラの映像
     @State private var wipe: CGImage?
     /// 結果の画面の丸いアイコンに使う、当てる人の顔（ラウンドの終わりの小窓の 1 枚）
@@ -73,13 +77,14 @@ struct GuesserView: View {
             Group {
                 switch game.phase {
                 case .menu:
-                    HomeView(game: game, seenFrame: seenFrame, wipe: wipe, cameraReady: cameraReady,
+                    HomeView(game: game, seenFrame: seenFrame, liveFrame: liveFrame, wipe: wipe, cameraReady: cameraReady,
                              cameraDenied: cameraDenied, innerReady: innerReady, firstRun: !onboarded,
                              showSettings: $showSettings, showDecks: $showDecks)
                 case .countdown(let n):
-                    CountdownView(n: n, game: game, wipe: wipe)
+                    CountdownView(n: n, game: game, liveFrame: liveFrame, wipe: wipe)
                 case .playing:
-                    PlayView(game: game, seenFrame: seenFrame, wipe: wipe, voiceOn: game.voiceJudge && voiceReady)
+                    PlayView(game: game, seenFrame: seenFrame, liveFrame: liveFrame, wipe: wipe,
+                             voiceOn: game.voiceJudge && voiceReady)
                 case .results:
                     ResultsView(game: game, face: face)
                 }
@@ -194,14 +199,16 @@ struct GuesserView: View {
     private func applyPreview(_ effect: Effect?) {
         guard Shot.name == nil else { return }
         if effect == nil { seenFrame = nil }
+        liveFeed.setEnabled(effect == nil)
         effects.set(effect: effect, promptStart: ProcessInfo.processInfo.systemUptime)
     }
 
     private func startCamera() async {
         guard !started, Shot.name == nil else { return }
         started = true
-        game.startRecording = { [camera, effects] in
+        game.startRecording = { [camera, effects, liveFeed] in
             // カウントダウン中はしばりを止める（ホームの見え方の確認を録画に混ぜない）
+            liveFeed.setEnabled(true)
             effects.set(effect: nil, promptStart: 0)
             camera.startRecording(rotationAngle: CameraPreview.PreviewView.latestCaptureAngle)
         }
@@ -225,11 +232,16 @@ struct GuesserView: View {
         game.onWatch = { [watch] in watch.setActive($0) }
         camera.onRecordingStarted = { game.recordingStarted(at: $0) }
         camera.onRecordingFinished = { game.recordingFinished($0) }
-        camera.onVideo = { [effects] in effects.process($0, time: $1) }
+        camera.onVideo = { [effects, liveFeed] in
+            liveFeed.process($0)
+            effects.process($0, time: $1)
+        }
+        liveFeed.onImage = { liveFrame = $0 }
         effects.onPixelBuffer = { [camera] in camera.appendEffect($0, time: $1) }
         effects.onFrame = { seenFrame = $0 }
-        game.onEffect = { [effects] effect, start in
+        game.onEffect = { [effects, liveFeed] effect, start in
             if effect == nil { seenFrame = nil }
+            liveFeed.setEnabled(effect == nil)
             effects.set(effect: effect, promptStart: start)
         }
         camera.onAudio = { [listener] in listener.append($0) }
@@ -373,16 +385,23 @@ struct WipeView: View {
     }
 }
 
-/// しばりをかけた画面。画像そのものを並べると、はみ出した分だけ枠が広がり、
-/// 上に重ねたボタンが画面の外に押し出される。黒い面の重ね絵にして、枠の大きさは保つ
+/// ファインダーに出すカメラの絵（しばりをかけた絵か、しばりなしの映像）。
+/// 枠はほぼ正方形で映像は縦長なので、埋めると頭と足が切れる。
+/// 全身が入るように縮めて真ん中に置き、左右の空きは同じ絵をぼかして埋める。
+/// 画像そのものを並べると、はみ出した分だけ枠が広がり、上に重ねたボタンが画面の外に押し出される。
+/// 黒い面の重ね絵にして、枠の大きさは保つ
 struct EffectFrame: View {
     let image: CGImage
 
     var body: some View {
+        let picture = Image(decorative: image, scale: 1).resizable()
         Color.black
             .overlay {
-                Image(decorative: image, scale: 1).resizable().scaledToFill()
+                picture.scaledToFill()
+                    .blur(radius: 28, opaque: true)
+                    .overlay(Color.black.opacity(0.35))
             }
+            .overlay { picture.scaledToFit() }
             .clipped()
     }
 }
@@ -546,6 +565,7 @@ struct RevealTeaser: View {
 struct HomeView: View {
     @Bindable var game: Game
     let seenFrame: CGImage?
+    let liveFrame: CGImage?
     let wipe: CGImage?
     let cameraReady: Bool
     let cameraDenied: Bool
@@ -610,9 +630,11 @@ struct HomeView: View {
 
             Viewfinder(wipe: wipe, showWipe: innerReady && !(game.effectsOn && game.fixedEffect == .peephole)) {
                 ZStack {
-                    // 選んだしばりをその場でかけて見せる（しばりなしは下に敷いたカメラがそのまま見える）
+                    // 選んだしばりをその場でかけて見せる（しばりなしは映像を全身が入る大きさで出す）
                     if let seenFrame, game.effectsOn {
                         EffectFrame(image: seenFrame)
+                    } else if let liveFrame {
+                        EffectFrame(image: liveFrame)
                     } else if Shot.name != nil, game.effectsOn {
                         // おまかせのときは、初めての人には見本カードと同じ着ぐるみ、それ以外はモザイクを見せる（実機の previewEffect と同じ考え）
                         SampleSeen(effect: game.fixedEffect ?? (firstRun ? .costume : .mosaic))
@@ -1176,6 +1198,7 @@ struct DeckEditor: View {
 struct CountdownView: View {
     let n: Int
     let game: Game
+    let liveFrame: CGImage?
     let wipe: CGImage?
 
     var body: some View {
@@ -1191,6 +1214,7 @@ struct CountdownView: View {
 
             Viewfinder(wipe: wipe, showWipe: wipe != nil) {
                 ZStack {
+                    if let liveFrame { EffectFrame(image: liveFrame) }
                     Color.black.opacity(0.35)
                     // 数字は差し色の黄色で、出るたびに大きく弾ませる（灰色の画面で盛り上がりが切れないように）
                     Text("\(n)")
@@ -1239,6 +1263,7 @@ struct CountdownView: View {
 struct PlayView: View {
     let game: Game
     let seenFrame: CGImage?
+    let liveFrame: CGImage?
     let wipe: CGImage?
     let voiceOn: Bool
     @State private var confirmQuit = false
@@ -1295,6 +1320,9 @@ struct PlayView: View {
                             // 最初のしばりの画面が届くまでは、本人の映像を見せない
                             Color.black
                         }
+                    } else if let liveFrame {
+                        // しばりなしは、全身が入る大きさで映像を出す
+                        EffectFrame(image: liveFrame)
                     }
                     VStack {
                         HStack(spacing: 8) {
