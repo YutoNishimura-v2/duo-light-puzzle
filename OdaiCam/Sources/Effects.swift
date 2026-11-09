@@ -383,6 +383,8 @@ final class EffectEngine: @unchecked Sendable {
 
     /// しばりをかけた画面（main で呼ぶ）
     var onFrame: (@MainActor (CGImage) -> Void)?
+    /// 演じる人を 1 秒以上見つけられない（true）・また見つけた（false）（main で呼ぶ）
+    var onMissing: (@MainActor (Bool) -> Void)?
     /// 録画用（effects キューで呼ぶ）。しばりをかけた画面を同じ時刻で書く
     var onPixelBuffer: ((CVPixelBuffer, CMTime) -> Void)?
 
@@ -462,6 +464,7 @@ final class EffectEngine: @unchecked Sendable {
                 let rendered = render(effect, input: input, source: buffer, now: now, elapsed: now - start, frameTime: time.seconds)
                 // 人が映っていたかを、録画と同じフレームの時刻で残す
                 Self.seenLog.add(time.seconds, visible: rendered.visible)
+                reportMissing(visible: rendered.visible, now: now, restart: clear)
                 let output = rendered.image.cropped(to: input.extent)
                 // 出口の箱は、録画の符号化と画面が持っている分だけ（6 枚まで）。足りなければこのコマは捨てる
                 guard let pb = Self.pooledBuffer(&pool, &poolSize, size: input.extent.size,
@@ -493,6 +496,21 @@ final class EffectEngine: @unchecked Sendable {
                 }
             }
         }
+    }
+
+    /// 演じる人が見えなくなってから知らせるまでの秒数（一瞬の見失いでは出さない）
+    static let missingAfter: TimeInterval = 1.0
+    /// effects キューだけで触る：最後に人が見えた時刻と、最後に知らせた状態
+    private var lastVisibleAt: TimeInterval = 0
+    private var reportedMissing = false
+
+    /// 人が missingAfter 秒より長く見えないとき・また見えたときだけ main に知らせる。effects キューで呼ぶ
+    private func reportMissing(visible: Bool, now: TimeInterval, restart: Bool) {
+        if visible || restart || lastVisibleAt == 0 { lastVisibleAt = now }
+        let missing = now - lastVisibleAt > Self.missingAfter
+        guard missing != reportedMissing else { return }
+        reportedMissing = missing
+        Task { @MainActor [onMissing] in onMissing?(missing) }
     }
 
     /// 見比べ用：1 枚の絵にしばりをかけて返す（nil はしばりなし）。どのキューから呼んでもよいが、同時には呼ばない
@@ -837,13 +855,16 @@ final class EffectEngine: @unchecked Sendable {
     /// found は人の形が画面に十分あったか
     private func silhouette(source: CVPixelBuffer, input: CIImage, now: TimeInterval,
                             frameTime: TimeInterval) -> (image: CIImage?, found: Bool) {
+        // 人が見つからないコマも、真っ黒でなく影を映す明るい幕だけを出す
+        // （真っ黒だと、当てる人には「壊れた」のか「人が枠の外にいる」のか分からなかった）
+        let screen = CIImage(color: CIColor(red: 0.96, green: 0.93, blue: 0.85)).cropped(to: input.extent)
         let person = personMask(source: source, input: input, now: now, frameTime: frameTime, despeckle: true)
-        guard let whole = person.mask else { return (nil, false) }
+        guard let whole = person.mask else { return (screen, false) }
         let mask = humanShaped(keepForeground(whole, extent: input.extent, sharp: true), found: person.found, source: source,
                                extent: input.extent, now: now, frameTime: frameTime)
         let blend = CIFilter.blendWithMask()
         blend.inputImage = CIImage(color: CIColor(red: 0.05, green: 0.05, blue: 0.08)).cropped(to: input.extent)
-        blend.backgroundImage = CIImage(color: CIColor(red: 0.96, green: 0.93, blue: 0.85)).cropped(to: input.extent)
+        blend.backgroundImage = screen
         blend.maskImage = mask
         return (blend.outputImage, person.found)
     }

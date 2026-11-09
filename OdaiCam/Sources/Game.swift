@@ -54,6 +54,8 @@ final class Game {
     var voiceJudge = true
     /// 聞き取った言葉（当てる人に小さく見せる）
     private(set) var heard = ""
+    /// しばりが演じる人を 1 秒以上見つけられていない（両方の画面に「枠に入って」と出す）
+    private(set) var actorMissing = false
     /// 見え方しばり（おまけ）。オンのとき、当てる人はカメラ越しのしばられた画面だけで当てる
     /// 最後に選んだモードを覚えておき、次に開いたときの最初の設定にする（どのモードでも最初の設定にできる）。
     /// 試験（偽カメラ）では覚えたものを使わず、いつもしばりなしから始める
@@ -205,6 +207,11 @@ final class Game {
 
     func updateHeard(_ text: String) {
         if phase == .playing { heard = text }
+    }
+
+    /// しばりの処理から、演じる人が見えなくなった・また見えたことを受け取る
+    func updateActorMissing(_ missing: Bool) {
+        actorMissing = missing && phase == .playing && current?.effect != nil
     }
 
     func answer(_ outcome: Outcome) {

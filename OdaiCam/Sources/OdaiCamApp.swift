@@ -239,8 +239,10 @@ struct GuesserView: View {
         liveFeed.onImage = { liveFrame = $0 }
         effects.onPixelBuffer = { [camera] in camera.appendEffect($0, time: $1) }
         effects.onFrame = { seenFrame = $0 }
+        effects.onMissing = { game.updateActorMissing($0) }
         game.onEffect = { [effects, liveFeed] effect, start in
             if effect == nil { seenFrame = nil }
+            game.updateActorMissing(false)
             liveFeed.setEnabled(effect == nil)
             effects.set(effect: effect, promptStart: start)
         }
@@ -1343,6 +1345,11 @@ struct PlayView: View {
                         }
                         .animation(.snappy, value: game.current?.effect)
                         Spacer()
+                        if game.actorMissing {
+                            // しばりが人を見つけられない間、画面が空なのは壊れたからでないと分かるようにする
+                            Chip(symbol: "person.fill.questionmark", text: String(localized: "演じる人が映っていません"))
+                                .transition(.opacity)
+                        }
                         if voiceOn {
                             HStack(spacing: 8) {
                                 Image(systemName: "waveform")
@@ -1853,6 +1860,23 @@ struct ActorView: View {
         }
         .padding(24)
         .animation(.spring(response: 0.4, dampingFraction: 0.85), value: game.current?.id)
+        .overlay(alignment: .top) {
+            // カメラが演じる人を見失ったら、お題の上に大きく知らせる（当てる人の画面が空になっているため）
+            if game.actorMissing {
+                VStack(spacing: 2) {
+                    Text("カメラに映っていません").font(Theme.heavy(24))
+                    Text("少し下がって、全身を入れて").font(Theme.bold(17))
+                }
+                .foregroundStyle(.black)
+                .frame(maxWidth: .infinity)
+                .padding(.vertical, 12)
+                .background(Theme.warning, in: RoundedRectangle(cornerRadius: 18))
+                .padding(.horizontal, 16)
+                .padding(.top, 70)
+                .transition(.move(edge: .top).combined(with: .opacity))
+            }
+        }
+        .animation(.spring(response: 0.4, dampingFraction: 0.82), value: game.actorMissing)
         .overlay {
             // 当たったら演じる人にも知らせる
             TimelineView(.animation(minimumInterval: 1 / 30)) { context in

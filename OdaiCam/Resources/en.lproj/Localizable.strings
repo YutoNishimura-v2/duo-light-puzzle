@@ -150,6 +150,9 @@
 "おつかれさま" = "Nice work";
 "次は役を交代しよう" = "Now switch roles";
 "声は出さない" = "No talking";
+"カメラに映っていません" = "The camera can't see you";
+"少し下がって、全身を入れて" = "Step back so your whole body fits";
+"演じる人が映っていません" = "The actor isn't in view";
 
 /* 種明かし動画の帯（山札の言葉で引く） */
 "当てる人の顔↑　正解はコレ↓" = "Guesser's face ↑  The real thing ↓";
