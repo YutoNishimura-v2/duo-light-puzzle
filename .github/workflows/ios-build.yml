@@ -13,6 +13,10 @@ on:
         description: ターゲット名（ios-apps のリリースのタグは <app>-v<版>）
         type: string
         required: true
+      publish:
+        description: false なら IPA を成果物に置くだけで配布しない（本人の OK 前の確認用）
+        type: boolean
+        default: true
     secrets:
       IOS_APPS_TOKEN:
         required: false
@@ -73,6 +77,7 @@ jobs:
           path: ${{ inputs.dir }}/${{ inputs.app }}.ipa
 
       - name: Publish to ios-apps
+        if: ${{ inputs.publish }}
         env:
           # ios-apps の Contents: write だけを持つ fine-grained トークン（本人が作って登録する）
           GH_TOKEN: ${{ secrets.IOS_APPS_TOKEN }}

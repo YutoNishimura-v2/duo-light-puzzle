@@ -8,6 +8,11 @@ on:
       - ".github/workflows/odaicam.yml"
       - ".github/workflows/ios-build.yml"
   workflow_dispatch:
+    inputs:
+      publish:
+        description: ios-apps に配布する（false なら IPA は成果物だけ）
+        type: boolean
+        default: false
 
 concurrency:
   group: odaicam
@@ -19,4 +24,5 @@ jobs:
     with:
       dir: OdaiCam
       app: OdaiCam
+      publish: ${{ github.event_name == 'push' || inputs.publish }}
     secrets: inherit
