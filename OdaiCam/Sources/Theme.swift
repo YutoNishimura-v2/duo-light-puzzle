@@ -64,8 +64,8 @@ extension Deck {
         case "job", "en-job": "briefcase.fill"
         case "sport", "en-sport": "figure.run"
         case "action", "en-action": "hand.wave.fill"
-        case "nomikai": "wineglass.fill"
-        case "en-party": "party.popper.fill"
+        // 日英で同じ絵にそろえる（ワイングラスとクラッカーで別の山札に見えた。2026-11-09 批評 r4）
+        case "nomikai", "en-party": "party.popper.fill"
         case "couple", "en-couple": "heart.fill"
         case "aruaru", "en-relatable": "bubble.left.fill"
         case "muri", "en-impossible": "flame.fill"

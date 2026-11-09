@@ -461,6 +461,8 @@ struct HowToView: View {
                     row("arrow.triangle.2.circlepath", .teal, "役を交代してもう一回",
                         "Duo を渡して、演じる人と当てる人を交代。")
                 }
+                // 幅いっぱいに広げて左に寄せる（中身の幅で中央に置かれ、日英で左の余白が違った。2026-11-09 批評 r4）
+                .frame(maxWidth: .infinity, alignment: .leading)
                 .padding(.horizontal, 28)
                 .padding(.bottom, 20)
             }
@@ -499,9 +501,10 @@ struct HowToView: View {
 
 // MARK: - 初めての人への見本（種明かしがどういうものか、開いて 10 秒で分かるように）
 
-/// 当てる人に見えていた画面（着ぐるみ）と、本当の演技（本人）を、同じポーズで交互に見せる小さなカード
+/// 当てる人に見えていた画面（着ぐるみ）と、本当の演技（本人）を、同じポーズで横に並べた小さなカード。
+/// 交互に切り替えていたときは、着ぐるみの瞬間にファインダーの着ぐるみと同じ絵が 2 つ並んで見えた（2026-11-09 批評 r4）。
+/// 種明かし動画と同じく 2 枚を並べて止めておけば、どの瞬間に見ても「見えていた姿 ⇄ 本当の姿」の見本になる
 struct RevealTeaser: View {
-    static let step = 1.6
     static func image(_ name: String) -> UIImage? {
         Bundle.main.url(forResource: name, withExtension: "jpg").flatMap { UIImage(contentsOfFile: $0.path) }
     }
@@ -510,27 +513,30 @@ struct RevealTeaser: View {
 
     var body: some View {
         if let seen, let real {
-            TimelineView(.periodic(from: .now, by: Self.step)) { context in
-                let showReal = Int(context.date.timeIntervalSinceReferenceDate / Self.step) % 2 == 1
-                VStack(spacing: 6) {
-                    // 札の幅は写真と同じに固定する（文字の長さで札が伸びると、カードの右端で切れる）
-                    Text(showReal ? "ほんとはコレ" : "見えてたのは")
-                        .font(.system(size: 11, weight: .heavy))
-                        .lineLimit(1).minimumScaleFactor(0.6)
-                        .foregroundStyle(showReal ? .white : .black)
-                        .padding(.horizontal, 8)
-                        .frame(width: 108, height: 22)
-                        .background(showReal ? Color.black.opacity(0.75) : Theme.accent, in: Capsule())
-                    // 重ねて溶かすと、途中で 2 枚が透けて見えるので、すぱっと切り替える
-                    Image(uiImage: showReal ? real : seen)
-                        .resizable().scaledToFill()
-                        .frame(width: 108, height: 192)
-                        .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
-                        .overlay(RoundedRectangle(cornerRadius: 14, style: .continuous).stroke(.black, lineWidth: 3))
-                }
+            HStack(spacing: 6) {
+                panel(seen, label: "見えてたのは", dark: false)
+                panel(real, label: "ほんとはコレ", dark: true)
             }
             .accessibilityElement(children: .ignore)
             .accessibilityLabel("種明かしの見本：当てる人に見えていた着ぐるみと、本当の演技")
+        }
+    }
+
+    private func panel(_ image: UIImage, label: LocalizedStringKey, dark: Bool) -> some View {
+        VStack(spacing: 5) {
+            // 札の幅は写真と同じに固定する（文字の長さで札が伸びると、カードの右端で切れる）
+            Text(label)
+                .font(.system(size: 10, weight: .heavy))
+                .lineLimit(1).minimumScaleFactor(0.6)
+                .foregroundStyle(dark ? .white : .black)
+                .padding(.horizontal, 4)
+                .frame(width: 84, height: 20)
+                .background(dark ? Color.black.opacity(0.75) : Theme.accent, in: Capsule())
+            Image(uiImage: image)
+                .resizable().scaledToFill()
+                .frame(width: 84, height: 150)
+                .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+                .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous).stroke(.black, lineWidth: 3))
         }
     }
 }
@@ -570,9 +576,14 @@ struct HomeView: View {
         }
     }
 
-    /// しばりなしが先頭、背景 → 姿の順、おまかせは最後（UI テストはこの順に押す）。
-    /// 最初に選ばれているのは Game.firstRunMode（おまかせ）で、開いたときにその項目まで中央に寄せる
-    private let modes: [Mode] = [.none] + Effect.allCases.map { .fixed($0) } + [.random]
+    /// しばりなしが先頭、姿を変える 4 つ、おまかせ、背景とそのほかの順（UI テストはこの順に押す）。
+    /// 最初に選ばれているのは Game.firstRunMode（おまかせ）で、開いたときにその項目まで中央に寄せる。
+    /// おまかせを列の真ん中に置くのは、最後に置いたら中央に寄せたとき右半分が空いたため（2026-11-09 批評 r4）
+    private let modes: [Mode] = {
+        let effects = Effect.allCases.map { Mode.fixed($0) }
+        let figures = Array(effects.prefix(Game.figureEffects.count))
+        return [.none] + figures + [.random] + effects.dropFirst(figures.count)
+    }()
     private static let lengths: [Double] = [30, 60, 90]
 
     private var mode: Mode {
@@ -865,14 +876,15 @@ struct DeckSheet: View {
         .padding(16)
         .frame(maxWidth: .infinity, minHeight: 150, alignment: .topLeading)
         .background {
-            ZStack(alignment: .bottomTrailing) {
+            ZStack(alignment: .topTrailing) {
                 LinearGradient(colors: [deck.tint, deck.tint.mix(with: .black, by: 0.35)],
                                startPoint: .topLeading, endPoint: .bottomTrailing)
-                // 右下に大きな絵を薄く敷いて、色の板ではなく「絵のあるカード」に見せる
+                // 右上に大きな絵を薄く敷いて、色の板ではなく「絵のあるカード」に見せる。
+                // 右下に置いたら英語の 2 行の例の文字と重なったので、文字のない右上へ（2026-11-09 批評 r4）
                 Image(systemName: deck.symbol)
-                    .font(.system(size: 92, weight: .bold))
+                    .font(.system(size: 80, weight: .bold))
                     .foregroundStyle(.white.opacity(0.1))
-                    .offset(x: 18, y: 14)
+                    .offset(x: 16, y: -12)
             }
         }
         .clipShape(shape)

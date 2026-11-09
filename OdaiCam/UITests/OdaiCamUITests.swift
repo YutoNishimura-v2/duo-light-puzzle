@@ -5,7 +5,7 @@ import XCTest
 final class OdaiCamUITests: XCTestCase {
     /// ホームのモード列（左から順に押す。押すと中央に寄るので、隣は画面の中にある）
     /// 起動したときはしばりなし（先頭）が選ばれている
-    static let modes = ["しばりなし", "棒人間", "モザイク", "着ぐるみ", "影絵", "宇宙", "海", "教室", "ステージ", "3秒遅れ", "のぞき穴", "おまかせ"]
+    static let modes = ["しばりなし", "棒人間", "モザイク", "着ぐるみ", "影絵", "おまかせ", "宇宙", "海", "教室", "ステージ", "3秒遅れ", "のぞき穴"]
     /// 1 ラウンド遊ぶモード。背景はどれも同じ処理なので宇宙だけ（ラウンドが増えると CI の 20 分に収まらない）
     static let roundModes: Set<String> = ["しばりなし", "宇宙", "棒人間", "着ぐるみ", "影絵", "モザイク", "3秒遅れ", "のぞき穴", "おまかせ"]
     /// 1 ラウンドの秒数（起動引数で短くする）
@@ -124,8 +124,8 @@ final class OdaiCamUITests: XCTestCase {
         XCTAssertTrue(app.buttons["あそぶ"].waitForExistence(timeout: 20), "ホームが出ない")
         sleep(3)
         shot("demo-home")
-        // 起動したときはしばりなし。種明かしに見えていた画面も入るよう、おまかせ（列の最後）まで順に押す
-        for mode in Self.modes {
+        // 起動したときはしばりなし。種明かしに見えていた画面も入るよう、おまかせ（列の真ん中）まで順に押す
+        for mode in Self.modes.prefix(through: Self.modes.firstIndex(of: "おまかせ")!) {
             tapMode(mode)
             sleep(1)
         }
