@@ -15,6 +15,8 @@
 "顔つきの棒人間が同じ動きをする" = "A stick buddy with a face copies your moves";
 "クマの着ぐるみが同じ動きをする" = "A bear costume copies your moves";
 "選んだ粗さのモザイクで見える" = "Pixelated at the level you pick";
+"人だけにモザイクがかかる" = "Only you get pixelated";
+"赤い逆光の中の黒い影だけが見える" = "Just a black shadow against red light";
 "着ぐるみ" = "Costume";
 "粗い" = "Chunky";
 "ふつう" = "Medium";

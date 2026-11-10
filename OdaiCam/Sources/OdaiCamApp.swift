@@ -190,8 +190,8 @@ struct GuesserView: View {
         guard game.phase == .menu, game.effectsOn else { return nil }
         if let fixed = game.fixedEffect { return fixed }
         // 初めての人には、右上の見本カードと同じ着ぐるみだけを見せる（見え方が 2 つ並ぶと、どれが相手に見える姿か迷う。批評 r2）
-        if !onboarded { return .costume }
-        let cycle: [Effect] = [.stick, .mosaic, .costume, .space, .silhouette, .sea, .stage, .classroom, .peephole]
+        if !onboarded { return .mosaic }
+        let cycle: [Effect] = Effect.playable
         return cycle[previewCycle % cycle.count]
     }
 
@@ -614,9 +614,8 @@ struct HomeView: View {
     /// 最初に選ばれているのは Game.firstRunMode（おまかせ）で、開いたときにその項目まで中央に寄せる。
     /// おまかせを列の真ん中に置くのは、最後に置いたら中央に寄せたとき右半分が空いたため（2026-11-09 批評 r4）
     private let modes: [Mode] = {
-        let effects = Effect.allCases.map { Mode.fixed($0) }
-        let figures = Array(effects.prefix(Game.figureEffects.count))
-        return [.none] + figures + [.random] + effects.dropFirst(figures.count)
+        // 出すのは見た目が水準に届いたしばりだけ（Effect.playable）。外したものは帯に並べない
+        return [.none] + Effect.playable.map { Mode.fixed($0) } + [.random]
     }()
     private static let lengths: [Double] = [30, 60, 90]
 
@@ -651,13 +650,11 @@ struct HomeView: View {
                         EffectFrame(image: liveFrame)
                     } else if Shot.name != nil, game.effectsOn {
                         // おまかせのときは、初めての人には見本カードと同じ着ぐるみ、それ以外はモザイクを見せる（実機の previewEffect と同じ考え）
-                        SampleSeen(effect: game.fixedEffect ?? (firstRun ? .costume : .mosaic))
+                        SampleSeen(effect: game.fixedEffect ?? .mosaic)
                     }
                     VStack(spacing: 10) {
                         // 初めての人には、右上に種明かしの見本を流す（最初の設定に関係なく、何が起きるゲームかが分かる）
-                        if firstRun && !cameraDenied {
-                            HStack { Spacer(); RevealTeaser() }
-                        }
+                        // 右上の種明かしの見本（クマの着ぐるみの絵）は、着ぐるみを外したので出さない（2026-11-10）
                         Spacer()
                         if mode == .fixed(.mosaic) { mosaicPicker }
                         hint

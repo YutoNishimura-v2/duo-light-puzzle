@@ -118,8 +118,8 @@ extension Effect {
         case .stage: String(localized: "スポットライトのステージに立つ")
         case .stick: String(localized: "顔つきの棒人間が同じ動きをする")
         case .costume: String(localized: "クマの着ぐるみが同じ動きをする")
-        case .silhouette: String(localized: "真っ黒な影だけが見える")
-        case .mosaic: String(localized: "選んだ粗さのモザイクで見える")
+        case .silhouette: String(localized: "赤い逆光の中の黒い影だけが見える")
+        case .mosaic: String(localized: "人だけにモザイクがかかる")
         case .delay: String(localized: "3 秒前の動きが見える")
         case .peephole: String(localized: "小さな丸い窓だけがうろつく")
         }

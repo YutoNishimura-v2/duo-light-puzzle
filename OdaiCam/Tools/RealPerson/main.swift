@@ -159,6 +159,7 @@ final class SideBySide {
 
 var costumeVideo: SideBySide?
 var stickVideo: SideBySide?
+var playableVideos: [Effect: SideBySide] = [:]
 var firstTime: Double?
 
 while let sample = output.copyNextSampleBuffer() {
@@ -231,9 +232,17 @@ while let sample = output.copyNextSampleBuffer() {
         if costumeVideo == nil {
             costumeVideo = SideBySide(url: outDir.appendingPathComponent("\(name)-costume.mp4"), panel: panel)
             stickVideo = SideBySide(url: outDir.appendingPathComponent("\(name)-stick.mp4"), panel: panel)
+            // 遊べるしばり（Effect.playable）は、本人に見せる比べ動画の元にする
+            for effect in Effect.playable {
+                playableVideos[effect] = SideBySide(url: outDir.appendingPathComponent("\(name)-\(effect.rawValue).mp4"),
+                                                    panel: panel)
+            }
         }
         if let c = images[.costume] { costumeVideo?.append(left: c, right: original, at: pts) }
         if let c = images[.stick] { stickVideo?.append(left: c, right: original, at: pts) }
+        for (effect, video) in playableVideos {
+            if let c = images[effect] { video.append(left: c, right: original, at: pts) }
+        }
 
         if nextSheet < sheetTimes.count, t >= sheetTimes[nextSheet] {
             var panels: [(String, CGImage)] = [("そのまま", original)]
@@ -255,6 +264,7 @@ while let sample = output.copyNextSampleBuffer() {
 }
 await costumeVideo?.finish()
 await stickVideo?.finish()
+for video in playableVideos.values { await video.finish() }
 
 // MARK: 画像を作る
 

@@ -1,6 +1,6 @@
 import UIKit
 
-/// 見比べの画像：同じ人・同じポーズを、そのまま／棒人間／モザイク（3 段）／着ぐるみで並べて書き出す。
+/// 見比べの画像：同じ人・同じポーズを、そのまま／モザイク（3 段）／影絵で並べて書き出す。
 /// デモで起動したときだけ、Documents/compare に作る（CI がそこから取り出して本人に見せる）
 enum CompareShots {
     /// ポーズの時刻（デモの役者の動きの中から 3 つ）
@@ -24,19 +24,17 @@ enum CompareShots {
                 }
             }
             add("そのまま", nil)
-            add("棒人間", .stick)
             for level in MosaicLevel.allCases {
                 EffectEngine.mosaicLevel = level
                 add("モザイク（\(level.name)）", .mosaic)
             }
             EffectEngine.mosaicLevel = .normal
-            add("着ぐるみ", .costume)
             add("影絵", .silhouette)
             for (title, image) in panels {
                 write(UIImage(cgImage: image), to: dir.appendingPathComponent("pose\(i + 1)-\(title).png"))
             }
-            // 本人に見せる 4 枚（そのまま・棒人間・モザイク（ふつう）・着ぐるみ）を 2×2 に
-            let four = panels.filter { ["そのまま", "棒人間", "モザイク（ふつう）", "着ぐるみ"].contains($0.0) }
+            // 本人に見せる 4 枚（そのまま・モザイク（粗い・ふつう）・影絵）を 2×2 に
+            let four = panels.filter { ["そのまま", "モザイク（粗い）", "モザイク（ふつう）", "影絵"].contains($0.0) }
             if let sheet = sheet(four, columns: 2) { write(sheet, to: dir.appendingPathComponent("pose\(i + 1)-4modes.png")) }
             if let row = sheet(panels, columns: panels.count) { write(row, to: dir.appendingPathComponent("pose\(i + 1)-all.png")) }
         }

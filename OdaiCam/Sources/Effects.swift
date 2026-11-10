@@ -44,6 +44,12 @@ enum Effect: String, CaseIterable, Identifiable, Sendable {
         }
     }
 
+    /// 遊べるしばり（並べる順）。ほかは絵が大手アプリの質に届かないので出さない（本人 2026-11-10）。
+    /// 着ぐるみ・棒人間＝平たい図形で安っぽい、宇宙などの背景＝作り物の背景、3 秒遅れ・のぞき穴＝人でなく画面全体にかかる
+    static let playable: [Effect] = [.mosaic, .silhouette]
+
+    var isPlayable: Bool { Self.playable.contains(self) }
+
     /// 画面に出す名前（端末の言葉）
     var label: String { NSLocalizedString(name, comment: "しばりの名前") }
 
@@ -264,6 +270,8 @@ final class EffectEngine: @unchecked Sendable {
     static let minJoints = 5
     /// 影絵・背景：人の形が画面のこの割合より多ければ映っていたことにする
     static let minCoverage = 0.02
+    /// 切り抜きに失敗したコマで、直前の形を使い続ける長さ（秒）。人だけにかけるしばりが一瞬素顔・空にならないように
+    static let maskHoldSeconds = 2.5
 
     /// アプリで 1 つだけ使う Core Image の描き手（小窓の縮小もこれを使う）。
     /// 描き手ごとに GPU の作業場を持つので、増やさない。途中の絵は残さない。
@@ -380,7 +388,9 @@ final class EffectEngine: @unchecked Sendable {
 
     /// しばりがそのコマで使う読み取り（顔と手は、骨格が取れないコマだけあとで読む）
     private func visionReads(for effect: Effect) -> [VNRequest] {
-        if effect.isBackground || effect == .silhouette { return [personRequest, peopleRequest, bodyRequest] }
+        if effect.isBackground || effect == .silhouette || effect == .mosaic {
+            return [personRequest, peopleRequest, bodyRequest]
+        }
         switch effect {
         case .costume: return [bodyRequest, peopleRequest, personRequest]
         case .stick: return [bodyRequest, peopleRequest]
@@ -581,6 +591,8 @@ final class EffectEngine: @unchecked Sendable {
         case .costume:
             let suit = costume(source: source, input: input, now: now, frameTime: frameTime)
             return (suit.image, suit.found)
+        case .mosaic:
+            return (personMosaic(source: source, input: input, now: now, elapsed: elapsed, frameTime: frameTime, black: black), true)
         default:
             return (plain(effect, input: input, now: now, elapsed: elapsed, black: black), true)
         }
@@ -683,7 +695,7 @@ final class EffectEngine: @unchecked Sendable {
             if found {
                 lastGoodMask = maskBuffer
                 lastGoodMaskTime = now
-            } else if let good = lastGoodMask, now - lastGoodMaskTime < 1.2 {
+            } else if let good = lastGoodMask, now - lastGoodMaskTime < Self.maskHoldSeconds {
                 maskBuffer = good
                 found = true
             }
@@ -869,21 +881,96 @@ final class EffectEngine: @unchecked Sendable {
         return cut.outputImage?.cropped(to: extent) ?? firm
     }
 
-    /// found は人の形が画面に十分あったか
+    /// 人だけにかけるモザイク（テレビのモザイクと同じ見え方）。背景はそのまま映す。
+    /// 型抜きも同じマス目で四角くし、縁までマス目にそろえる（ぼけた縁は作り物に見える、本人 2026-11-10）。
+    /// 人が見つからないコマは画面全体にかけ、素顔を出さない
+    private func personMosaic(source: CVPixelBuffer, input: CIImage, now: TimeInterval, elapsed: TimeInterval,
+                              frameTime: TimeInterval, black: CIImage) -> CIImage {
+        let extent = input.extent
+        // 粗さは遊ぶ前に 3 段から選ぶ（ホームのモザイクの下の札）。お題ごとに粗く始まり、少しだけ細かくなる
+        let progress = min(max(elapsed / 25, 0), 1)
+        let scale = max(Self.mosaicLevel.blockFraction * extent.width * (1 - 0.35 * progress), 4)
+        let center = CGPoint(x: extent.midX, y: extent.midY)
+        let pixel = CIFilter.pixellate()
+        pixel.inputImage = input.clampedToExtent()
+        pixel.scale = Float(scale)
+        pixel.center = center
+        guard let blocks = pixel.outputImage?.cropped(to: extent) else { return black }
+        let person = personMask(source: source, input: input, now: now, frameTime: frameTime, despeckle: true)
+        guard let whole = person.mask, person.found else { return blocks }
+        let shaped = humanShaped(keepForeground(whole, extent: extent), found: person.found, source: source,
+                                 extent: extent, now: now, frameTime: frameTime)
+        // 縁から半マス広げてから、型抜きを同じマス目で四角くする（3 割以上かかったマスを塗る。素肌がはみ出さない）
+        let grow = CIFilter.morphologyMaximum()
+        grow.inputImage = shaped.clampedToExtent()
+        grow.radius = Float(scale * 0.5)
+        let gridded = CIFilter.pixellate()
+        gridded.inputImage = grow.outputImage ?? shaped.clampedToExtent()
+        gridded.scale = Float(scale)
+        gridded.center = center
+        let cut = CIFilter.colorThreshold()
+        cut.inputImage = gridded.outputImage
+        cut.threshold = 0.3
+        guard let gridMask = cut.outputImage?.cropped(to: extent) else { return blocks }
+        let blend = CIFilter.blendWithMask()
+        blend.inputImage = blocks
+        blend.backgroundImage = input
+        blend.maskImage = gridMask
+        return blend.outputImage?.cropped(to: extent) ?? blocks
+    }
+
+    /// シルエットチャレンジの見え方：部屋を赤い逆光の色にし、人を真っ黒な影に、縁に光の輪郭を足す。
+    /// found は人の形が画面に十分あったか（見つからないコマは赤い部屋だけで、知らせが出る）
     private func silhouette(source: CVPixelBuffer, input: CIImage, now: TimeInterval,
                             frameTime: TimeInterval) -> (image: CIImage?, found: Bool) {
-        // 人が見つからないコマも、真っ黒でなく影を映す明るい幕だけを出す
-        // （真っ黒だと、当てる人には「壊れた」のか「人が枠の外にいる」のか分からなかった）
-        let screen = CIImage(color: CIColor(red: 0.96, green: 0.93, blue: 0.85)).cropped(to: input.extent)
+        let extent = input.extent
+        let screen = backlitRoom(input)
         let person = personMask(source: source, input: input, now: now, frameTime: frameTime, despeckle: true)
         guard let whole = person.mask else { return (screen, false) }
-        let mask = humanShaped(keepForeground(whole, extent: input.extent, sharp: true), found: person.found, source: source,
-                               extent: input.extent, now: now, frameTime: frameTime)
+        let mask = humanShaped(keepForeground(whole, extent: extent, sharp: true), found: person.found, source: source,
+                               extent: extent, now: now, frameTime: frameTime)
         let blend = CIFilter.blendWithMask()
-        blend.inputImage = CIImage(color: CIColor(red: 0.05, green: 0.05, blue: 0.08)).cropped(to: input.extent)
+        blend.inputImage = CIImage(color: CIColor(red: 0.03, green: 0.02, blue: 0.035)).cropped(to: extent)
         blend.backgroundImage = screen
-        blend.maskImage = mask
-        return (blend.outputImage, person.found)
+        blend.maskImage = mask.applyingGaussianBlur(sigma: 1.2).cropped(to: extent)
+        guard let shadow = blend.outputImage else { return (screen, person.found) }
+        // 縁の光：型抜きをぼかしたものから元の型抜きを引くと、影の外側に細い帯が残る
+        let halo = CIFilter.subtractBlendMode()
+        halo.inputImage = mask.applyingGaussianBlur(sigma: Double(max(2, extent.width * 0.008))).cropped(to: extent)
+        halo.backgroundImage = mask
+        let rim = CIFilter.colorMatrix()
+        rim.inputImage = halo.outputImage
+        rim.rVector = CIVector(x: 1.0, y: 0, z: 0, w: 0)
+        rim.gVector = CIVector(x: 0.62, y: 0, z: 0, w: 0)
+        rim.bVector = CIVector(x: 0.5, y: 0, z: 0, w: 0)
+        rim.aVector = CIVector(x: 0, y: 0, z: 0, w: 0)
+        rim.biasVector = CIVector(x: 0, y: 0, z: 0, w: 1)
+        guard let light = rim.outputImage?.cropped(to: extent) else { return (shadow, person.found) }
+        let add = CIFilter.additionCompositing()
+        add.inputImage = light
+        add.backgroundImage = shadow
+        return (add.outputImage?.cropped(to: extent) ?? shadow, person.found)
+    }
+
+    /// 本物の部屋を、人の後ろから赤い光を当てたような色にする（灰色にして赤く染め、中央を明るく四隅を暗く）
+    private func backlitRoom(_ input: CIImage) -> CIImage {
+        let extent = input.extent
+        let gray = CIFilter.colorControls()
+        gray.inputImage = input
+        gray.saturation = 0
+        gray.contrast = 1.15
+        gray.brightness = 0.12
+        let tint = CIFilter.colorMonochrome()
+        tint.inputImage = gray.outputImage
+        tint.color = CIColor(red: 1.0, green: 0.18, blue: 0.24)
+        tint.intensity = 1
+        let edge = CIFilter.vignetteEffect()
+        edge.inputImage = tint.outputImage
+        edge.center = CGPoint(x: extent.midX, y: extent.midY + extent.height * 0.1)
+        edge.radius = Float(max(extent.width, extent.height) * 0.42)
+        edge.intensity = 0.85
+        edge.falloff = 0.6
+        return (edge.outputImage ?? tint.outputImage ?? input).cropped(to: extent)
     }
 
     /// 本物の人（カメラの画素そのまま）を、描いておいた背景の上に切り抜いて置く。

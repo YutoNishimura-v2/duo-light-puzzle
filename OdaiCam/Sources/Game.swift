@@ -80,7 +80,9 @@ final class Game {
         guard let raw = UserDefaults.standard.string(forKey: "mode") else { return firstRunMode }
         if raw == "none" { return (false, nil) }
         if raw == "random" { return (true, nil) }
-        return Effect(rawValue: raw).map { (true, $0) } ?? (false, nil)
+        // 外したしばり（着ぐるみ・背景など）を選んだままの人は、おまかせに戻す
+        guard let saved = Effect(rawValue: raw) else { return (false, nil) }
+        return saved.isPlayable ? (true, saved) : (true, nil)
     }
 
     private func saveMode() {
@@ -404,8 +406,8 @@ final class Game {
         let names = en ? ["Gorilla", "Penguin", "Kangaroo", "Flamingo", "Sloth"]
                        : ["ゴリラ", "ペンギン", "カンガルー", "フラミンゴ", "ナマケモノ"]
         let sample: [(String, Effect?, Outcome)] = [
-            (names[0], nil, .correct), (names[1], .space, .correct), (names[2], nil, .pass),
-            (names[3], .stage, .correct), (names[4], .silhouette, .correct),
+            (names[0], nil, .correct), (names[1], .mosaic, .correct), (names[2], nil, .pass),
+            (names[3], .silhouette, .correct), (names[4], .mosaic, .correct),
         ]
         turns = sample.enumerated().map { i, t in
             Turn(prompt: t.0, effect: t.1, start: Double(i) * 8, end: Double(i) * 8 + 6, outcome: t.2)
@@ -416,18 +418,18 @@ final class Game {
         case "countdown": phase = .countdown(3)
         case "play":
             // 最初の設定（firstRunMode、おまかせ）のまま。おまかせなら姿のしばりがかかったお題を見せる
-            let shown: Effect? = effectsOn ? (fixedEffect ?? .costume) : nil
+            let shown: Effect? = effectsOn ? (fixedEffect ?? .mosaic) : nil
             turns.append(Turn(prompt: en ? "Koala" : "コアラ", effect: shown, start: 40))
             phase = .playing
         case "home-bg":
-            // 背景を宇宙に変えたホーム
+            // 影絵を選んだホーム（背景のしばりは外したので、遊べるしばりで見せる）
             effectsOn = true
-            fixedEffect = .space
+            fixedEffect = .silhouette
             phase = .menu
         case "play-bg":
             effectsOn = true
-            fixedEffect = .space
-            turns.append(Turn(prompt: en ? "Koala" : "コアラ", effect: .space, start: 40))
+            fixedEffect = .silhouette
+            turns.append(Turn(prompt: en ? "Koala" : "コアラ", effect: .silhouette, start: 40))
             phase = .playing
         case "actor-play", "actor-missing":
             // 演じる人の画面（外側の画面に出る分）。影絵のお題を演じている途中と、カメラに映っていないときの知らせ
@@ -459,8 +461,8 @@ final class Game {
         if voiceJudge { onPrompt?(prompt) }
     }
 
-    /// おまかせの中心：姿を変えるしばり（着ぐるみ・影絵・モザイク・棒人間）。ほかのしばりより 3 倍出やすくする
-    static let figureEffects: [Effect] = [.costume, .silhouette, .mosaic, .stick]
+    /// おまかせで出るしばり。見た目が売り物の水準に届いたものだけ（Effect.playable、2026-11-10 に 2 つへ絞った）
+    static let figureEffects: [Effect] = Effect.playable
 
     /// おまかせなら、直前と同じにならないようにくじで選ぶ。
     /// デモ（CI）では、ラウンドの 1 問目から姿を変えるしばりを順に出す（種明かし動画に着ぐるみなどが必ず入るように）
@@ -472,8 +474,7 @@ final class Game {
             let order = Self.figureEffects
             return order[(turns.count + demoRound) % order.count]
         }
-        let pool = Effect.allCases.flatMap { Self.figureEffects.contains($0) ? [$0, $0, $0] : [$0] }
-        return pool.filter { $0 != last }.randomElement()
+        return Self.figureEffects.filter { $0 != last }.randomElement() ?? Self.figureEffects.first
     }
 
     private func finishRound() {
